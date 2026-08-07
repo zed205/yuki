@@ -1,0 +1,40 @@
+{
+  "name": "yukiweb",
+  "version": "0.1.0",
+  "description": "Personal AI agent with speech-to-speech, browser automation, and desktop control",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "build": "tsc && node scripts/copy-client.js",
+    "start": "node dist/server/index.js",
+    "dev": "npx ts-node src/server/index.ts",
+    "dev:watch": "npx nodemon --exec ts-node src/server/index.ts"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "chrome-remote-interface": "^0.34.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "form-data": "^4.0.0",
+    "markdown-pdf": "^11.0.0",
+    "openai": "^6.45.0",
+    "playwright": "^1.61.1",
+    "turndown": "^7.2.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/diff": "^7.0.2",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/turndown": "^5.0.6",
+    "@types/ws": "^8.5.0",
+    "nodemon": "^3.1.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.7.0"
+  },
+  "keywords": [],
+  "author": "",
+  "type": "commonjs",
+  "types": "./dist/server/index.d.ts"
+}

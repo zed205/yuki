@@ -1,0 +1,19 @@
+# Ignore everything by default; whitelist only the Yuki app
+/*
+!/.gitignore
+!/src/
+!/docs/
+!/tests/
+!/scripts/copy-client.js
+!/scripts/tray.ps1
+!/scripts/yukiweb-tray.bat
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+!/SPEC.md
+
+# Generated / local
+node_modules/
+dist/
+.env
+*.log

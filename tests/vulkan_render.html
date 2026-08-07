@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Scene - Jordan's Test</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: sans-serif;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Use Left/Right Arrow Keys to Rotate Camera 🔄</div>
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+          }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        // Scene Setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Single Light Source
+        const pointLight = new THREE.PointLight(0xffffff, 100, 100);
+        pointLight.position.set(2, 5, 5);
+        scene.add(pointLight);
+
+        // Plane
+        const planeGeometry = new THREE.PlaneGeometry(20, 20);
+        const planeMaterial = new THREE.MeshStandardMaterial({ color: 0x444444, side: THREE.DoubleSide });
+        const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+        plane.rotation.x = Math.PI / 2;
+        scene.add(plane);
+
+        // Materials (Transparent)
+        const transparentMaterial = (color) => new THREE.MeshPhongMaterial({
+            color: color,
+            transparent: true,
+            opacity: 0.6,
+            shininess: 100
+        });
+
+        // 1. Cube (Square representation) - Top of triangle
+        const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
+        const cube = new THREE.Mesh(cubeGeometry, transparentMaterial(0xff0000));
+        cube.position.set(0, 1, 0);
+        scene.add(cube);
+
+        // 2. Sphere - Bottom Left of triangle
+        const sphereGeometry = new THREE.SphereGeometry(0.7, 32, 32);
+        const sphere = new THREE.Mesh(sphereGeometry, transparentMaterial(0x00ff00));
+        sphere.position.set(-1, 0.7, 1);
+        scene.add(sphere);
+
+        // 3. Pyramid (using ConeGeometry with 4 radial segments) - Bottom Right of triangle
+        const pyramidGeometry = new THREE.ConeGeometry(0.8, 1.5, 4);
+        const pyramid = new THREE.Mesh(pyramidGeometry, transparentMaterial(0x0000ff));
+        pyramid.position.set(1, 0.75, 1);
+        scene.add(pyramid);
+
+        camera.position.set(0, 3, 6);
+        camera.lookAt(0, 0, 0);
+
+        // Rotation Logic
+        let cameraAngle = 0;
+        let rotationVelocity = 0;
+        const rotationSpeed = 0.05;
+
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowLeft') {
+                rotationVelocity = rotationSpeed;
+            } else if (event.key === 'ArrowRight') {
+                rotationVelocity = -rotationSpeed;
+            }
+        });
+
+        window.addEventListener('keyup', (event) => {
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                rotationVelocity = 0;
+            }
+        });
+
+        // Animation Loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Update camera angle
+            cameraAngle += rotationVelocity;
+            
+            // Calculate new camera position based on angle (circular orbit)
+            const radius = 6;
+            camera.position.x = radius * Math.sin(cameraAngle);
+            camera.position.z = radius * Math.cos(cameraAngle);
+            camera.lookAt(0, 0.5, 0); // Look at the center of the triangle
+
+            // Rotate the objects slightly for extra flair
+            cube.rotation.y += 0.01;
+            sphere.rotation.y += 0.01;
+            pyramid.rotation.y += 0.01;
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

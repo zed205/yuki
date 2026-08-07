@@ -1,0 +1,790 @@
+import * as os from 'os';
+import OpenAI from 'openai';
+import { WebSocket } from 'ws';
+import { getConfig } from './config';
+import { tools, toolDefinitions, planToolNames } from './tools';
+import { Message, ToolCall, Session, Plan, PlanStep } from '../shared/types';
+import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
+import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels } from './config';
+import { getProject } from './project';
+import { AudioPipeline } from './audio';
+import { BrowserAutomation } from './browser';
+import { DesktopAutomation } from './automation';
+import { MCPManager } from './mcp';
+import { logLLMRequestResponse } from './llm-logger';
+
+function getSystemInfo(projectPath?: string): string {
+  const maxLines = getConfig().maxToolOutputLines || 20;
+  const now = new Date();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dateStr = `${months[now.getMonth()]} ${now.getFullYear()}`;
+  const lines = [
+    `Date: ${dateStr}`,
+    `OS: ${os.version()} (${os.type()} ${os.release()})`,
+    `Hostname: ${os.hostname()}`,
+    `Username: ${os.userInfo().username}`,
+    `Shell: ${process.env.SHELL || process.env.ComSpec || 'unknown'}`,
+    `CWD: ${projectPath || process.cwd()}`,
+    `${maxLines < 0 ? 'Tool output truncation is disabled (maxToolOutputLines=-1).' : `Tool outputs for read, web_fetch, and shell are truncated to ${maxLines} lines. The truncation message includes the full output file path. Use read(..., offset, limit) where offset and limit are line numbers to page through output.`}`,
+  ];
+  return lines.join('\n');
+}
+
+export class Agent {
+  private audioPipeline: AudioPipeline | null = null;
+  private browser: BrowserAutomation | null = null;
+  private desktop: DesktopAutomation | null = null;
+  private mcp: MCPManager | null = null;
+  private cancelled = false;
+  private abortController: AbortController | null = null;
+  private disabledTools: Set<string> = new Set();
+  currentProjectPath: string = '';
+  currentModelName: string = '';
+  private openai: OpenAI | null = null;
+
+  setToolEnabled(name: string, enabled: boolean) {
+    if (enabled) {
+      this.disabledTools.delete(name);
+    } else {
+      this.disabledTools.add(name);
+    }
+  }
+
+  initToolDefaults() {
+    const cfg = getConfig();
+    this.disabledTools = new Set(cfg.disabledTools || []);
+  }
+
+  stop() {
+    this.cancelled = true;
+    this.abortController?.abort();
+  }
+
+  setServices(
+    audio: AudioPipeline,
+    browser: BrowserAutomation,
+    desktop: DesktopAutomation,
+    mcp?: MCPManager,
+  ) {
+    this.audioPipeline = audio;
+    this.browser = browser;
+    this.desktop = desktop;
+    this.mcp = mcp || null;
+  }
+
+  async chat(
+    userMessage: string,
+    session: Session,
+    ws: WebSocket,
+    images: string[] = [],
+  ): Promise<void> {
+    this.cancelled = false;
+    this.abortController = new AbortController();
+    const config = { ...getConfig(), thinkingEnabled: session.thinkingEnabled };
+    const systemPrompt = session.messages.find((m) => m.role === 'system')?.content || '';
+
+    const project = getProject(session.projectId || 'default');
+    this.currentProjectPath = project?.path || '';
+
+    // Compact if conversation exceeds threshold
+    const cm = config.contextManagement;
+    if (cm?.enabled) {
+      const ctxWindow = getAgentModel().contextWindow || 64000;
+      const estimate = this.estimateSessionTokens(session, config);
+      if (estimate > ctxWindow * cm.compactionThreshold) {
+        await this.compactConversation(session, config, ws);
+      }
+    }
+
+    let messages: Array<Record<string, any>> = [];
+
+    if (systemPrompt) {
+      const envBlock = `\n\n## Environment Context\n${getSystemInfo(this.currentProjectPath)}`;
+      const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.\n\n${getPlanSummary(session.id)}`;
+      const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside `<think>` blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
+      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote });
+    }
+
+    const historyMessages = session.messages
+      .filter((m) => m.role !== 'system' && !m.pruned)
+      .slice(0, -1); // last message is the current user msg (re-added below with images)
+
+    for (const msg of historyMessages) {
+      const entry: Record<string, any> = {
+        role: msg.role,
+        content: msg.content,
+      };
+      if (msg.reasoningContent) {
+        entry.reasoning_content = msg.reasoningContent;
+      }
+      if (msg.toolCalls) {
+        entry.tool_calls = msg.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.parameters) },
+        }));
+        messages.push(entry);
+        for (const tc of msg.toolCalls) {
+          if (tc.result) {
+            messages.push({ role: 'tool', tool_call_id: tc.id, content: tc.result });
+          }
+        }
+      } else {
+        messages.push(entry);
+      }
+    }
+
+    messages.push({
+      role: 'user',
+      content: images.length > 0 ? buildMultimodalContent(userMessage, images) : userMessage,
+    });
+
+    let iterations = 0;
+    let hasToolCalls = true;
+    const cfgIter = getConfig().maxToolIterations;
+    const maxIterations = cfgIter === -1 ? Infinity : (cfgIter || 10);
+
+    while (hasToolCalls && iterations < maxIterations) {
+      if (this.cancelled) {
+        console.log('[agent] cancelled before iter, returning');
+        this.cancelled = false;
+        return;
+      }
+      iterations++;
+      const streamMsgId = this.generateId();
+
+      let response;
+      try {
+        response = await this.callLLM(messages, config, this.abortController?.signal,
+          (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
+          (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
+          undefined, session.id,
+        );
+      } catch (llmErr: any) {
+        const backupName = getBackupModelName();
+        if (backupName && backupName !== getActiveModelName()) {
+          console.log(`[agent] primary model failed, falling back to backup: ${backupName}`);
+          setActiveModelName(backupName);
+          this.openai = null;
+          response = await this.callLLM(messages, config, this.abortController?.signal,
+            (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
+            (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
+            undefined, session.id,
+          );
+        } else {
+          response = { content: `Error calling LLM: ${llmErr.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
+        }
+      }
+
+      console.log(`[agent] iter=${iterations} hasToolCalls=${!!(response.toolCalls && response.toolCalls.length > 0)} contentLen=${response.content?.length || 0} toolCount=${response.toolCalls?.length || 0}`);
+
+      if (response.usage?.promptTokens) {
+        this.sendContextUpdate(ws, response.usage.promptTokens, getAgentModel().contextWindow || 64000);
+      }
+
+      if (this.cancelled) {
+        console.log('[agent] cancelled after callLLM, returning');
+        this.cancelled = false;
+        return;
+      }
+
+      hasToolCalls = !!(response.toolCalls && response.toolCalls.length > 0);
+
+      if (hasToolCalls && response.toolCalls) {
+        const toolCalls = response.toolCalls;
+
+        const assistantMsg: Message = {
+          id: streamMsgId,
+          role: 'assistant',
+          content: response.content || '',
+          timestamp: new Date(),
+          toolCalls,
+          reasoningContent: response.reasoningContent || '',
+          sessionId: session.id,
+        };
+
+        this.sendToClient(ws, 'chat:response', {
+          message: assistantMsg.content,
+          reasoningContent: response.reasoningContent || '',
+          toolCalls,
+          messageId: streamMsgId,
+          sessionId: session.id,
+        });
+
+        for (const toolCall of toolCalls) {
+          toolCall.status = 'running';
+          this.sendToClient(ws, 'tool:call', { toolCall });
+
+          try {
+            const result = await this.executeTool(toolCall, session.id);
+            toolCall.result = result;
+            toolCall.status = 'completed';
+          } catch (err: any) {
+            toolCall.result = `Error: ${err.message}`;
+            toolCall.status = 'error';
+          }
+
+          this.sendToClient(ws, 'tool:result', {
+            toolCallId: toolCall.id,
+            result: toolCall.result,
+            status: toolCall.status,
+          });
+
+          if (planToolNames.includes(toolCall.name)) {
+            const plan = planGet(session.id);
+            this.sendToClient(ws, 'plan:updated', {
+              plan: plan ? { title: plan.title, steps: plan.steps.map(s => ({ id: s.id, description: s.description, status: s.status })) } : null,
+            });
+          }
+
+          const assistEntry: Record<string, any> = {
+            role: 'assistant',
+            content: response.content || '',
+            tool_calls: [
+              {
+                id: toolCall.id,
+                type: 'function',
+                function: {
+                  name: toolCall.name,
+                  arguments: JSON.stringify(toolCall.parameters),
+                },
+              },
+            ],
+          };
+          if (response.reasoningContent) {
+            assistEntry.reasoning_content = response.reasoningContent;
+          }
+          messages.push(assistEntry);
+
+          if ((toolCall.name === 'desktop_screenshot' || toolCall.name === 'desktop_snapshot_region') && toolCall.status === 'completed') {
+            messages.push({
+              role: 'user',
+              content: buildMultimodalContent('Here is the desktop screenshot I captured:', [`data:image/png;base64,${toolCall.result}`]),
+            });
+          } else {
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: toolCall.result || '',
+            });
+          }
+          this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+        }
+
+        session.messages.push(assistantMsg);
+        this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+
+        if (this.cancelled) {
+          console.log('[agent] cancelled after tool execution, returning');
+          this.cancelled = false;
+          return;
+        }
+      } else {
+        const content = response.content || '';
+        const reasoning = response.reasoningContent || '';
+
+        // If model generated only reasoning with no visible content, surface it
+        if (!content && !reasoning) {
+          // Completely empty response — send fallback instead of breaking silently
+          this.sendToClient(ws, 'chat:response', {
+            message: '[The model returned an empty response. This may indicate the thinking budget exhausted available tokens before generating visible output.]',
+            reasoningContent: '',
+            toolCalls: undefined,
+            messageId: streamMsgId,
+            sessionId: session.id,
+          });
+          session.messages.push({
+            id: streamMsgId,
+            role: 'assistant',
+            content: '[Empty response — likely ran out of token budget during thinking.]',
+            timestamp: new Date(),
+            sessionId: session.id,
+          });
+          this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+        } else if (!content && reasoning) {
+          this.sendToClient(ws, 'chat:response', {
+            message: reasoning,
+            reasoningContent: reasoning,
+            toolCalls: undefined,
+            messageId: streamMsgId,
+            sessionId: session.id,
+          });
+          session.messages.push({
+            id: streamMsgId,
+            role: 'assistant',
+            content: reasoning,
+            reasoningContent: reasoning,
+            timestamp: new Date(),
+            sessionId: session.id,
+          });
+          this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+        } else {
+          const assistantMsg: Message = {
+            id: streamMsgId,
+            role: 'assistant',
+            content,
+            timestamp: new Date(),
+            reasoningContent: reasoning,
+            sessionId: session.id,
+          };
+
+          this.sendToClient(ws, 'chat:response', {
+            message: content,
+            reasoningContent: reasoning,
+            toolCalls: undefined,
+            messageId: streamMsgId,
+            sessionId: session.id,
+          });
+
+          session.messages.push(assistantMsg);
+          this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+        }
+        break;
+      }
+    }
+
+    if (hasToolCalls) {
+      console.log(`[agent] hit maxToolIterations (${cfgIter})`);
+      this.sendToClient(ws, 'chat:response', {
+        message: `I reached the maximum number of tool call iterations (${cfgIter}). If you need me to continue, please let me know.`,
+        reasoningContent: '',
+        messageId: '',
+        sessionId: session.id,
+      });
+    }
+
+    session.updatedAt = new Date();
+  }
+
+  resetClient(): void {
+    this.openai = null;
+  }
+
+  private getOpenAI(modelName?: string): OpenAI {
+    const target = modelName || this.currentModelName || getActiveModelName();
+    const agentCfg = getAgentModel(target);
+    if (!this.openai || this.currentModelName !== target) {
+      this.currentModelName = target;
+      this.openai = new OpenAI({
+        baseURL: agentCfg.endpoint,
+        apiKey: agentCfg.apiKey || '',
+      });
+    }
+    return this.openai;
+  }
+
+  private async callLLM(
+    messages: Array<Record<string, any>>,
+    config: any,
+    signal?: AbortSignal,
+    onThinkingChunk?: (chunk: string) => void,
+    onContentChunk?: (chunk: string) => void,
+    modelName?: string,
+    sessionId?: string,
+  ): Promise<{ content: string; toolCalls?: ToolCall[]; reasoningContent?: string; usage?: { promptTokens: number } }> {
+    const startTime = Date.now();
+    const requestBody: Record<string, any> = { messages };
+
+    const targetModel = modelName || this.currentModelName || getActiveModelName();
+    const openai = this.getOpenAI(targetModel);
+
+    const agentCfg = getAgentModel(targetModel);
+    const logMeta = {
+      modelName: getActiveModelName() || this.currentModelName || undefined,
+      openaiClientModel: this.currentModelName || undefined,
+      sessionId: sessionId || undefined,
+    };
+    const createParams: Record<string, any> = {
+      model: agentCfg.model,
+      messages: messages as any,
+      max_tokens: agentCfg.maxTokens === -1 ? undefined : (agentCfg.maxTokens || 8000),
+      ...(agentCfg.temperature !== undefined ? { temperature: agentCfg.temperature } : {}),
+      stream: true,
+    };
+
+    if (toolDefinitions.length > 0) {
+      let enabledTools = toolDefinitions.filter(t => !this.disabledTools.has(t.function.name));
+      const mcpDefs = this.mcp?.getToolDefinitions() || [];
+      if (mcpDefs.length > 0) {
+        enabledTools = enabledTools.concat(mcpDefs);
+      }
+      if (enabledTools.length > 0) {
+        createParams.tools = enabledTools as any;
+        createParams.tool_choice = 'auto';
+      }
+    }
+
+    const thinkingEnabled = config.thinkingEnabled ?? agentCfg.thinkingEnabled ?? getConfig().thinkingEnabled ?? false;
+    if (thinkingEnabled) {
+      createParams.chat_template_kwargs = { enable_thinking: true, preserve_thinking: agentCfg.preserveThinking ?? true };
+      createParams.thinking_budget_tokens = agentCfg.maxTokens === -1 ? 16000 : Math.min(agentCfg.maxTokens || 16000, 64384);
+    } else {
+      createParams.chat_template_kwargs = { enable_thinking: false };
+      createParams.thinking_budget_tokens = 0;
+    }
+
+    Object.assign(requestBody, createParams);
+    delete requestBody.stream;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), config.llmTimeoutMs ?? 180000);
+    let onAbort: (() => void) | null = null;
+    if (signal) {
+      onAbort = () => controller.abort();
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    let fullContent = '';
+    let fullReasoning = '';
+    let sawToolCall = false;
+    const toolCallAccumulators: Map<string, { id: string; name: string; arguments: string }> = new Map();
+    let usageResult: { promptTokens: number } | undefined;
+
+    try {
+      const stream = await openai.chat.completions.create(createParams as any, {
+        signal: controller.signal,
+      }) as any;
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        if ((delta as any).reasoning_content) {
+          const rc = (delta as any).reasoning_content;
+          fullReasoning += rc;
+          if (onThinkingChunk) onThinkingChunk(rc);
+        }
+
+        if (delta.content && !sawToolCall) {
+          fullContent += delta.content;
+          if (onContentChunk) onContentChunk(delta.content);
+        }
+
+        if (delta.tool_calls) {
+          sawToolCall = true;
+          for (const tc of delta.tool_calls) {
+            const key = String(tc.index);
+            if (!toolCallAccumulators.has(key)) {
+              toolCallAccumulators.set(key, { id: tc.id || `call_${key}`, name: tc.function?.name || '', arguments: '' });
+            }
+            const acc = toolCallAccumulators.get(key)!;
+            if (tc.id) acc.id = tc.id;
+            if (tc.function?.name) acc.name = tc.function.name;
+            if (tc.function?.arguments) acc.arguments += tc.function.arguments;
+          }
+        }
+
+        if (chunk.usage) {
+          usageResult = { promptTokens: chunk.usage.prompt_tokens ?? 0 };
+        }
+      }
+
+    const toolCalls: ToolCall[] = [];
+    for (const acc of toolCallAccumulators.values()) {
+      toolCalls.push({
+        id: acc.id,
+        name: acc.name,
+        parameters: this.parseFunctionArgs(acc.arguments),
+        status: 'pending',
+      });
+    }
+
+    if (toolCalls.length > 0 && fullContent) {
+      fullContent = fullContent.replace(/<function>[\s\S]*?<\/function>/gi, '').replace(/<\/?function>/gi, '');
+    }
+
+    const result = { content: fullContent, reasoningContent: fullReasoning, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, usage: usageResult };
+    logLLMRequestResponse(requestBody, result, Date.now() - startTime, undefined, logMeta);
+    return result;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      const errMsg = `${err.name || err.message}${err.name === 'AbortError' ? ` (timeout=${config.llmTimeoutMs}ms)` : ''}`;
+      console.error(`callLLM error: ${errMsg}`);
+      logLLMRequestResponse(requestBody, { content: '' }, Date.now() - startTime, err.message, logMeta);
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+      }
+    }
+  }
+
+  private async executeTool(toolCall: ToolCall, sessionId?: string): Promise<string> {
+    const toolName = toolCall.name.toLowerCase();
+    const params = toolCall.parameters;
+
+    if (this.mcp && this.mcp.isMCPTool(toolCall.name)) {
+      const result = await this.mcp.callTool(toolCall.name, params);
+      return result ?? `Unknown tool: ${toolCall.name}`;
+    }
+
+    switch (toolName) {
+      case 'plan_create':
+        if (!sessionId) return 'Error: no active session';
+        return JSON.stringify(planCreate(sessionId, params.title, params.steps), null, 2);
+      case 'plan_update':
+        if (!sessionId) return 'Error: no active session';
+        return JSON.stringify(planUpdate(sessionId, params.stepIndex, params.status), null, 2);
+      case 'plan_get':
+        if (!sessionId) return 'Error: no active session';
+        return getPlanSummary(sessionId);
+      case 'plan_remove':
+        if (!sessionId) return 'Error: no active session';
+        return planRemove(sessionId) ? 'Plan removed.' : 'No active plan to remove.';
+      case 'read':
+        return await tools.read(params.filePath, params.offset, params.limit);
+      case 'write':
+        return await tools.write(params.filePath, params.content);
+      case 'edit':
+        return await tools.editFile(params.filePath, params.oldString, params.newString);
+      case 'patch':
+        return await tools.patchFile(params.filePath, params.patch);
+      case 'glob':
+        return await tools.glob(params.pattern, params.rootDir);
+      case 'grep':
+        return await tools.grep(params.pattern, params.rootDir, params.include);
+      case 'shell':
+        return await tools.shell(params.command, params.cwd || this.currentProjectPath || undefined);
+      case 'browser_navigate':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.navigate(params.url);
+      case 'browser_click':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.click(params.selector);
+      case 'browser_fill':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.fill(params.selector, params.value);
+      case 'browser_screenshot':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.screenshot();
+      case 'browser_get_content':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.getPageContent();
+      case 'browser_get_links':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.getLinks();
+      case 'desktop_screenshot':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.getScreenshotBase64();
+      case 'desktop_click':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.mouseClick(params.x, params.y);
+      case 'desktop_type':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.keyboardInput(params.text);
+      case 'desktop_move':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.mouseMove(params.x, params.y);
+      case 'desktop_drag':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.mouseDrag(params.x, params.y, params.button);
+      case 'desktop_scroll':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.scroll(params.clicks);
+      case 'desktop_keypress':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.keyPress(params.key);
+      case 'desktop_viewport':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return JSON.stringify(await this.desktop.getViewport());
+      case 'desktop_snapshot_region':
+        if (!this.desktop) return 'Desktop automation not initialized';
+        return await this.desktop.screenshotRegion(params.left, params.top, params.width, params.height);
+      case 'web_search':
+        return await tools.webSearch(params.query, params.numResults);
+      case 'web_fetch':
+        return await tools.webFetch(params.url, params.format);
+      case 'memory_save':
+        return await tools.memorySave(params.key, params.value);
+      case 'memory_read':
+        return await tools.memoryRead(params.key);
+      case 'memory_list':
+        return await tools.memoryList();
+      case 'memory_delete':
+        return await tools.memoryDelete(params.key);
+      case 'skill_list':
+        return await tools.skillList();
+      case 'skill_load':
+        return await tools.skillLoad(params.name);
+      case 'skill_save':
+        return await tools.skillSave(params.name, params.description, params.instructions);
+      case 'skill_delete':
+        return await tools.skillDelete(params.name);
+      default:
+        return `Unknown tool: ${toolCall.name}`;
+    }
+  }
+
+  private parseFunctionArgs(argStr: string): Record<string, any> {
+    try {
+      if (typeof argStr === 'string') {
+        return JSON.parse(argStr);
+      }
+      return argStr;
+    } catch {
+      return {};
+    }
+  }
+
+  private sendContextUpdate(ws: WebSocket, promptTokens: number, maxTokens: number): void {
+    this.sendToClient(ws, 'context:update', { promptTokens, maxTokens });
+  }
+
+  private async compactConversation(session: Session, config: any, ws: WebSocket): Promise<void> {
+    const systemMsg = session.messages.find(m => m.role === 'system');
+    const nonSystem = session.messages.filter(m => m.role !== 'system');
+
+    const keepCount = Math.min(4, nonSystem.length);
+    if (nonSystem.length - keepCount < 1) return;
+
+    const toSummarize = nonSystem.slice(0, -keepCount);
+    const keep = nonSystem.slice(-keepCount);
+
+    // Find previous summary to update if it exists
+    const prevSummaryMsg = toSummarize.find(m => m.role === 'system' && m.content.startsWith('Summary of previous conversation:'));
+    const prevSummary = prevSummaryMsg?.content.replace('Summary of previous conversation:\n', '') || undefined;
+    const toSummarizeFiltered = prevSummaryMsg ? toSummarize.filter(m => m !== prevSummaryMsg) : toSummarize;
+
+    const SUMMARY_TEMPLATE = `Output exactly this Markdown structure and keep the section order unchanged:
+
+---
+## Goal
+
+- [single-sentence task summary]
+
+## Constraints & Preferences
+
+- [user constraints, preferences, specs, or "(none)"]
+
+## Accomplished
+
+- [completed work or "(none)"]
+
+### In Progress
+
+- [current work or "(none)"]
+
+### Blocked
+
+- [blockers or "(none)"]
+
+## Key Decisions
+
+- [decision and why, or "(none)"]
+
+## Next Steps
+
+- [ordered next actions or "(none)"]
+
+## Critical Context
+
+- [important technical facts, errors, open questions, or "(none)"]
+
+## Relevant Files
+
+- [file or directory path: why it matters, or "(none)"]
+
+---
+
+Keep every section, even when empty.
+Use terse bullets, not prose paragraphs.
+Preserve exact file paths, commands, error strings, and identifiers when known.
+Do not mention the summary process or that context was compacted.`;
+
+    const anchor = prevSummary
+      ? [
+          'Update the anchored summary below using the conversation history above.',
+          'Preserve still-true details, remove stale details, and merge in the new facts.',
+          '<previous-summary>',
+          prevSummary,
+          '</previous-summary>',
+        ].join('\n')
+      : 'Create a new anchored summary from the conversation history above.';
+
+    const summaryPrompt: Array<Record<string, any>> = [
+      { role: 'system', content: 'You are an anchored context summarization assistant for coding sessions.' },
+      ...toSummarizeFiltered.map(m => {
+        const entry: Record<string, any> = { role: m.role as string, content: m.content };
+        if (m.reasoningContent) entry.reasoning_content = m.reasoningContent;
+        return entry;
+      }),
+      { role: 'user', content: [anchor, SUMMARY_TEMPLATE].join('\n\n') },
+    ];
+
+    try {
+      const openai = this.getOpenAI();
+      const agentCfg = getAgentModel();
+      const beforeTokens = this.estimateSessionTokens(session, config);
+
+      const response = await openai.chat.completions.create({
+        model: agentCfg.model,
+        messages: summaryPrompt as any,
+        max_tokens: 4096,
+        stream: false,
+      });
+
+      const summary = response.choices?.[0]?.message?.content || '';
+      if (!summary) return;
+
+      session.messages = [
+        ...(systemMsg ? [systemMsg] : []),
+        { id: `${session.id}-summary`, role: 'system', content: `Summary of previous conversation:\n${summary}`, timestamp: new Date(), sessionId: session.id },
+        ...keep,
+      ];
+      session.updatedAt = new Date();
+
+      const afterTokens = this.estimateSessionTokens(session, config);
+      const saved = Math.max(0, beforeTokens - afterTokens);
+
+      this.sendToClient(ws, 'context:compacted', {
+        savedTokens: saved,
+        messagesCompacted: toSummarize.length,
+        sessionId: session.id,
+      });
+    } catch (err) {
+      console.error('[agent] compaction failed:', err);
+    }
+  }
+
+  private estimateSessionTokens(session: Session, config: any): number {
+    let total = 0;
+    for (const msg of session.messages) {
+      const content = msg.content || '';
+      total += Math.ceil(content.length / 4) + 10;
+      if (msg.toolCalls) {
+        for (const tc of msg.toolCalls) {
+          total += Math.ceil(JSON.stringify(tc.parameters).length / 4) + 5;
+          if (tc.result) total += Math.ceil(tc.result.length / 4) + 5;
+        }
+      }
+      if (msg.images) total += (msg.images.length * (config.imageTokensPerImage || 1024));
+    }
+    return total;
+  }
+
+  private sendToClient(ws: WebSocket, type: string, data: any): void {
+    try {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type, data }));
+      }
+    } catch {
+      // Connection may be closing
+    }
+  }
+
+  private generateId(): string {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+}
+
+function buildMultimodalContent(text: string, images: string[]): Array<Record<string, any>> {
+  const content: Array<Record<string, any>> = [{ type: 'text', text }];
+  for (const img of images) {
+    content.push({ type: 'image_url', image_url: { url: img } });
+  }
+  return content;
+}
