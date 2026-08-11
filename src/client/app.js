@@ -10,6 +10,10 @@
   const newSessionBtn = document.getElementById('new-session-btn');
   const addProjectBtn = document.getElementById('add-project-btn');
   const micBtn = document.getElementById('mic-btn');
+  const voiceModeBtn = document.getElementById('voice-mode-btn');
+  const voiceStatusEl = document.getElementById('voice-status');
+  const voiceStatusDot = document.getElementById('voice-status-dot');
+  const voiceStatusLabel = document.getElementById('voice-status-label');
   const ttsBtn = document.getElementById('tts-btn');
   const stopBtn = document.getElementById('stop-btn');
   const browserImageEl = document.getElementById('browser-image');
@@ -52,12 +56,24 @@
   let lastAssistantMessage = '';
   let lastAssistantBubble = null;
   let thinkingBubble = null;
+  let thinkingWasShown = false;
   let autoTTS = false;
   let pushToTalk = false;
   let thinkingEnabled = false;
   let pastedImages = [];
+  let pastedFiles = [];
   let enableImagePaste = false;
   let connectedConfig = {};
+
+  // voice mode state
+  let voiceMode = false;
+  let voiceListening = false;
+  let voiceTurnInProgress = false;
+  let voiceStartFailed = false;
+  let voiceGen = 0;
+  let lastVoiceGlobalToggleAt = 0;
+  let voiceSessionStarting = false;
+  let voiceNotifAsked = false;
 
   // tool toggling state
   let toolEnabled = {};
@@ -423,6 +439,8 @@
         thinkingEnabled = data.data.thinkingEnabled === true;
         enableImagePaste = !!data.data.config?.enableImagePaste;
         connectedConfig = data.data.config || {};
+        voiceMode = !!data.data.voiceMode;
+        updateVoiceModeVisual();
         updateUtilitySummary();
         buildModelSelect(data.data.models || [], data.data.activeModel);
         const savedModel = localStorage.getItem('yukiweb_model');
@@ -432,6 +450,9 @@
         loadTree();
         loadSessionMessages(currentSessionId);
         updateThinkingBtnVisual();
+        if (voiceMode) {
+          startVoiceListen();
+        }
         break;
 
       case 'chat:message':
@@ -468,6 +489,14 @@
       case 'thinking:toggled':
         thinkingEnabled = data.data.enabled;
         updateThinkingBtnVisual();
+        break;
+
+      case 'voice:status':
+        syncVoiceMode(!!data.data.enabled);
+        break;
+
+      case 'voice:global-toggle':
+        handleGlobalVoiceToggle();
         break;
 
       case 'chat:response':
@@ -521,9 +550,12 @@
         currentStreamingContent = '';
         if (!data.data.toolCalls || data.data.toolCalls.length === 0) {
           setIsWaiting(false);
-          if (autoTTS && lastAssistantMessage) {
-            playLastResponse();
-          }
+          voiceTurnInProgress = false;
+        }
+        if (voiceMode && lastAssistantMessage) {
+          handleVoiceResponse();
+        } else if (!voiceMode && autoTTS && lastAssistantMessage && (!data.data.toolCalls || data.data.toolCalls.length === 0)) {
+          playLastResponse();
         }
         break;
 
@@ -560,6 +592,7 @@
         activeProjectId = data.data.projectId || 'default';
         thinkingEnabled = data.data.thinkingEnabled === true;
         updateThinkingBtnVisual();
+        syncVoiceMode(!!data.data.voiceMode);
         loadTree();
         loadSessionMessages(currentSessionId);
         break;
@@ -569,6 +602,7 @@
         activeProjectId = data.data.projectId;
         thinkingEnabled = data.data.thinkingEnabled === true;
         updateThinkingBtnVisual();
+        syncVoiceMode(!!data.data.voiceMode);
         loadTree();
         loadSessionMessages(currentSessionId);
         break;
@@ -624,6 +658,8 @@
         setIsWaiting(false);
         lastAssistantMessage = '';
         stopBtn.disabled = true;
+        voiceTurnInProgress = false;
+        if (voiceMode) startVoiceListen();
 
         {
           const el = document.createElement('div');
@@ -671,6 +707,14 @@
     container.innerHTML = '';
 
     if (!text) return;
+
+    if (thinkingWasShown) {
+      text = text
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/<\/?think>/g, '')
+        .replace(/^\s+/, '');
+    }
+
     if (text.indexOf('<think') === -1) {
       container.innerHTML = renderMarkdown(text);
       renderMath(container);
@@ -714,6 +758,7 @@
   // --- Thinking Bubble ---
   function showThinkingBubble() {
     if (thinkingBubble) return;
+    thinkingWasShown = true;
 
     const wrapper = document.createElement('div');
     wrapper.className = 'flex justify-start thinking-wrapper';
@@ -948,8 +993,14 @@
     if (bubble) {
       const contentEl = bubble.querySelector('.message-content');
       if (contentEl) {
-        contentEl.innerHTML = renderMarkdown(newContent);
-        renderMath(contentEl);
+        let renderContent = newContent;
+        if (thinkingWasShown) {
+          renderContent = renderContent
+            .replace(/<think>[\s\S]*?<\/think>/g, '')
+            .replace(/<\/?think>/g, '')
+            .replace(/^\s+/, '');
+        }
+        renderAssistantContent(contentEl, renderContent);
       }
     }
   }
@@ -1068,7 +1119,7 @@ function scrollToBottom() {
     if (waiting && !existing) {
       const el = document.createElement('div');
       el.className = 'typing-indicator flex justify-start';
-      el.innerHTML = '<div class="bg-surface border border-border rounded-2xl rounded-bl-md px-4 py-2 text-xs text-muted">Yuki is thinking<span class="animate-pulse">...</span></div>';
+      el.innerHTML = '<div class="bg-surface border border-border rounded-2xl rounded-bl-md px-4 py-2 text-xs text-muted">Yuki is processing<span class="animate-pulse">...</span></div>';
       messagesEl.appendChild(el);
       scrollToBottom();
     } else if (!waiting && existing) {
@@ -1081,6 +1132,7 @@ function scrollToBottom() {
     lastAssistantMessage = '';
     lastAssistantBubble = null;
     thinkingBubble = null;
+    thinkingWasShown = false;
     updateContextUsage();
   }
 
@@ -1409,6 +1461,7 @@ function scrollToBottom() {
             if (thinkingBubble) {
               finalizeThinkingBubble();
             }
+            thinkingWasShown = false;
             if (msg.reasoningContent) {
               showThinkingBubble();
               updateThinkingBubble(msg.reasoningContent);
@@ -1487,6 +1540,7 @@ function scrollToBottom() {
   }
 
   async function startPushToTalk() {
+    if (voiceMode) return;
     if (AudioRecorder.isRecording) return;
     pushToTalk = true;
     const started = await AudioRecorder.start();
@@ -1546,6 +1600,241 @@ function scrollToBottom() {
       ttsBtn.classList.remove('text-primary', 'bg-surface2');
       ttsBtn.classList.add('text-muted');
       ttsBtn.title = 'Auto TTS: off (click to enable)';
+    }
+  }
+
+  // --- Voice Mode ---
+  function setVoiceStatus(state, detail) {
+    if (!voiceStatusEl || !voiceStatusLabel) return;
+    if (state === 'off') {
+      voiceStatusEl.classList.add('hidden');
+      return;
+    }
+    const states = {
+      listening: { label: detail || 'Listening…', dot: 'bg-success' },
+      transcribing: { label: detail || 'Transcribing…', dot: 'bg-yellow-400' },
+      thinking: { label: detail || 'Waiting for Yuki…', dot: 'bg-yellow-400' },
+      speaking: { label: detail || 'Speaking…', dot: 'bg-primary' },
+      error: { label: detail || 'Voice error', dot: 'bg-danger' },
+    };
+    const s = states[state] || states.listening;
+    voiceStatusLabel.textContent = s.label;
+    if (voiceStatusDot) {
+      voiceStatusDot.className = 'voice-status-dot w-2 h-2 rounded-full ' + s.dot + ' animate-pulse';
+    }
+    voiceStatusEl.classList.remove('hidden');
+  }
+
+  function updateVoiceModeVisual() {
+    if (voiceMode) {
+      voiceModeBtn.classList.remove('text-muted');
+      voiceModeBtn.classList.add('text-primary', 'bg-surface2');
+      voiceModeBtn.title = 'Voice mode: on (click to exit)';
+    } else {
+      voiceModeBtn.classList.remove('text-primary', 'bg-surface2');
+      voiceModeBtn.classList.add('text-muted');
+      voiceModeBtn.title = 'Voice mode — continuous voice conversation (Ctrl+Alt+V)';
+    }
+  }
+
+  function syncVoiceMode(enabled) {
+    if (enabled === voiceMode) return;
+    voiceMode = enabled;
+    if (voiceMode) {
+      updateVoiceModeVisual();
+      updateVoiceTitle();
+      startVoiceListen();
+    } else {
+      voiceTurnInProgress = false;
+      voiceListening = false;
+      voiceGen++;
+      if (AudioRecorder.isRecording) AudioRecorder.stopRecording();
+      AudioPlayer.stop();
+      setVoiceStatus('off');
+      updateVoiceModeVisual();
+      updateVoiceTitle();
+    }
+  }
+
+  function toggleVoiceMode() {
+    if (voiceMode) {
+      if (voiceStartFailed) {
+        voiceStartFailed = false;
+        startVoiceListen();
+        return;
+      }
+      exitVoiceMode();
+    } else {
+      enterVoiceMode();
+    }
+  }
+
+  function enterVoiceMode() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (AudioRecorder.isRecording) AudioRecorder.stopRecording();
+    AudioPlayer.stop();
+    AudioPlayer.ensureUnlocked();
+    voiceMode = true;
+    voiceTurnInProgress = false;
+    voiceGen = 0;
+    ensureNotificationPermission();
+    updateVoiceModeVisual();
+    updateVoiceTitle();
+    send('voice:toggle', { enabled: true });
+    startVoiceListen();
+  }
+
+  function exitVoiceMode() {
+    voiceMode = false;
+    voiceTurnInProgress = false;
+    voiceListening = false;
+    voiceGen++;
+    if (AudioRecorder.isRecording) AudioRecorder.stopRecording();
+    AudioPlayer.stop();
+    setVoiceStatus('off');
+    updateVoiceModeVisual();
+    updateVoiceTitle();
+    send('voice:toggle', { enabled: false });
+    console.log('[voice] mode off');
+  }
+
+  async function startVoiceListen() {
+    if (!voiceMode || voiceTurnInProgress || isWaiting) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (AudioRecorder.isRecording) return;
+    voiceListening = true;
+    setVoiceStatus('listening');
+    console.log('[voice] listening start');
+    const started = await AudioRecorder.startContinuous(
+      (hadVoice) => stopVoiceListen(hadVoice),
+      1200,
+      30000
+    );
+    if (!started) {
+      voiceListening = false;
+      voiceStartFailed = true;
+      setVoiceStatus('error', 'Microphone unavailable');
+      console.error('Voice mode: failed to start listening');
+    } else {
+      voiceStartFailed = false;
+    }
+  }
+
+  async function stopVoiceListen(hadVoice) {
+    if (!AudioRecorder.isRecording) return;
+    const base64 = await AudioRecorder.stop();
+    voiceListening = false;
+    console.log(`[voice] utterance stopped hadVoice=${!!hadVoice} base64=${base64 ? Math.round(base64.length / 1024) : 0}KB`);
+    if (!voiceMode) return;
+    if (!hadVoice || !base64) {
+      startVoiceListen();
+      return;
+    }
+    setVoiceStatus('transcribing');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60000);
+    try {
+      const res = await fetch('/api/audio/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64: base64 }),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      const text = (data.text || '').trim();
+      console.log('[voice] transcription:', JSON.stringify(text.slice(0, 120)), 'error:', data.error || '');
+      if (!text) {
+        setVoiceStatus('listening');
+        setTimeout(() => { if (voiceMode) startVoiceListen(); }, 400);
+        return;
+      }
+      voiceTurnInProgress = true;
+      appendMessage('user', text);
+      send('chat:message', { message: text });
+      setVoiceStatus('thinking');
+      setIsWaiting(true);
+    } catch (err) {
+      console.error('Transcription failed:', err);
+      setVoiceStatus('error', 'Transcription failed');
+      setTimeout(() => { if (voiceMode) startVoiceListen(); }, 800);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function handleVoiceResponse() {
+    if (!voiceMode) return;
+    const gen = ++voiceGen;
+    if (lastAssistantMessage) {
+      setVoiceStatus('speaking');
+      await AudioPlayer.playSynthesized(lastAssistantMessage);
+    }
+    // A newer response (or exiting voice mode) supersedes this one.
+    if (!voiceMode || gen !== voiceGen) return;
+    if (voiceTurnInProgress || isWaiting) {
+      setVoiceStatus('thinking');
+    } else {
+      setVoiceStatus('listening');
+      startVoiceListen();
+    }
+  }
+
+  function updateVoiceTitle() {
+    document.title = voiceMode ? '🎤 Yuki — Voice mode' : 'Yuki';
+  }
+
+  function ensureNotificationPermission() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'default' || voiceNotifAsked) return;
+    voiceNotifAsked = true;
+    try { Notification.requestPermission().catch(() => {}); } catch {}
+  }
+
+  function notifyVoiceActive() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    try {
+      new Notification('Yuki — Voice mode', {
+        body: 'Voice mode is active. Press Ctrl+Alt+V or use the tray icon to stop.',
+        tag: 'yuki-voice',
+      });
+    } catch {}
+  }
+
+  function handleGlobalVoiceToggle() {
+    const now = Date.now();
+    if (now - lastVoiceGlobalToggleAt < 400) return;
+    lastVoiceGlobalToggleAt = now;
+    if (voiceMode) {
+      exitVoiceMode();
+      return;
+    }
+    startVoiceSessionAndMode();
+  }
+
+  async function startVoiceSessionAndMode() {
+    if (voiceSessionStarting || voiceMode) return;
+    voiceSessionStarting = true;
+    try {
+      const projRes = await fetch('/api/projects');
+      const projects = await projRes.json();
+      let voiceProject = (projects || []).find(p => String(p.name || '').toLowerCase() === 'voice');
+      if (!voiceProject) {
+        const createRes = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Voice' }),
+        });
+        const created = await createRes.json();
+        voiceProject = { id: created.id, name: created.name };
+      }
+      await createSession(voiceProject.id);
+      enterVoiceMode();
+      if (document.hidden) notifyVoiceActive();
+    } catch (err) {
+      console.error('Failed to start voice session:', err);
+    } finally {
+      voiceSessionStarting = false;
     }
   }
 
@@ -1635,16 +1924,111 @@ function scrollToBottom() {
     }
   });
 
+  function addFilePreview(file) {
+    pastedFiles.push(file);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-center gap-2 bg-surface2 border border-border rounded-lg px-3 py-1.5 text-xs text-text';
+
+    const icon = document.createElement('span');
+    icon.textContent = '📄';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'font-medium max-w-[200px] truncate';
+    nameSpan.textContent = file.name;
+
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'text-muted';
+    sizeSpan.textContent = (file.size / 1024).toFixed(1) + ' KB';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'w-4 h-4 bg-danger text-white rounded-full text-[10px] flex items-center justify-center hover:bg-danger/80 transition-colors shrink-0';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => {
+      pastedFiles = pastedFiles.filter((f) => f !== file);
+      wrapper.remove();
+      if (pastedFiles.length === 0 && pastedImages.length === 0) imagePreview.classList.add('hidden');
+    });
+
+    wrapper.appendChild(icon);
+    wrapper.appendChild(nameSpan);
+    wrapper.appendChild(sizeSpan);
+    wrapper.appendChild(removeBtn);
+    imagePreview.appendChild(wrapper);
+    imagePreview.classList.remove('hidden');
+  }
+
+  async function handleDroppedFiles(fileList) {
+    for (const file of fileList) {
+      if (!file) continue;
+      if (file.type.startsWith('image/')) {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          const compressed = await compressImage(dataUrl, 800, 0.5);
+          addImagePreview(compressed);
+        } catch (err) {
+          console.error('Failed to read image:', err);
+        }
+      } else {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          addFilePreview({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, dataUrl });
+        } catch (err) {
+          console.error('Failed to read file:', err);
+        }
+      }
+    }
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Drag & drop any file onto the input area as context
+  const dropZone = document.getElementById('input-form').parentElement;
+  let dragDepth = 0;
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  dropZone.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragDepth++;
+    dropZone.classList.add('drop-active');
+  });
+  dropZone.addEventListener('dragleave', () => {
+    dragDepth--;
+    if (dragDepth <= 0) {
+      dragDepth = 0;
+      dropZone.classList.remove('drop-active');
+    }
+  });
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    dropZone.classList.remove('drop-active');
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length > 0) {
+      handleDroppedFiles(files);
+    }
+  });
+
   // --- Event Listeners ---
   inputForm.addEventListener('submit', (e) => {
     e.preventDefault();
 
     const message = messageInput.value.trim();
-    if ((!message && pastedImages.length === 0) || isWaiting || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if ((!message && pastedImages.length === 0 && pastedFiles.length === 0) || isWaiting || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-    const text = message || '(attached image)';
+    const text = message || '(attached file)';
 
     thinkingBubble = null;
+    thinkingWasShown = false;
     currentStreamingContent = '';
     appendMessage('user', text);
 
@@ -1652,12 +2036,16 @@ function scrollToBottom() {
     if (pastedImages.length > 0) {
       data.images = pastedImages;
     }
+    if (pastedFiles.length > 0) {
+      data.files = pastedFiles;
+    }
 
     send('chat:message', data);
     AudioPlayer.stop();
     messageInput.value = '';
     messageInput.style.height = 'auto';
     pastedImages = [];
+    pastedFiles = [];
     imagePreview.innerHTML = '';
     imagePreview.classList.add('hidden');
     setIsWaiting(true);
@@ -1739,12 +2127,18 @@ function scrollToBottom() {
   });
 
   micBtn.addEventListener('click', () => {
+    if (voiceMode) {
+      exitVoiceMode();
+      return;
+    }
     if (AudioRecorder.isRecording) {
       stopRecordingAndTranscribe();
     } else {
       toggleRecording();
     }
   });
+
+  voiceModeBtn.addEventListener('click', toggleVoiceMode);
 
   ttsBtn.addEventListener('click', () => setAutoTTS(!autoTTS));
 
@@ -2039,14 +2433,33 @@ function scrollToBottom() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && isWaiting) {
+    if (e.key === 'Escape' && (isWaiting || AudioPlayer.isPlaying)) {
       e.preventDefault();
-      handleStop();
+      AudioPlayer.stop();
+      if (isWaiting) {
+        handleStop();
+      }
     }
     if (e.ctrlKey && e.key === 'm') {
       e.preventDefault();
-      micBtn.click();
+      if (voiceMode) {
+        exitVoiceMode();
+      } else {
+        micBtn.click();
+      }
     }
+    if (e.ctrlKey && e.altKey && e.code === 'KeyV') {
+      e.preventDefault();
+      handleGlobalVoiceToggle();
+    }
+  });
+
+  // Notify when voice mode is active and the UI is not focused
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && voiceMode) notifyVoiceActive();
+  });
+  window.addEventListener('blur', () => {
+    if (voiceMode) notifyVoiceActive();
   });
 
   // Start

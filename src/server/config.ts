@@ -6,6 +6,7 @@ import { Config, ContextManagementConfig, ModelConfig } from '../shared/types';
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
 const configPath = path.join(configDir, 'config.json');
 const systemPromptPath = path.join(configDir, 'system_prompt.txt');
+const voiceSystemPromptPath = path.join(configDir, 'voice_system_prompt.txt');
 
 const defaultModelConfig: ModelConfig = {
   endpoint: 'http://debby:1234/v1',
@@ -80,6 +81,20 @@ export function loadEnvFile(): void {
 
 let config: Config = defaultConfig;
 let activeModelName: string | undefined;
+let thinkingOverride: boolean | undefined = undefined;
+
+export function setThinkingOverride(enabled: boolean): void {
+  thinkingOverride = enabled;
+}
+
+export function getThinkingOverride(): boolean | undefined {
+  return thinkingOverride;
+}
+
+export function getEffectiveThinking(name?: string): boolean {
+  if (thinkingOverride !== undefined) return thinkingOverride;
+  return getModelDefaultThinking(name);
+}
 
 function normalizeModelConfig(src: any, fallback?: ModelConfig): ModelConfig {
   return {
@@ -163,6 +178,10 @@ export function loadConfig(): Config {
       if (!activeModelName) {
         activeModelName = config.defaultModel || getNamedModels()[0]?.name;
       }
+
+      if (loaded.thinkingEnabled !== undefined) {
+        thinkingOverride = loaded.thinkingEnabled;
+      }
     }
   } catch (err) {
     console.error('Failed to load config, using defaults:', err);
@@ -218,4 +237,38 @@ When you need to find information online, ALWAYS use web_search first. Only use 
   }
 
   return defaultPrompt;
+}
+
+export function loadVoiceSystemPrompt(): string {
+  try {
+    if (fs.existsSync(voiceSystemPromptPath)) {
+      return fs.readFileSync(voiceSystemPromptPath, 'utf-8');
+    }
+  } catch (err) {
+    console.error('Failed to load voice system prompt:', err);
+  }
+
+  const defaultVoicePrompt = `You are Yuki, a helpful and friendly AI assistant speaking to the user by voice.
+
+## Voice Response Style
+
+- Respond conversationally, exactly as you would say it out loud.
+- Use NO markdown formatting: no headings, bold, italics, lists, tables, code blocks, or bullet points.
+- Do not use symbols or abbreviations that are awkward to read aloud (e.g. "->", "=>", "a.k.a."). Spell them out.
+- Keep answers concise so they read back quickly. Aim for a few short sentences unless the user asks for more detail.
+- Answer yes/no questions with a clear yes or no first, then a brief explanation.
+- If you need to use tools, do so silently and report the outcome in plain spoken language.
+- For complex tasks, say briefly what you are doing, then give the result conversationally.
+- Never output raw code, file paths, or commands unless the user explicitly asks; if you must, keep them minimal and say them naturally.`;
+
+  try {
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+    fs.writeFileSync(voiceSystemPromptPath, defaultVoicePrompt);
+  } catch (err) {
+    console.error('Failed to write default voice system prompt:', err);
+  }
+
+  return defaultVoicePrompt;
 }

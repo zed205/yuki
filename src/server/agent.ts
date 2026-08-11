@@ -1,11 +1,13 @@
 import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
 import OpenAI from 'openai';
 import { WebSocket } from 'ws';
 import { getConfig } from './config';
 import { tools, toolDefinitions, planToolNames } from './tools';
-import { Message, ToolCall, Session, Plan, PlanStep } from '../shared/types';
+import { Message, ToolCall, Session, Plan, PlanStep, Attachment } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
-import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels } from './config';
+import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking } from './config';
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -72,16 +74,23 @@ export class Agent {
     this.mcp = mcp || null;
   }
 
+  private currentAttachments: Attachment[] = [];
+
   async chat(
     userMessage: string,
     session: Session,
     ws: WebSocket,
     images: string[] = [],
+    attachments: Attachment[] = [],
   ): Promise<void> {
     this.cancelled = false;
+    this.currentAttachments = attachments || [];
     this.abortController = new AbortController();
-    const config = { ...getConfig(), thinkingEnabled: session.thinkingEnabled };
-    const systemPrompt = session.messages.find((m) => m.role === 'system')?.content || '';
+    const config = { ...getConfig() };
+    let systemPrompt = session.messages.find((m) => m.role === 'system')?.content || '';
+    if (session.voiceMode) {
+      systemPrompt = loadVoiceSystemPrompt();
+    }
 
     const project = getProject(session.projectId || 'default');
     this.currentProjectPath = project?.path || '';
@@ -136,7 +145,7 @@ export class Agent {
 
     messages.push({
       role: 'user',
-      content: images.length > 0 ? buildMultimodalContent(userMessage, images) : userMessage,
+      content: buildUserContent(userMessage, images, this.currentAttachments),
     });
 
     let iterations = 0;
@@ -414,7 +423,7 @@ export class Agent {
       }
     }
 
-    const thinkingEnabled = config.thinkingEnabled ?? agentCfg.thinkingEnabled ?? getConfig().thinkingEnabled ?? false;
+    const thinkingEnabled = getEffectiveThinking(targetModel);
     if (thinkingEnabled) {
       createParams.chat_template_kwargs = { enable_thinking: true, preserve_thinking: agentCfg.preserveThinking ?? true };
       createParams.thinking_budget_tokens = agentCfg.maxTokens === -1 ? 16000 : Math.min(agentCfg.maxTokens || 16000, 64384);
@@ -614,8 +623,50 @@ export class Agent {
         return await tools.skillSave(params.name, params.description, params.instructions);
       case 'skill_delete':
         return await tools.skillDelete(params.name);
+      case 'attachment_list':
+        return this.listAttachments();
+      case 'save_attached_file':
+        return await this.saveAttachedFile(params.index, params.filename);
       default:
         return `Unknown tool: ${toolCall.name}`;
+    }
+  }
+
+  private listAttachments(): string {
+    if (this.currentAttachments.length === 0) {
+      return 'No file attachments on the current user message.';
+    }
+    return this.currentAttachments
+      .map((a, i) => `[${i}] ${a.name} (${a.type}, ${a.size} bytes${a.isImage ? ', image' : ''})`)
+      .join('\n');
+  }
+
+  private async saveAttachedFile(index: number, filename?: string): Promise<string> {
+    const att = this.currentAttachments[index];
+    if (!att) {
+      return `No attachment at index ${index}. Use attachment_list to see available attachments.`;
+    }
+
+    const targetName = filename && filename.trim() ? path.basename(filename.trim()) : att.name;
+    const targetDir = this.currentProjectPath || process.cwd();
+    const targetPath = path.join(targetDir, targetName);
+
+    try {
+      if (fs.existsSync(att.path)) {
+        fs.copyFileSync(att.path, targetPath);
+      } else if (att.dataUrl) {
+        const m = att.dataUrl.match(/^data:([^;]+);base64,(.*)$/s);
+        if (m) {
+          fs.writeFileSync(targetPath, Buffer.from(m[2], 'base64'));
+        } else {
+          fs.writeFileSync(targetPath, att.dataUrl, 'utf-8');
+        }
+      } else {
+        return `Attachment data not available for: ${att.name}`;
+      }
+      return `Saved ${att.name} to ${targetPath}`;
+    } catch (err: any) {
+      return `Failed to save attachment: ${err.message}`;
     }
   }
 
@@ -786,5 +837,52 @@ function buildMultimodalContent(text: string, images: string[]): Array<Record<st
   for (const img of images) {
     content.push({ type: 'image_url', image_url: { url: img } });
   }
+  return content;
+}
+
+const TEXT_MIME_HINTS = /^(text\/|application\/(json|xml|javascript|x-javascript|yaml|yml|toml|sql|sh|shell|python|csv|rtf))|\.(txt|md|json|xml|js|ts|py|rb|go|rs|java|c|cpp|h|cs|html|css|scss|sh|yaml|yml|toml|ini|conf|cfg|log|csv|sql|env|gitignore|dockerfile)$/i;
+
+function buildUserContent(text: string, images: string[], attachments: Attachment[]): string | Array<Record<string, any>> {
+  const content: Array<Record<string, any>> = [];
+  const textChunks: string[] = [];
+  const visionUrls = new Set<string>();
+
+  if (text) textChunks.push(text);
+
+  // Pasted images — always sent as vision parts
+  for (const img of images) {
+    visionUrls.add(img);
+    content.push({ type: 'image_url', image_url: { url: img } });
+  }
+
+  for (let i = 0; i < attachments.length; i++) {
+    const att = attachments[i];
+
+    if (att.isImage) {
+      if (att.dataUrl && !visionUrls.has(att.dataUrl)) {
+        visionUrls.add(att.dataUrl);
+        content.push({ type: 'image_url', image_url: { url: att.dataUrl } });
+      }
+      textChunks.push(`\n\n[Attached image ${i}: ${att.name} (${att.type}, ${att.size} bytes). The user pasted/shared this image. Describe what you see in it. If you need to save it to disk, call save_attached_file with index=${i}.]`);
+      continue;
+    }
+
+    let textFile = '';
+    if (TEXT_MIME_HINTS.test(`${att.name}`)) {
+      try {
+        textFile = fs.readFileSync(att.path, 'utf-8').slice(0, 40000);
+      } catch { /* ignore */ }
+    }
+
+    if (textFile) {
+      textChunks.push(`\n\n[Attachment ${i}: ${att.name} (${att.type}, ${att.size} bytes)]\n\`\`\`\n${textFile}\n\`\`\``);
+    } else {
+      textChunks.push(`\n\n[Attachment ${i}: ${att.name} (${att.type}, ${att.size} bytes). The full file is available on disk — use attachment_list and save_attached_file to read or save it.]`);
+    }
+  }
+
+  if (content.length === 0) return textChunks.join('');
+
+  content.unshift({ type: 'text', text: textChunks.join('') });
   return content;
 }

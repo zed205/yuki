@@ -1,7 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadConfig, loadSystemPrompt, saveConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, loadEnvFile } from './config';
+import { loadConfig, loadSystemPrompt, saveConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile } from './config';
 import { Agent } from './agent';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -10,7 +10,7 @@ import { MCPManager } from './mcp';
 import { toolNames } from './tools';
 import { planGet, loadPlans } from './plan';
 import { loadProjects, getProjects, getProject, createProject, renameProject, deleteProject, reorderProjects } from './project';
-import { Session, Message } from '../shared/types';
+import { Session, Message, Attachment } from '../shared/types';
 import * as fs from 'fs';
 import * as os from 'os';
 
@@ -25,11 +25,87 @@ app.use(express.static(path.join(__dirname, '..', 'client')));
 
 const sessions: Map<string, Session> = new Map();
 const sessionDataDir = path.join(os.homedir(), '.config', 'yukiweb', 'sessions');
+const attachmentsDir = path.join(os.homedir(), '.config', 'yukiweb', 'attachments');
 
 function ensureSessionDir(): void {
   if (!fs.existsSync(sessionDataDir)) {
     fs.mkdirSync(sessionDataDir, { recursive: true });
   }
+}
+
+// Decode data URLs for dropped files, write them to disk, and return attachment
+// metadata to store on the user message.
+function persistAttachments(
+  files: Array<{ name: string; type: string; dataUrl: string }>,
+  sessionId: string,
+  msgId: string,
+): Attachment[] {
+  const dir = path.join(attachmentsDir, sessionId, msgId);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const attachments: Attachment[] = [];
+  for (const file of files) {
+    try {
+      const m = file.dataUrl.match(/^data:([^;]+);base64,(.*)$/s);
+      const type = file.type || (m ? m[1] : 'application/octet-stream');
+      const safeName = path.basename(file.name || `attachment_${attachments.length + 1}`);
+      const targetPath = path.join(dir, safeName);
+      let size = 0;
+
+      if (m) {
+        const buf = Buffer.from(m[2], 'base64');
+        fs.writeFileSync(targetPath, buf);
+        size = buf.length;
+      } else {
+        const content = file.dataUrl;
+        fs.writeFileSync(targetPath, content, 'utf-8');
+        size = Buffer.byteLength(content);
+      }
+
+      attachments.push({
+        name: safeName,
+        type,
+        path: targetPath,
+        size,
+        isImage: /^image\//i.test(type),
+        dataUrl: file.dataUrl,
+      });
+    } catch (err: any) {
+      console.error('Failed to persist attachment:', err);
+    }
+  }
+  return attachments;
+}
+
+// Treat pasted images as first-class attachments too, so attachment_list can
+// list them and save_attached_file can write them to disk.
+function persistImages(images: string[], sessionId: string, msgId: string, startIndex: number): Attachment[] {
+  const dir = path.join(attachmentsDir, sessionId, msgId);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const attachments: Attachment[] = [];
+  for (let i = 0; i < images.length; i++) {
+    const dataUrl = images[i];
+    try {
+      const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/s);
+      const type = m ? m[1] : 'image/png';
+      const ext = m ? (m[1].split('/')[1] || 'png').replace('jpeg', 'jpg') : 'png';
+      const name = `pasted_image_${startIndex + i + 1}.${ext}`;
+      const targetPath = path.join(dir, name);
+      let size = 0;
+      if (m) {
+        const buf = Buffer.from(m[2], 'base64');
+        fs.writeFileSync(targetPath, buf);
+        size = buf.length;
+      }
+      // dataUrl is intentionally omitted — pasted images are already stored in
+      // msg.images (used for vision), and the on-disk file covers save_attached_file.
+      attachments.push({ name, type, path: targetPath, size, isImage: true });
+    } catch (err: any) {
+      console.error('Failed to persist pasted image:', err);
+    }
+  }
+  return attachments;
 }
 
 function saveSession(session: Session): void {
@@ -65,6 +141,7 @@ function loadSessions(): void {
         title: data.title,
         projectId: data.projectId || 'default',
         thinkingEnabled: data.thinkingEnabled,
+        voiceMode: data.voiceMode,
         createdAt: new Date(data.createdAt),
         updatedAt: new Date(data.updatedAt),
         messages: data.messages.map((m: any) => ({
@@ -360,6 +437,17 @@ app.post('/api/audio/synthesize', async (req, res) => {
   }
 });
 
+// --- Voice global toggle (from tray global hotkey / tray menu) ---
+app.post('/api/voice/global-toggle', (_req, res) => {
+  const payload = JSON.stringify({ type: 'voice:global-toggle', data: {} });
+  for (const client of wss.clients) {
+    if (client.readyState === 1) {
+      client.send(payload);
+    }
+  }
+  res.json({ success: true });
+});
+
 // --- Desktop screenshot ---
 app.get('/api/desktop/screenshot', async (_req, res) => {
   try {
@@ -490,7 +578,8 @@ wss.on('connection', (ws) => {
     data: {
       sessionId: session.id,
       activeProjectId: session.projectId || 'default',
-      thinkingEnabled: session.thinkingEnabled ?? getModelDefaultThinking(),
+      thinkingEnabled: getEffectiveThinking(),
+      voiceMode: session.voiceMode === true,
       projects: getProjects().map(p => ({ id: p.id, name: p.name })),
       config: {
         enableImagePaste: loadConfig().ui.enableImagePaste,
@@ -526,15 +615,28 @@ wss.on('connection', (ws) => {
       if (message.type === 'chat:message') {
         const userMsg = message.data.message;
         const images: string[] = message.data.images || [];
+        const files: Array<{ name: string; type: string; dataUrl: string }> = message.data.files || [];
 
+        const msgId = `${session.id}-${Date.now()}`;
         const userMessage: Message = {
-          id: `${session.id}-${Date.now()}`,
+          id: msgId,
           role: 'user',
           content: userMsg,
           timestamp: new Date(),
           sessionId: session.id,
           images: images.length > 0 ? images : undefined,
         };
+
+        if (files.length > 0 || images.length > 0) {
+          const allAttachments: Attachment[] = [];
+          if (files.length > 0) {
+            allAttachments.push(...persistAttachments(files, session.id, msgId));
+          }
+          if (images.length > 0) {
+            allAttachments.push(...persistImages(images, session.id, msgId, allAttachments.length));
+          }
+          userMessage.attachments = allAttachments;
+        }
 
         session.messages.push(userMessage);
         session.updatedAt = new Date();
@@ -554,7 +656,7 @@ wss.on('connection', (ws) => {
           },
         }));
 
-        agent.chat(userMsg, session, ws, images)
+        agent.chat(userMsg, session, ws, images, userMessage.attachments)
         .then(() => saveSession(session))
         .catch((err) => {
           console.error('Agent error:', err);
@@ -575,7 +677,7 @@ wss.on('connection', (ws) => {
           const switchedSession = sessions.get(id)!;
           ws.send(JSON.stringify({
             type: 'session:switched',
-            data: { sessionId: id, projectId: switchedSession.projectId, thinkingEnabled: switchedSession.thinkingEnabled ?? getModelDefaultThinking() },
+            data: { sessionId: id, projectId: switchedSession.projectId, thinkingEnabled: getEffectiveThinking(), voiceMode: switchedSession.voiceMode === true },
           }));
           sendPlanUpdate(ws, id);
           sendContextUpdate(ws, switchedSession);
@@ -605,7 +707,8 @@ wss.on('connection', (ws) => {
             data: {
               projectId,
               sessionId: targetSession.id,
-              thinkingEnabled: targetSession.thinkingEnabled ?? getModelDefaultThinking(),
+              thinkingEnabled: getEffectiveThinking(),
+              voiceMode: targetSession.voiceMode === true,
               projects: getProjects().map(p => ({ id: p.id, name: p.name })),
             },
           }));
@@ -625,10 +728,21 @@ wss.on('connection', (ws) => {
 
       if (message.type === 'thinking:toggle') {
         const enabled = message.data.enabled;
-        session.thinkingEnabled = enabled;
-        saveSession(session);
+        setThinkingOverride(enabled);
+        saveConfig({ ...loadConfig(), thinkingEnabled: enabled });
         ws.send(JSON.stringify({
           type: 'thinking:toggled',
+          data: { enabled, sessionId: session.id },
+        }));
+      }
+
+      if (message.type === 'voice:toggle') {
+        const enabled = !!message.data.enabled;
+        session.voiceMode = enabled;
+        session.updatedAt = new Date();
+        saveSession(session);
+        ws.send(JSON.stringify({
+          type: 'voice:status',
           data: { enabled, sessionId: session.id },
         }));
       }
@@ -755,7 +869,7 @@ wss.on('connection', (ws) => {
               model: agentCfg.model,
               endpoint: agentCfg.endpoint,
               contextWindow: agentCfg.contextWindow,
-              thinkingEnabled: session.thinkingEnabled ?? getModelDefaultThinking(modelName),
+              thinkingEnabled: getEffectiveThinking(),
               preserveThinking: agentCfg.preserveThinking ?? true,
             },
           }));

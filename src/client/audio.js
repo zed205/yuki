@@ -32,6 +32,94 @@ const AudioRecorder = {
     }
   },
 
+  // Continuous recording with voice-activity detection. Calls onSilence(hadVoice)
+  // after speech is detected and the signal then stays quiet for
+  // silenceDurationMs (or after maxDurationMs total). Call AudioRecorder.stop()
+  // to retrieve the audio. hadVoice is true if any voiced audio was detected.
+  async startContinuous(onSilence, silenceDurationMs = 1200, maxDurationMs = 30000) {
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+
+      this.audioChunks = [];
+      this.mediaRecorder = new MediaRecorder(this.stream);
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          this.audioChunks.push(e.data);
+        }
+      };
+      this.mediaRecorder.start();
+      this.isRecording = true;
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(this.stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+
+      const levelData = new Uint8Array(analyser.fftSize);
+      const startedAt = Date.now();
+      let lastVoiced = startedAt;
+      let hasVoiced = false;
+      let noiseFloor = 0.005;
+      let stopped = false;
+      let timer = null;
+
+      const finish = () => {
+        if (stopped) return;
+        stopped = true;
+        if (timer) clearInterval(timer);
+        try { source.disconnect(); } catch {}
+        try { audioCtx.close(); } catch {}
+        if (onSilence) onSilence(hasVoiced);
+      };
+
+      const pollLevel = () => {
+        if (stopped) return;
+        const now = Date.now();
+        if (now - startedAt > maxDurationMs) {
+          finish();
+          return;
+        }
+        analyser.getByteTimeDomainData(levelData);
+        let sum = 0;
+        for (let i = 0; i < levelData.length; i++) {
+          const v = (levelData[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / levelData.length);
+
+        // Adaptive noise floor: track down fast, decay up very slowly.
+        if (rms < noiseFloor) {
+          noiseFloor = rms;
+        } else {
+          noiseFloor = Math.max(0.002, noiseFloor * 0.9999);
+        }
+        const threshold = Math.max(0.01, noiseFloor * 2.5);
+
+        if (rms > threshold) {
+          hasVoiced = true;
+          lastVoiced = now;
+        } else if (hasVoiced && now - lastVoiced > silenceDurationMs) {
+          finish();
+          return;
+        }
+      };
+
+      timer = setInterval(pollLevel, 100);
+      return true;
+    } catch (err) {
+      console.error('Failed to start continuous recording:', err);
+      return false;
+    }
+  },
+
   async stop() {
     return new Promise((resolve) => {
       if (!this.mediaRecorder) {
@@ -79,6 +167,17 @@ const AudioPlayer = {
   audioContext: null,
   currentSource: null,
 
+  // Create/resume the AudioContext inside a user gesture so later
+  // playback is allowed by the autoplay policy.
+  ensureUnlocked() {
+    if (!this.audioContext) {
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume().catch(() => {});
+    }
+  },
+
   async playBase64(base64Data, mimeType = 'audio/wav') {
     try {
       const binary = atob(base64Data);
@@ -89,6 +188,9 @@ const AudioPlayer = {
 
       if (!this.audioContext) {
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
       }
 
       const buffer = await this.audioContext.decodeAudioData(bytes.buffer);
@@ -103,7 +205,14 @@ const AudioPlayer = {
       source.start();
       this.currentSource = source;
 
-      return true;
+      return new Promise((resolve) => {
+        source.onended = () => {
+          if (this.currentSource === source) {
+            this.currentSource = null;
+          }
+          resolve(true);
+        };
+      });
     } catch (err) {
       console.error('Failed to play audio:', err);
       return false;
@@ -153,6 +262,10 @@ const AudioPlayer = {
       console.error('Failed to synthesize audio:', err);
       return false;
     }
+  },
+
+  get isPlaying() {
+    return !!this.currentSource;
   },
 
   stop() {

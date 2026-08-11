@@ -99,6 +99,15 @@ export interface Plan {
 }
 
 // Message types
+export interface Attachment {
+  name: string;
+  type: string;        // MIME type
+  path: string;        // absolute path to the file on disk (server-side)
+  size: number;
+  isImage: boolean;
+  dataUrl?: string;    // raw data URL (kept for images / small text files)
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -108,6 +117,7 @@ export interface Message {
   reasoningContent?: string;
   sessionId: string;
   images?: string[];
+  attachments?: Attachment[];
   pruned?: boolean;
 }
 
@@ -137,6 +147,7 @@ export interface Session {
   title?: string;
   projectId?: string;
   thinkingEnabled?: boolean;
+  voiceMode?: boolean;
 }
 
 // WebSocket event types

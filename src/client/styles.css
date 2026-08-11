@@ -371,6 +371,13 @@ body.resizing-sidebar {
   display: none !important;
 }
 
+/* Drop zone highlight */
+.drop-active {
+  outline: 2px dashed #58a6ff;
+  outline-offset: -2px;
+  background: rgba(88, 166, 255, 0.08);
+}
+
 /* --- jsTree dark tree (Project > Sessions) --- */
 #session-tree,
 #session-tree.jstree-focused {

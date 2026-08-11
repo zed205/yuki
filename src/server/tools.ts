@@ -18,6 +18,20 @@ const turndown = new TurndownService({
   hr: '---',
 });
 
+// Drop <img> elements that embed data URIs (base64/svg data blobs) — they
+// produce enormous markdown like ![alt](data:image/svg+xml;base64,...).
+turndown.addRule('dropDataImages', {
+  filter: (node: any) => node.nodeName === 'IMG' && /^data:/i.test(node.getAttribute('src') || ''),
+  replacement: () => '',
+});
+
+// Strip any remaining markdown image/link references to data: URIs.
+function stripDataUris(markdown: string): string {
+  return markdown
+    .replace(/!?\[[^\]]*\]\(data:[^)]*\)/gi, '')
+    .replace(/data:(?:image|audio|video|font)\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '');
+}
+
 function globToRegex(pattern: string): RegExp {
   let regexStr = '';
   let i = 0;
@@ -571,7 +585,7 @@ export async function toolWebFetch(url: string, format?: string): Promise<string
         .replace(/<link[^>]*>/gi, '')
         .replace(/<meta[^>]*>/gi, '')
         .replace(/<!--[\s\S]*?-->/g, '');
-      const markdown = turndown.turndown(cleaned) || html;
+      const markdown = stripDataUris(turndown.turndown(cleaned) || html);
       const savedPath = saveFullOutput(markdown, 'fetch_txt');
       const totalLines = markdown.split('\n').length;
       const totalKB = (markdown.length / 1024).toFixed(0);
@@ -596,7 +610,7 @@ export async function toolWebFetch(url: string, format?: string): Promise<string
       .replace(/<meta[^>]*>/gi, '')
       .replace(/<!--[\s\S]*?-->/g, '');
 
-    const markdown = turndown.turndown(cleaned);
+    const markdown = stripDataUris(turndown.turndown(cleaned));
     if (!markdown.trim()) {
       return 'No readable content found on the page.';
     }
@@ -1140,6 +1154,33 @@ export const toolDefinitions = [
         type: 'object',
         properties: {},
         required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'attachment_list',
+      description: 'List the files attached to the current user message. Returns index, filename, type, and size for each attachment. Use save_attached_file with the index to save one to disk.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'save_attached_file',
+      description: 'Save an attached file (a pasted image or a dropped file) from the current user message to the working directory on disk. Provide the attachment index from attachment_list and an optional target filename. Use this to download attached files to the project directory.',
+      parameters: {
+        type: 'object',
+        properties: {
+          index: { type: 'number', description: '0-based index of the attachment (see attachment_list)' },
+          filename: { type: 'string', description: 'Optional target filename in the working directory (defaults to the original name)' },
+        },
+        required: ['index'],
       },
     },
   },
