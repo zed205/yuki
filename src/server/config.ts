@@ -47,6 +47,7 @@ const defaultConfig: Config = {
     expandThinking: true,
     expandToolOutputs: true,
     enableImagePaste: true,
+    collapseThinkingTools: true,
   },
   desktop: {
     enableAutomation: false,

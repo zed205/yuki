@@ -62,6 +62,8 @@
   let thinkingEnabled = false;
   let pastedImages = [];
   let pastedFiles = [];
+  let collapseTT = true;
+  let ttGroup = null;
   let enableImagePaste = false;
   let connectedConfig = {};
 
@@ -439,6 +441,7 @@
         thinkingEnabled = data.data.thinkingEnabled === true;
         enableImagePaste = !!data.data.config?.enableImagePaste;
         connectedConfig = data.data.config || {};
+        collapseTT = connectedConfig.collapseThinkingTools !== false;
         voiceMode = !!data.data.voiceMode;
         updateVoiceModeVisual();
         updateUtilitySummary();
@@ -806,7 +809,10 @@
     details.appendChild(summary);
     details.appendChild(body);
     wrapper.appendChild(details);
-    messagesEl.appendChild(wrapper);
+
+    if (!addToTTGroup(wrapper, 'Thinking…', '🧠')) {
+      messagesEl.appendChild(wrapper);
+    }
 
     thinkingBubble = { wrapper, details, body, summary, label, statusDot };
     scrollToBottom();
@@ -834,6 +840,9 @@
     if (thinkMatch) {
       thinkingBubble.body.textContent = thinkMatch[1].trim();
     }
+    if (ttGroup && ttGroup.lastEl === thinkingBubble.wrapper) {
+      updateTTGroupSummary(ttGroup, 'Thought', '🧠');
+    }
     thinkingBubble = null;
   }
 
@@ -847,6 +856,105 @@
       setTimeout(doRemove, 300);
     } else {
       doRemove();
+    }
+  }
+
+  // --- Collapsible thinking/tool-use groups ---
+  // When collapseTT is enabled, thinking bubbles and tool call bubbles created
+  // between a user prompt and an assistant response are collected into a single
+  // container that shows only the latest operation summary on one line. Clicking
+  // the line expands the full history; clicking again collapses it.
+  function createTTGroup() {
+    const el = document.createElement('div');
+    el.className = 'flex justify-start tt-group';
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'tt-group-header flex items-center gap-2 px-3 py-1.5 rounded-full border border-dashed border-border text-xs text-muted hover:text-text hover:bg-surface2/50 hover:border-primary/40 transition-colors cursor-pointer text-left';
+
+    const arrow = document.createElement('span');
+    arrow.className = 'text-[10px] text-muted shrink-0';
+    arrow.textContent = '▶';
+
+    const icon = document.createElement('span');
+    icon.className = 'shrink-0';
+    icon.textContent = '⚙';
+
+    const label = document.createElement('span');
+    label.className = 'truncate min-w-0';
+    label.textContent = '…';
+
+    header.appendChild(arrow);
+    header.appendChild(icon);
+    header.appendChild(label);
+
+    const body = document.createElement('div');
+    body.className = 'tt-group-body hidden flex flex-col gap-2 mt-2 w-full max-w-[90%]';
+
+    el.appendChild(header);
+    el.appendChild(body);
+
+    const group = { el, header, body, arrow, icon, label, lastEl: null, count: 0, sealed: false };
+    header.addEventListener('click', () => toggleTTGroup(group));
+    return group;
+  }
+
+  function toggleTTGroup(group) {
+    const isCollapsed = group.body.classList.contains('hidden');
+    if (isCollapsed) {
+      group.body.classList.remove('hidden');
+      group.arrow.textContent = '▼';
+      group.header.title = 'Collapse thinking/tool history';
+    } else {
+      group.body.classList.add('hidden');
+      group.arrow.textContent = '▶';
+      group.header.title = 'Expand thinking/tool history';
+      scrollToBottom();
+    }
+  }
+
+  function updateTTGroupSummary(group, text, icon) {
+    group.label.textContent = text;
+    if (icon) group.icon.textContent = icon;
+  }
+
+  function addToTTGroup(item, summary, icon) {
+    if (!collapseTT) return false;
+    let g = ttGroup && !ttGroup.sealed ? ttGroup : null;
+    if (!g) {
+      g = createTTGroup();
+      ttGroup = g;
+      messagesEl.appendChild(g.el);
+    }
+    g.body.appendChild(item);
+    g.lastEl = item;
+    g.count++;
+    updateTTGroupSummary(g, summary, icon);
+    scrollToBottom();
+    return true;
+  }
+
+  function sealTTGroup() {
+    if (ttGroup && !ttGroup.sealed) {
+      ttGroup.sealed = true;
+    }
+  }
+
+  function resetTTGroup() {
+    ttGroup = null;
+  }
+
+  // If `item` is the latest operation in an open group, refresh the single-line
+  // summary so it always reflects the most recent state.
+  function refreshTTGroupSummary(item) {
+    if (!ttGroup || !item || ttGroup.lastEl !== item) return;
+    if (item.classList.contains('tool-call-wrapper')) {
+      const nameEl = item.querySelector('.font-mono.text-primary');
+      const statusEl = item.querySelector('.tool-status');
+      if (nameEl) {
+        const status = statusEl ? statusEl.textContent : '';
+        updateTTGroupSummary(ttGroup, `⚙ ${nameEl.textContent} ${status}`, '⚙');
+      }
     }
   }
 
@@ -896,6 +1004,7 @@
     wrapper.className = 'relative group';
 
     if (role === 'user') {
+      resetTTGroup();
       msgEl.className = 'flex justify-end';
       const bubble = document.createElement('div');
       bubble.className = (pruned ? 'opacity-40 ' : '') + 'bg-userMsg rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed';
@@ -929,6 +1038,7 @@
 
       msgEl.appendChild(wrapper);
     } else {
+      sealTTGroup();
       msgEl.className = 'flex justify-start';
       const bubble = document.createElement('div');
       bubble.className = (pruned ? 'opacity-40 ' : '') + 'bg-asstMsg border border-border rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed';
@@ -1053,7 +1163,10 @@
     const wrapper = document.createElement('div');
     wrapper.className = 'flex justify-start tool-call-wrapper max-w-[90%]';
     wrapper.appendChild(details);
-    messagesEl.appendChild(wrapper);
+
+    if (!addToTTGroup(wrapper, `⚙ ${toolCall.name}`, '⚙')) {
+      messagesEl.appendChild(wrapper);
+    }
     scrollToBottom();
   }
 
@@ -1073,6 +1186,8 @@
           statusEl.className = 'tool-status ml-auto text-xs text-danger font-bold';
         }
       }
+      const wrapper = el.closest('.tool-call-wrapper');
+      if (wrapper) refreshTTGroupSummary(wrapper);
     }
   }
 
@@ -1102,6 +1217,8 @@
         }
         resultEl.textContent = displayResult;
       }
+      const wrapper = el.closest('.tool-call-wrapper');
+      if (wrapper) refreshTTGroupSummary(wrapper);
     }
   }
 
@@ -1133,6 +1250,7 @@ function scrollToBottom() {
     lastAssistantBubble = null;
     thinkingBubble = null;
     thinkingWasShown = false;
+    ttGroup = null;
     updateContextUsage();
   }
 
@@ -1475,6 +1593,7 @@ function scrollToBottom() {
                 }
               }
             }
+            sealTTGroup();
           }
           if (msg.content) {
             appendMessage(msg.role, msg.content, msg.id, msg.pruned);

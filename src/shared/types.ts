@@ -77,6 +77,7 @@ export interface UIConfig {
   expandThinking: boolean;
   expandToolOutputs: boolean;
   enableImagePaste: boolean;
+  collapseThinkingTools: boolean;
 }
 
 export interface DesktopConfig {

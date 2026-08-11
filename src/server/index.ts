@@ -585,6 +585,7 @@ wss.on('connection', (ws) => {
         enableImagePaste: loadConfig().ui.enableImagePaste,
         expandThinking: loadConfig().ui.expandThinking,
         expandToolOutputs: loadConfig().ui.expandToolOutputs,
+        collapseThinkingTools: loadConfig().ui.collapseThinkingTools,
         model: agentCfg.model,
         endpoint: agentCfg.endpoint,
         contextWindow: agentCfg.contextWindow,

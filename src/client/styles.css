@@ -378,6 +378,15 @@ body.resizing-sidebar {
   background: rgba(88, 166, 255, 0.08);
 }
 
+/* Collapsible thinking/tool-use group */
+.tt-group-body.hidden {
+  display: none !important;
+}
+.tt-group-header summary::-webkit-details-marker,
+.tt-group-header {
+  list-style: none;
+}
+
 /* --- jsTree dark tree (Project > Sessions) --- */
 #session-tree,
 #session-tree.jstree-focused {
