@@ -180,7 +180,9 @@ export function loadConfig(): Config {
         activeModelName = config.defaultModel || getNamedModels()[0]?.name;
       }
 
-      if (loaded.thinkingEnabled !== undefined) {
+      // Only seed the override from disk on first load. Runtime re-loads must
+      // not clobber a live value set by the UI toggle.
+      if (thinkingOverride === undefined && loaded.thinkingEnabled !== undefined) {
         thinkingOverride = loaded.thinkingEnabled;
       }
     }

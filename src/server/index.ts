@@ -1,7 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadConfig, loadSystemPrompt, saveConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile } from './config';
+import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile } from './config';
 import { Agent } from './agent';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -730,7 +730,7 @@ wss.on('connection', (ws) => {
       if (message.type === 'thinking:toggle') {
         const enabled = message.data.enabled;
         setThinkingOverride(enabled);
-        saveConfig({ ...loadConfig(), thinkingEnabled: enabled });
+        saveConfig({ ...getConfig(), thinkingEnabled: enabled });
         ws.send(JSON.stringify({
           type: 'thinking:toggled',
           data: { enabled, sessionId: session.id },

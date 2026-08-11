@@ -810,7 +810,7 @@
     details.appendChild(body);
     wrapper.appendChild(details);
 
-    if (!addToTTGroup(wrapper, 'Thinking…', '🧠')) {
+    if (!addToTTGroup(wrapper, 'Thinking…')) {
       messagesEl.appendChild(wrapper);
     }
 
@@ -841,7 +841,7 @@
       thinkingBubble.body.textContent = thinkMatch[1].trim();
     }
     if (ttGroup && ttGroup.lastEl === thinkingBubble.wrapper) {
-      updateTTGroupSummary(ttGroup, 'Thought', '🧠');
+      updateTTGroupSummary(ttGroup, 'Thought');
     }
     thinkingBubble = null;
   }
@@ -900,6 +900,7 @@
   }
 
   function toggleTTGroup(group) {
+    renderTTIconTrail(group);
     const isCollapsed = group.body.classList.contains('hidden');
     if (isCollapsed) {
       group.body.classList.remove('hidden');
@@ -913,12 +914,32 @@
     }
   }
 
-  function updateTTGroupSummary(group, text, icon) {
-    group.label.textContent = text;
-    if (icon) group.icon.textContent = icon;
+  // Render the operation icon trail directly from the items in the group body,
+  // so the summary always reflects every thinking/tool turn in the history.
+  // Consecutive same-type runs are collapsed with a count (e.g. "⚙×5").
+  function renderTTIconTrail(group) {
+    const seq = [];
+    for (const child of group.body.children) {
+      if (child.classList.contains('thinking-wrapper')) seq.push('🧠');
+      else if (child.classList.contains('tool-call-wrapper')) seq.push('⚙');
+    }
+    let out = '';
+    let i = 0;
+    while (i < seq.length) {
+      const icon = seq[i];
+      let run = 1;
+      while (i + run < seq.length && seq[i + run] === icon) run++;
+      out += (out ? ' ' : '') + icon + (run > 1 ? '×' + run : '');
+      i += run;
+    }
+    group.icon.textContent = out;
   }
 
-  function addToTTGroup(item, summary, icon) {
+  function updateTTGroupSummary(group, text) {
+    group.label.textContent = text;
+  }
+
+  function addToTTGroup(item, summary) {
     if (!collapseTT) return false;
     let g = ttGroup && !ttGroup.sealed ? ttGroup : null;
     if (!g) {
@@ -929,7 +950,8 @@
     g.body.appendChild(item);
     g.lastEl = item;
     g.count++;
-    updateTTGroupSummary(g, summary, icon);
+    g.label.textContent = summary;
+    renderTTIconTrail(g);
     scrollToBottom();
     return true;
   }
@@ -953,7 +975,7 @@
       const statusEl = item.querySelector('.tool-status');
       if (nameEl) {
         const status = statusEl ? statusEl.textContent : '';
-        updateTTGroupSummary(ttGroup, `⚙ ${nameEl.textContent} ${status}`, '⚙');
+        updateTTGroupSummary(ttGroup, `⚙ ${nameEl.textContent} ${status}`);
       }
     }
   }
@@ -1164,7 +1186,7 @@
     wrapper.className = 'flex justify-start tool-call-wrapper max-w-[90%]';
     wrapper.appendChild(details);
 
-    if (!addToTTGroup(wrapper, `⚙ ${toolCall.name}`, '⚙')) {
+    if (!addToTTGroup(wrapper, `⚙ ${toolCall.name}`)) {
       messagesEl.appendChild(wrapper);
     }
     scrollToBottom();
