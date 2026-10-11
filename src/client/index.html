@@ -58,18 +58,17 @@
     </div>
     <div class="p-3">
       <div class="flex items-center gap-2">
-        <button id="new-session-btn" class="flex-1 px-3 py-2 bg-primaryDark text-white rounded-md text-sm hover:bg-primary transition-colors">+<span class="sidebar-content"> New Session</span></button>
-        <button id="add-project-btn" class="p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="New project">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <button id="add-project-btn" class="flex-1 px-3 py-2 border border-border rounded-md text-sm text-text hover:bg-surface2 hover:text-primary transition-colors">
+          <svg class="inline-block w-4 h-4 -mt-0.5 mr-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
-          </svg>
+          </svg><span class="sidebar-content">New Project</span>
         </button>
-        <button id="search-btn" class="p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Search sessions (Ctrl+K)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button id="search-btn" class="flex-1 px-3 py-2 border border-border rounded-md text-sm text-text hover:bg-surface2 hover:text-primary transition-colors">
+          <svg class="inline-block w-4 h-4 -mt-0.5 mr-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="7"/>
             <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
+          </svg><span class="sidebar-content">Search Sessions</span>
         </button>
       </div>
     </div>
@@ -117,20 +116,34 @@
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
           </svg>
         </button>
-        <button type="button" id="voice-mode-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Voice mode — continuous voice conversation">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
-            <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
-          </svg>
-        </button>
-        <button type="button" id="mic-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Speak (Ctrl+M)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="23"/>
-            <line x1="8" y1="23" x2="16" y2="23"/>
-          </svg>
-        </button>
+        <div class="relative inline-block">
+          <button type="button" id="voice-dropdown-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Voice options">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+              <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+            </svg>
+          </button>
+          <div id="voice-dropdown-menu" class="hidden absolute bottom-full left-0 mb-2 w-[220px] bg-surface border border-border rounded-xl shadow-2xl z-50 overflow-hidden">
+            <div class="p-1.5 space-y-0.5">
+              <button type="button" id="voice-mode-menu-item" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Continuous voice conversation">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+                <span class="flex-1">Voice Mode</span>
+                <span id="voice-mode-indicator" class="text-xs text-muted">Off</span>
+              </button>
+              <button type="button" id="mic-menu-item" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Speak (Ctrl+M)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                <span class="flex-1">Speak</span>
+                <span id="mic-indicator" class="text-xs text-muted">Idle</span>
+              </button>
+              <div class="border-t border-border my-1"></div>
+              <button type="button" id="tts-menu-item" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Toggle auto TTS">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                <span class="flex-1">Auto TTS</span>
+                <span id="tts-indicator" class="text-xs text-muted">Off</span>
+              </button>
+            </div>
+          </div>
+        </div>
         <textarea
           id="message-input"
           placeholder="Type a message... (Shift+Enter for new line)"
@@ -140,13 +153,6 @@
         <button type="button" id="stop-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-danger hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" title="Stop current action" disabled>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="6" width="12" height="12" rx="1"/>
-          </svg>
-        </button>
-        <button type="button" id="tts-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Toggle auto TTS">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
           </svg>
         </button>
         <button type="submit" id="send-btn" class="px-3 sm:px-4 py-1.5 sm:py-2 bg-primaryDark text-white rounded-lg text-sm font-medium hover:bg-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Send</button>

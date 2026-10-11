@@ -185,15 +185,6 @@ html {
     height: 2rem;
     font-size: 0.75rem;
   }
-  #sidebar.collapsed #new-session-btn {
-    width: 100%;
-    height: auto;
-    padding: 0.5rem 0.75rem;
-    display: flex;
-    flex-direction: row;
-    gap: 0.25rem;
-    border-radius: 0.375rem;
-  }
   #sidebar.collapsed .sidebar-sessions {
     display: flex;
     flex-direction: column;
@@ -275,18 +266,6 @@ body.resizing-sidebar {
   border-radius: 0.375rem;
   background: #d4760a;
   color: #fff;
-}
-
-#sidebar.collapsed #new-session-btn {
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.375rem;
-  margin: 0 auto;
-  overflow: hidden;
 }
 
 #sidebar.collapsed .sidebar-sessions {
@@ -592,4 +571,25 @@ body.resizing-sidebar {
 #sidebar.collapsed #add-project-btn,
 #sidebar.collapsed #search-btn {
   display: none !important;
+}
+
+/* Voice dropdown menu */
+#voice-dropdown-menu {
+  animation: dropdown-fade-in 0.15s ease-out;
+}
+#voice-dropdown-menu.show {
+  display: block;
+}
+#voice-dropdown-menu.hidden {
+  display: none;
+}
+@keyframes dropdown-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+#voice-dropdown-menu .menu-item-active {
+  background: #30363d;
+}
+#voice-dropdown-menu .menu-item-active .text-muted {
+  color: #58a6ff !important;
 }

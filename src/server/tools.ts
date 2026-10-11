@@ -389,7 +389,8 @@ export async function toolGrep(
     walk(searchDir);
 
     if (results.length === 0) return 'No matches found.';
-    return results.join('\n');
+    const maxLines = getConfig().maxToolOutputLines || 20;
+    return truncateOutput(results.join('\n'), maxLines, 'grep output');
   } catch (err: any) {
     return `Error grepping: ${err.message}`;
   }

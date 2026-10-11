@@ -7,14 +7,18 @@
   const sendBtn = document.getElementById('send-btn');
   const statusEl = document.getElementById('status');
   const sessionTreeEl = document.getElementById('session-tree');
-  const newSessionBtn = document.getElementById('new-session-btn');
   const addProjectBtn = document.getElementById('add-project-btn');
-  const micBtn = document.getElementById('mic-btn');
-  const voiceModeBtn = document.getElementById('voice-mode-btn');
+  const voiceDropdownBtn = document.getElementById('voice-dropdown-btn');
+  const voiceDropdownMenu = document.getElementById('voice-dropdown-menu');
+  const voiceModeMenuItem = document.getElementById('voice-mode-menu-item');
+  const micMenuItem = document.getElementById('mic-menu-item');
+  const ttsMenuItem = document.getElementById('tts-menu-item');
+  const voiceModeIndicator = document.getElementById('voice-mode-indicator');
+  const micIndicator = document.getElementById('mic-indicator');
+  const ttsIndicator = document.getElementById('tts-indicator');
   const voiceStatusEl = document.getElementById('voice-status');
   const voiceStatusDot = document.getElementById('voice-status-dot');
   const voiceStatusLabel = document.getElementById('voice-status-label');
-  const ttsBtn = document.getElementById('tts-btn');
   const stopBtn = document.getElementById('stop-btn');
   const browserImageEl = document.getElementById('browser-image');
   const browserUrlInput = document.getElementById('browser-url');
@@ -78,6 +82,7 @@
   let lastVoiceGlobalToggleAt = 0;
   let voiceSessionStarting = false;
   let voiceNotifAsked = false;
+  let voiceDropdownOpen = false;
 
   // tool toggling state
   let toolEnabled = {};
@@ -909,16 +914,18 @@
   }
 
   function toggleTTGroup(group) {
-    renderTTIconTrail(group);
     const isCollapsed = group.body.classList.contains('hidden');
     if (isCollapsed) {
       group.body.classList.remove('hidden');
       group.arrow.textContent = '▼';
       group.header.title = 'Collapse thinking/tool history';
+      renderTTIconTrail(group);
     } else {
       group.body.classList.add('hidden');
       group.arrow.textContent = '▶';
       group.header.title = 'Expand thinking/tool history';
+      // Reset icon trail when collapsing - only show latest summary
+      group.icon.textContent = '';
       scrollToBottom();
     }
   }
@@ -927,6 +934,7 @@
   // so the summary always reflects every thinking/tool turn in the history.
   // Consecutive same-type runs are collapsed with a count (e.g. "⚙×5").
   function renderTTIconTrail(group) {
+    console.log('[TT] renderTTIconTrail called, group icon before:', group.icon.textContent);
     const seq = [];
     for (const child of group.body.children) {
       if (child.classList.contains('thinking-wrapper')) seq.push('🧠');
@@ -960,7 +968,6 @@
     g.lastEl = item;
     g.count++;
     g.label.textContent = summary;
-    renderTTIconTrail(g);
     scrollToBottom();
     return true;
   }
@@ -968,6 +975,8 @@
   function sealTTGroup() {
     if (ttGroup && !ttGroup.sealed) {
       ttGroup.sealed = true;
+      // Reset icon trail when sealing - only show latest summary
+      ttGroup.icon.textContent = '';
     }
   }
 
@@ -1629,7 +1638,6 @@ function scrollToBottom() {
                 }
               }
             }
-            sealTTGroup();
           }
           if (msg.content) {
             appendMessage(msg.role, msg.content, msg.id, msg.pruned);
@@ -1680,7 +1688,7 @@ function scrollToBottom() {
   async function toggleRecording() {
     if (AudioRecorder.isRecording) {
       AudioRecorder.stopRecording();
-      micBtn.classList.remove('ring-2', 'ring-danger', 'ring-offset-2', 'ring-offset-bg', 'text-danger');
+      updateMicIndicator('Idle');
       return;
     }
 
@@ -1690,7 +1698,7 @@ function scrollToBottom() {
       return;
     }
 
-    micBtn.classList.add('ring-2', 'ring-danger', 'ring-offset-2', 'ring-offset-bg', 'text-danger');
+    updateMicIndicator('Recording...');
     messageInput.disabled = true;
   }
 
@@ -1704,7 +1712,7 @@ function scrollToBottom() {
       appendMessage('assistant', 'Could not access microphone. Please check permissions.');
       return;
     }
-    micBtn.classList.add('ring-2', 'ring-danger', 'ring-offset-2', 'ring-offset-bg', 'text-danger');
+    updateMicIndicator('Push-to-talk');
     messageInput.disabled = true;
   }
 
@@ -1718,7 +1726,7 @@ function scrollToBottom() {
     if (!AudioRecorder.isRecording) return;
 
     const base64 = await AudioRecorder.stop();
-    micBtn.classList.remove('ring-2', 'ring-danger', 'ring-offset-2', 'ring-offset-bg', 'text-danger');
+    updateMicIndicator('Idle');
     messageInput.disabled = false;
     if (!base64) return;
 
@@ -1745,17 +1753,31 @@ function scrollToBottom() {
     await AudioPlayer.playSynthesized(lastAssistantMessage);
   }
 
+  function updateMicIndicator(state) {
+    if (!micIndicator) return;
+    if (state === 'Recording...' || state === 'Push-to-talk') {
+      micIndicator.textContent = state;
+      micIndicator.className = 'text-xs text-danger';
+      micMenuItem.classList.add('menu-item-active');
+    } else {
+      micIndicator.textContent = state || 'Idle';
+      micIndicator.className = 'text-xs text-muted';
+      micMenuItem.classList.remove('menu-item-active');
+    }
+  }
+
   function setAutoTTS(on) {
     autoTTS = on;
-    if (on) {
-      ttsBtn.classList.remove('text-muted');
-      ttsBtn.classList.add('text-primary', 'bg-surface2');
-      ttsBtn.title = 'Auto TTS: on (click to disable)';
-    } else {
-      ttsBtn.classList.remove('text-primary', 'bg-surface2');
-      ttsBtn.classList.add('text-muted');
-      ttsBtn.title = 'Auto TTS: off (click to enable)';
+    if (ttsIndicator) {
+      ttsIndicator.textContent = on ? 'On' : 'Off';
+      ttsIndicator.className = on ? 'text-xs text-primary' : 'text-xs text-muted';
     }
+    if (on) {
+      ttsMenuItem.classList.add('menu-item-active');
+    } else {
+      ttsMenuItem.classList.remove('menu-item-active');
+    }
+    ttsMenuItem.title = on ? 'Auto TTS: on (click to disable)' : 'Toggle auto TTS';
   }
 
   // --- Voice Mode ---
@@ -1782,14 +1804,17 @@ function scrollToBottom() {
 
   function updateVoiceModeVisual() {
     if (voiceMode) {
-      voiceModeBtn.classList.remove('text-muted');
-      voiceModeBtn.classList.add('text-primary', 'bg-surface2');
-      voiceModeBtn.title = 'Voice mode: on (click to exit)';
+      voiceModeMenuItem.classList.add('menu-item-active');
+      voiceModeIndicator.textContent = 'On';
+      voiceModeIndicator.className = 'text-xs text-primary';
+      voiceDropdownBtn.classList.add('text-primary');
     } else {
-      voiceModeBtn.classList.remove('text-primary', 'bg-surface2');
-      voiceModeBtn.classList.add('text-muted');
-      voiceModeBtn.title = 'Voice mode — continuous voice conversation (Ctrl+Alt+V)';
+      voiceModeMenuItem.classList.remove('menu-item-active');
+      voiceModeIndicator.textContent = 'Off';
+      voiceModeIndicator.className = 'text-xs text-muted';
+      voiceDropdownBtn.classList.remove('text-primary');
     }
+    voiceDropdownBtn.title = voiceMode ? 'Voice mode: on (click to exit)' : 'Voice options';
   }
 
   function syncVoiceMode(enabled) {
@@ -2206,7 +2231,6 @@ function scrollToBottom() {
     setIsWaiting(true);
   });
 
-  newSessionBtn.addEventListener('click', () => createSession());
 
   const sidebar = document.getElementById('sidebar');
   const sidebarToggle = document.getElementById('sidebar-toggle');
@@ -2281,7 +2305,34 @@ function scrollToBottom() {
     }
   });
 
-  micBtn.addEventListener('click', () => {
+  // --- Voice Dropdown ---
+  function toggleVoiceDropdown(open) {
+    if (typeof open === 'boolean') {
+      voiceDropdownOpen = open;
+      voiceDropdownMenu.style.setProperty('display', open ? 'block' : 'none', 'important');
+      if (open) {
+        voiceDropdownMenu.classList.add('show');
+      } else {
+        voiceDropdownMenu.classList.remove('show');
+      }
+    } else {
+      voiceDropdownOpen = !voiceDropdownOpen;
+      voiceDropdownMenu.style.setProperty('display', voiceDropdownOpen ? 'block' : 'none', 'important');
+    }
+  }
+
+  voiceDropdownBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleVoiceDropdown();
+  });
+
+  voiceModeMenuItem.addEventListener('click', () => {
+    toggleVoiceDropdown(false);
+    toggleVoiceMode();
+  });
+
+  micMenuItem.addEventListener('click', () => {
+    toggleVoiceDropdown(false);
     if (voiceMode) {
       exitVoiceMode();
       return;
@@ -2293,9 +2344,18 @@ function scrollToBottom() {
     }
   });
 
-  voiceModeBtn.addEventListener('click', toggleVoiceMode);
+  ttsMenuItem.addEventListener('click', () => {
+    toggleVoiceDropdown(false);
+    setAutoTTS(!autoTTS);
+  });
 
-  ttsBtn.addEventListener('click', () => setAutoTTS(!autoTTS));
+  // Close dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (voiceDropdownMenu && voiceDropdownOpen &&
+        !voiceDropdownMenu.contains(e.target) && !voiceDropdownBtn.contains(e.target)) {
+      toggleVoiceDropdown(false);
+    }
+  });
 
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.code === 'Space') {
@@ -2600,7 +2660,7 @@ function scrollToBottom() {
       if (voiceMode) {
         exitVoiceMode();
       } else {
-        micBtn.click();
+        micMenuItem.click();
       }
     }
     if (e.ctrlKey && e.altKey && e.code === 'KeyV') {
