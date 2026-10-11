@@ -1187,3 +1187,8 @@ export const toolDefinitions = [
 ];
 
 export const toolNames = toolDefinitions.map(t => t.function.name);
+
+// Returns the list of builtin tool names (same as toolNames, exported for tools-api.ts)
+export function getBuiltinToolNames(): string[] {
+  return toolNames;
+}

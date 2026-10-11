@@ -498,6 +498,17 @@ body.resizing-sidebar {
   font-size: 0.875rem;
   color: #c9d1d9;
 }
+/* Summary text shown below the title in session tree nodes */
+.tree-session .tree-node-summary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  color: #6e7681;
+  margin-top: 1px;
+  line-height: 1.2;
+}
 .tree-node-meta {
   display: block;
   flex-shrink: 0;

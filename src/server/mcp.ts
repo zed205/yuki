@@ -15,6 +15,7 @@ interface MCPServerState {
   client: Client | null;
   transport: StdioClientTransport | null;
   connected: boolean;
+  serverEnabled: boolean;
   error?: string;
   tools: MCPToolInfo[];
 }
@@ -58,6 +59,7 @@ export class MCPManager {
         client: null,
         transport: null,
         connected: false,
+        serverEnabled: false,
         tools: [],
       });
     }
@@ -67,12 +69,42 @@ export class MCPManager {
     return Array.from(this.servers.keys());
   }
 
+  /**
+   * Enables or disables an MCP server. When enabled, attempts to connect.
+   * When disabled, disconnects the server.
+   */
+  async setServerEnabled(name: string, enabled: boolean): Promise<{ success: boolean; error?: string }> {
+    const s = this.servers.get(name);
+    if (!s) return { success: false, error: 'Unknown server' };
+    s.serverEnabled = enabled;
+    if (enabled) {
+      const ok = await this.connectServer(name);
+      return ok ? { success: true } : { success: false, error: s.error };
+    } else {
+      await this.disconnectServer(name);
+      return { success: true };
+    }
+  }
+
+  /**
+   * Returns a Set of enabled MCP tool names (only connected + enabled servers).
+   */
+  getEnabledToolNames(): Set<string> {
+    const names = new Set<string>();
+    for (const s of this.servers.values()) {
+      if (!s.connected || !s.serverEnabled) continue;
+      for (const t of s.tools) names.add(t.fullName);
+    }
+    return names;
+  }
+
   getStatus() {
     return Array.from(this.servers.values()).map((s) => ({
       name: s.config.name,
       command: s.config.command,
       args: s.config.args || [],
       enabled: !!s.config.enabled,
+      serverEnabled: s.serverEnabled,
       connected: s.connected,
       error: s.error,
       toolCount: s.tools.length,

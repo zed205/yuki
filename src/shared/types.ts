@@ -54,9 +54,15 @@ export interface Config {
   ui: UIConfig;
   desktop: DesktopConfig;
   maxToolOutputLines: number;
+  subAgents?: SubAgentConfig;
+  uiAutomation?: UIAutomationConfig;
   contextManagement?: ContextManagementConfig;
   rawLLMLog?: RawLLMLogConfig;
   webFetchMaxInlineKB: number;
+  shell: ShellConfig;
+  // Auto session summary — ask the model to generate a short label + topic
+  // summary after the first turn of an untitled session.
+  autoSessionSummary?: boolean;
 }
 
 export interface STTConfig {
@@ -83,6 +89,24 @@ export interface UIConfig {
 export interface DesktopConfig {
   enableAutomation: boolean;
   snapshotExpiry: number;
+}
+
+export interface SubAgentConfig {
+  enabled: boolean;
+  maxAgentSlots: number;
+}
+
+export interface UIAutomationConfig {
+  enabled: boolean;
+}
+
+export type ShellEngine = 'pwsh' | 'ps5' | 'cmd';
+
+export interface ShellConfig {
+  engine: ShellEngine;
+  pwshPath: string;
+  ps5Path: string;
+  cmdPath: string;
 }
 
 export interface PlanStep {
@@ -146,6 +170,7 @@ export interface Session {
   createdAt: Date;
   updatedAt: Date;
   title?: string;
+  summary?: string;      // 1-2 sentence topic summary
   projectId?: string;
   thinkingEnabled?: boolean;
   voiceMode?: boolean;

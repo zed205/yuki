@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Config, ContextManagementConfig, ModelConfig } from '../shared/types';
+import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, UIAutomationConfig, ShellConfig, ShellEngine } from '../shared/types';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
 const configPath = path.join(configDir, 'config.json');
@@ -19,6 +19,22 @@ const defaultModelConfig: ModelConfig = {
   preserveThinking: true,
 };
 
+const defaultSubAgentConfig: SubAgentConfig = {
+  enabled: false,
+  maxAgentSlots: 4,
+};
+
+const defaultUIAutomationConfig: UIAutomationConfig = {
+  enabled: true,
+};
+
+const defaultShellConfig: ShellConfig = {
+  engine: 'pwsh',
+  pwshPath: 'pwsh',
+  ps5Path: 'powershell',
+  cmdPath: 'cmd',
+};
+
 const defaultConfig: Config = {
   agentModel: { ...defaultModelConfig },
   maxToolIterations: 10,
@@ -31,6 +47,9 @@ const defaultConfig: Config = {
     'browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_get_content', 'browser_get_links',
     'desktop_viewport', 'desktop_screenshot', 'desktop_snapshot_region', 'desktop_click', 'desktop_type', 'desktop_move', 'desktop_drag', 'desktop_scroll', 'desktop_keypress',
   ],
+  subAgents: defaultSubAgentConfig,
+  uiAutomation: defaultUIAutomationConfig,
+  shell: defaultShellConfig,
   mcpServers: [],
   stt: {
     provider: 'whisper',
@@ -49,6 +68,7 @@ const defaultConfig: Config = {
     enableImagePaste: true,
     collapseThinkingTools: true,
   },
+  autoSessionSummary: true,
   desktop: {
     enableAutomation: false,
     snapshotExpiry: 3,
@@ -174,6 +194,9 @@ export function loadConfig(): Config {
         desktop: { ...defaultConfig.desktop, ...(loaded.desktop || {}) },
         contextManagement: { ...defaultConfig.contextManagement, ...(loaded.contextManagement || {}) },
         rawLLMLog: { ...defaultConfig.rawLLMLog, ...(loaded.rawLLMLog || {}) },
+        subAgents: { ...defaultConfig.subAgents, ...(loaded.subAgents || {}) },
+        uiAutomation: { ...defaultConfig.uiAutomation, ...(loaded.uiAutomation || {}) },
+        shell: { ...defaultConfig.shell, ...(loaded.shell || {}) },
       };
 
       if (!activeModelName) {

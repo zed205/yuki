@@ -830,6 +830,80 @@ Do not mention the summary process or that context was compacted.`;
   private generateId(): string {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
+  /**
+   * Ask the model for a short label AND a 1-2 sentence topic summary based on
+   * the first exchange. Returns { label, summary } - empty strings on failure.
+   */
+  async suggestSessionSummary(
+    firstUserText: string,
+    assistantReply?: string,
+  ): Promise<{ label: string; summary: string }> {
+    try {
+      const openai = this.getOpenAI();
+      const agentCfg = getAgentModel();
+      const userText = firstUserText ? String(firstUserText).slice(0, 2000) : '';
+      if (!userText.trim()) return { label: '', summary: '' };
+      const reply = assistantReply ? String(assistantReply).slice(0, 1500) : '';
+
+      const context = reply
+        ? `User: ${userText}\n\nAssistant: ${reply}`
+        : userText;
+
+      const response = await withModelLoadRetry(
+        () => openai.chat.completions.create({
+          model: agentCfg.model,
+          messages: [
+            {
+              role: 'system',
+              content: `You produce two short outputs about a conversation topic:
+1. A label: 2-5 words, no punctuation, no quotes.
+2. A summary: one concise sentence (max 30 words) describing what the session is about.
+
+Reply in this exact JSON format only:
+{"label": "the short label", "summary": "the one-sentence summary"}
+
+Do not include any other text.`,
+            },
+            { role: 'user', content: context },
+          ],
+          max_tokens: 100,
+          stream: false,
+        }),
+        2, 3000, 'session summary',
+      );
+
+      const raw = response.choices?.[0]?.message?.content || '';
+      
+      // Try to parse JSON
+      let label = '';
+      let summary = '';
+      try {
+        // Strip possible markdown code fences
+        const jsonStr = raw.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?\s*```$/g, '').trim();
+        const parsed = JSON.parse(jsonStr);
+        label = String(parsed.label || '').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/[.,;:!?]+$/g, '').trim();
+        summary = String(parsed.summary || '').trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+      } catch {
+        // Fallback: treat the whole response as a summary
+        const cleaned = raw
+          .trim()
+          .replace(/^["'`]+|["'`]+$/g, '')
+          .replace(/[.,;:!?]+$/g, '')
+          .trim();
+        if (cleaned) {
+          const words = cleaned.split(/\s+/).filter(Boolean).slice(0, 5);
+          label = words.join(' ');
+          summary = cleaned;
+        }
+      }
+
+      if (!label) return { label: '', summary: '' };
+      return { label, summary };
+    } catch (err) {
+      console.error('[agent] session summary suggestion failed:', err);
+      return { label: '', summary: '' };
+    }
+  }
 }
 
 function buildMultimodalContent(text: string, images: string[]): Array<Record<string, any>> {
@@ -885,4 +959,26 @@ function buildUserContent(text: string, images: string[], attachments: Attachmen
 
   content.unshift({ type: 'text', text: textChunks.join('') });
   return content;
+}
+
+// llama.cpp returns 503 "Loading model" transiently while it loads/rebinds a
+// model. Retry with linear backoff rather than failing the request.
+async function withModelLoadRetry<T>(
+  fn: () => Promise<T>,
+  retries: number,
+  baseDelayMs: number,
+  label: string,
+): Promise<T> {
+  for (let attempt = 0;; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const status = err?.status ?? err?.statusCode ?? 0;
+      const isModelLoading = status === 503 || /loading model/i.test(`${err?.message || ''}`);
+      if (!isModelLoading || attempt >= retries) throw err;
+      const wait = baseDelayMs * (attempt + 1);
+      console.log(`[agent] ${label}: model loading (503), retrying in ${wait}ms (${attempt + 1}/${retries})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
 }

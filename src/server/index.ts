@@ -408,6 +408,7 @@ app.get('/api/tree', (_req, res) => {
       .map(s => ({
         id: s.id,
         title: s.title,
+        summary: s.summary,
         updatedAt: s.updatedAt.toISOString(),
         messageCount: s.messages.filter(m => m.role !== 'system').length,
         projectId: p.id,
@@ -643,9 +644,9 @@ wss.on('connection', (ws) => {
         session.updatedAt = new Date();
         saveSession(session);
 
+        // Reserve empty title so it falls back to message count until auto-title lands
         if (!session.title || session.title === '') {
-          session.title = userMsg.substring(0, 50) + (userMsg.length > 50 ? '...' : '');
-          saveSession(session);
+          session.title = '';
         }
 
         ws.send(JSON.stringify({
@@ -659,6 +660,36 @@ wss.on('connection', (ws) => {
 
         agent.chat(userMsg, session, ws, images, userMessage.attachments)
         .then(() => saveSession(session))
+        .then(async () => {
+          // Auto-generate label + summary after first turn
+          if (!session.title || session.title === '') {
+            try {
+              const firstAssistant = session.messages.find((m) => m.role === 'assistant');
+              const result = await agent.suggestSessionSummary(userMsg, firstAssistant?.content);
+              const label = result.label || userMsg.substring(0, 50) + (userMsg.length > 50 ? '...' : '');
+              session.title = label;
+              if (result.summary) {
+                session.summary = result.summary;
+              }
+              session.updatedAt = new Date();
+              saveSession(session);
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({
+                  type: 'session:renamed',
+                  data: { sessionId: session.id, title: label },
+                }));
+                if (result.summary) {
+                  ws.send(JSON.stringify({
+                    type: 'session:summary',
+                    data: { sessionId: session.id, summary: result.summary },
+                  }));
+                }
+              }
+            } catch (e) {
+              console.error('[index] auto-summary failed:', e);
+            }
+          }
+        })
         .catch((err) => {
           console.error('Agent error:', err);
           ws.send(JSON.stringify({
@@ -877,6 +908,11 @@ wss.on('connection', (ws) => {
           sendContextUpdate(ws, session);
         }
       }
+
+      // Handle session:summary events (auto-generated topic summaries)
+      // Note: this handler is for when the client sends a session:summary event.
+      // The server sends session:summary events via ws.send() when auto-summary completes.
+      // No handler needed here — the server just sends, the client receives.
 
       if (message.type === 'session:rename') {
         const id = message.data.sessionId;

@@ -66,6 +66,8 @@
   let ttGroup = null;
   let enableImagePaste = false;
   let connectedConfig = {};
+  // Stores auto-generated summaries per session
+  const sessionSummaries = new Map();
 
   // voice mode state
   let voiceMode = false;
@@ -637,6 +639,13 @@
 
       case 'session:renamed':
         loadTree();
+        break;
+
+      case 'session:summary':
+        sessionSummaries.set(data.data.sessionId, data.data.summary);
+        if (data.data.sessionId === currentSessionId) {
+          loadTree();
+        }
         break;
 
       case 'plan:updated':
@@ -1289,11 +1298,16 @@ function scrollToBottom() {
 
   function sessionNodeHtml(s) {
     const title = s.title || `${s.messageCount} messages`;
-    return '<span class="tree-session">' +
-      '<span class="tree-node-title">' + esc(title) + '</span>' +
-      '<span class="tree-node-meta">' + (s.messageCount || 0) + '</span>' +
+    const summary = s.summary || sessionSummaries.get(s.id) || '';
+    let html = '<span class="tree-session">' +
+      '<span class="tree-node-title">' + esc(title) + '</span>';
+    if (summary) {
+      html += '<span class="tree-node-summary">' + esc(summary) + '</span>';
+    }
+    html += '<span class="tree-node-meta">' + (s.messageCount || 0) + '</span>' +
       '<button type="button" class="tree-menu-btn" data-kind="session" data-id="' + s.id + '">&#183;&#183;&#183;</button>' +
     '</span>';
+    return html;
   }
 
   function projectNodeHtml(p) {
