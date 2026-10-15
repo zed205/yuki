@@ -146,7 +146,7 @@
         </div>
         <textarea
           id="message-input"
-          placeholder="Type a message... (Shift+Enter for new line)"
+          placeholder="Type a message... (Ctrl+Enter to send)"
           rows="1"
           class="flex-1 bg-surface2 border border-border rounded-lg px-4 py-2 text-text text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder-muted resize-none leading-relaxed"
         ></textarea>
@@ -208,9 +208,17 @@
 
   <!-- Rename Modal -->
   <div id="rename-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[360px] max-w-[95vw] md:max-w-[360px] flex flex-col p-4">
-      <h2 class="text-sm font-semibold mb-3">Rename Session</h2>
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[400px] max-w-[95vw] md:max-w-[400px] flex flex-col p-4">
+      <h2 id="rename-modal-title" class="text-sm font-semibold mb-3">Rename Session</h2>
       <input id="rename-input" type="text" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary" placeholder="Session name" />
+      <div id="rename-error" class="hidden text-xs text-danger mt-1"></div>
+      <div id="rename-path-wrap" class="hidden mt-2">
+        <label class="text-xs text-muted mb-1 block">Directory (optional)</label>
+        <div class="flex gap-2">
+          <input id="rename-path-input" type="text" class="flex-1 min-w-0 bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary" placeholder="Directory (leave empty to keep current)" />
+          <button id="rename-path-browse-btn" type="button" class="px-3 py-2 text-xs bg-surface2 border border-border rounded-lg text-text hover:border-primary hover:text-primary transition-colors shrink-0">Browse…</button>
+        </div>
+      </div>
       <div class="flex justify-end gap-2 mt-3">
         <button id="rename-cancel-btn" class="px-3 py-1.5 text-xs text-muted hover:text-text transition-colors">Cancel</button>
         <button id="rename-save-btn" class="px-4 py-1.5 text-xs bg-primaryDark text-white rounded-lg hover:bg-primary transition-colors">Save</button>

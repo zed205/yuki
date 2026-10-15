@@ -32,6 +32,11 @@
   const closeToolsBtn = document.getElementById('close-tools-btn');
   const renameModal = document.getElementById('rename-modal');
   const renameInput = document.getElementById('rename-input');
+  const renameModalTitle = document.getElementById('rename-modal-title');
+  const renameError = document.getElementById('rename-error');
+  const renamePathWrap = document.getElementById('rename-path-wrap');
+  const renamePathInput = document.getElementById('rename-path-input');
+  const renamePathBrowseBtn = document.getElementById('rename-path-browse-btn');
   const renameCancelBtn = document.getElementById('rename-cancel-btn');
   const renameSaveBtn = document.getElementById('rename-save-btn');
   const confirmModal = document.getElementById('confirm-modal');
@@ -924,32 +929,20 @@
       group.body.classList.add('hidden');
       group.arrow.textContent = '▶';
       group.header.title = 'Expand thinking/tool history';
-      // Reset icon trail when collapsing - only show latest summary
-      group.icon.textContent = '';
       scrollToBottom();
     }
   }
 
-  // Render the operation icon trail directly from the items in the group body,
-  // so the summary always reflects every thinking/tool turn in the history.
-  // Consecutive same-type runs are collapsed with a count (e.g. "⚙×5").
+  // Render just the most recent operation's icon, so the collapsed summary
+  // stays a single short line even with lots of autonomous activity. The full
+  // icon history is still visible when the group is expanded.
   function renderTTIconTrail(group) {
-    console.log('[TT] renderTTIconTrail called, group icon before:', group.icon.textContent);
-    const seq = [];
+    let lastIcon = '';
     for (const child of group.body.children) {
-      if (child.classList.contains('thinking-wrapper')) seq.push('🧠');
-      else if (child.classList.contains('tool-call-wrapper')) seq.push('⚙');
+      if (child.classList.contains('thinking-wrapper')) lastIcon = '🧠';
+      else if (child.classList.contains('tool-call-wrapper')) lastIcon = '⚙';
     }
-    let out = '';
-    let i = 0;
-    while (i < seq.length) {
-      const icon = seq[i];
-      let run = 1;
-      while (i + run < seq.length && seq[i + run] === icon) run++;
-      out += (out ? ' ' : '') + icon + (run > 1 ? '×' + run : '');
-      i += run;
-    }
-    group.icon.textContent = out;
+    group.icon.textContent = lastIcon;
   }
 
   function updateTTGroupSummary(group, text) {
@@ -975,8 +968,6 @@
   function sealTTGroup() {
     if (ttGroup && !ttGroup.sealed) {
       ttGroup.sealed = true;
-      // Reset icon trail when sealing - only show latest summary
-      ttGroup.icon.textContent = '';
     }
   }
 
@@ -993,7 +984,7 @@
       const statusEl = item.querySelector('.tool-status');
       if (nameEl) {
         const status = statusEl ? statusEl.textContent : '';
-        updateTTGroupSummary(ttGroup, `⚙ ${nameEl.textContent} ${status}`);
+        updateTTGroupSummary(ttGroup, `${nameEl.textContent} ${status}`);
       }
     }
   }
@@ -1524,6 +1515,10 @@ function scrollToBottom() {
 
     if (kind === 'project') {
       addMenuItem('New Session', () => createSession(id));
+      addMenuItem('Modify Project', () => {
+        const node = treeInstance.get_node('proj-' + id);
+        showRenameModal('project', id, (node && node.data && node.data.name) || '', (node && node.data && node.data.path) || '');
+      });
       if (id !== 'default') {
         addMenuItem('Delete Project', () => {
           const node = treeInstance.get_node('proj-' + id);
@@ -1538,7 +1533,7 @@ function scrollToBottom() {
     } else {
       addMenuItem('Rename', () => {
         const node = treeInstance.get_node('sess-' + id);
-        showRenameModal(id, (node && node.data && node.data.title) || '');
+        showRenameModal('session', id, (node && node.data && node.data.title) || '');
       });
       addMenuItem('Delete', () => deleteSessionById(id), true);
     }
@@ -1562,21 +1557,61 @@ function scrollToBottom() {
     if (e.key === 'Escape') closeNodeMenu();
   });
 
-  let renameSessionId = null;
+  let renameTarget = null; // { kind: 'session' | 'project', id }
 
-  function showRenameModal(sessionId, currentTitle) {
-    renameSessionId = sessionId;
-    renameInput.value = currentTitle || '';
+  function hideRenameError() {
+    renameError.textContent = '';
+    renameError.classList.add('hidden');
+  }
+
+  function closeRenameModal() {
+    renameModal.classList.add('hidden');
+    renameTarget = null;
+    renamePathInput.value = '';
+    hideRenameError();
+  }
+
+  function showRenameModal(kind, id, currentValue, currentPath) {
+    renameTarget = { kind, id };
+    renameInput.value = currentValue || '';
+    renameModalTitle.textContent = kind === 'project' ? 'Modify Project' : 'Rename Session';
+    renameInput.placeholder = kind === 'project' ? 'Project name' : 'Session name';
+    if (kind === 'project') {
+      renamePathWrap.classList.remove('hidden');
+      renamePathInput.value = currentPath || '';
+      renamePathInput.placeholder = 'Directory (leave empty to keep current)';
+    } else {
+      renamePathWrap.classList.add('hidden');
+      renamePathInput.value = '';
+    }
+    hideRenameError();
     renameModal.classList.remove('hidden');
     setTimeout(() => renameInput.focus(), 100);
   }
 
-  function renameSession() {
-    const title = renameInput.value.trim();
-    if (!title || !renameSessionId) return;
-    send('session:rename', { sessionId: renameSessionId, title });
-    renameModal.classList.add('hidden');
-    renameSessionId = null;
+  async function submitRename() {
+    if (!renameTarget) return;
+    const value = renameInput.value.trim();
+    if (!value) return;
+    if (renameTarget.kind === 'session') {
+      send('session:rename', { sessionId: renameTarget.id, title: value });
+      closeRenameModal();
+    } else {
+      try {
+        const res = await fetch(`/api/projects/${renameTarget.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: value, path: renamePathInput.value.trim() || undefined }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to rename project');
+        closeRenameModal();
+        loadTree();
+      } catch (err) {
+        renameError.textContent = err.message || 'Failed to rename project';
+        renameError.classList.remove('hidden');
+      }
+    }
   }
 
   function switchSession(id) {
@@ -2383,7 +2418,7 @@ function scrollToBottom() {
   stopBtn.addEventListener('click', handleStop);
 
   messageInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       inputForm.dispatchEvent(new Event('submit', { cancelable: true }));
     }
@@ -2434,19 +2469,6 @@ function scrollToBottom() {
 
   toolsModal.addEventListener('click', (e) => {
     if (e.target === toolsModal) toolsModal.classList.add('hidden');
-  });
-
-  renameSaveBtn.addEventListener('click', renameSession);
-  renameCancelBtn.addEventListener('click', () => {
-    renameModal.classList.add('hidden');
-    renameSessionId = null;
-  });
-  renameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') renameSession();
-    if (e.key === 'Escape') { renameModal.classList.add('hidden'); renameSessionId = null; }
-  });
-  renameModal.addEventListener('click', (e) => {
-    if (e.target === renameModal) { renameModal.classList.add('hidden'); renameSessionId = null; }
   });
 
   // --- Session Search Modal ---
@@ -2633,18 +2655,29 @@ function scrollToBottom() {
   }
 
   // --- Rename Modal wiring ---
-  renameSaveBtn.addEventListener('click', renameSession);
+  renameSaveBtn.addEventListener('click', submitRename);
   renameCancelBtn.addEventListener('click', () => {
-    renameModal.classList.add('hidden');
-    renameSessionId = null;
+    closeRenameModal();
   });
   renameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') renameSession();
-    if (e.key === 'Escape') { renameModal.classList.add('hidden'); renameSessionId = null; }
+    if (e.key === 'Enter') submitRename();
+    if (e.key === 'Escape') closeRenameModal();
   });
   renameModal.addEventListener('click', (e) => {
-    if (e.target === renameModal) { renameModal.classList.add('hidden'); renameSessionId = null; }
+    if (e.target === renameModal) closeRenameModal();
   });
+
+  // Rename path browse button
+  if (renamePathBrowseBtn) {
+    renamePathBrowseBtn.addEventListener('click', async () => {
+      try {
+        const dirHandle = await window.showDirectoryPicker({ mode: 'readonly' });
+        renamePathInput.value = dirHandle.path || dirHandle.name;
+      } catch (err) {
+        // User cancelled or API not available
+      }
+    });
+  }
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {

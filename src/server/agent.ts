@@ -4,7 +4,7 @@ import * as path from 'path';
 import OpenAI from 'openai';
 import { WebSocket } from 'ws';
 import { getConfig } from './config';
-import { tools, toolDefinitions, planToolNames } from './tools';
+import { tools, toolDefinitions, planToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
 import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking } from './config';
@@ -111,7 +111,8 @@ export class Agent {
       const envBlock = `\n\n## Environment Context\n${getSystemInfo(this.currentProjectPath)}`;
       const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.\n\n${getPlanSummary(session.id)}`;
       const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside `<think>` blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
-      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote });
+      const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement — the content literally isn\'t in the response.';
+      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote + toolOutputNote });
     }
 
     const historyMessages = session.messages
@@ -167,7 +168,7 @@ export class Agent {
         response = await this.callLLM(messages, config, this.abortController?.signal,
           (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
           (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
-          undefined, session.id,
+          undefined, session.id, session.disabledTools,
         );
       } catch (llmErr: any) {
         const backupName = getBackupModelName();
@@ -178,7 +179,7 @@ export class Agent {
           response = await this.callLLM(messages, config, this.abortController?.signal,
             (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
             (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
-            undefined, session.id,
+            undefined, session.id, session.disabledTools,
           );
         } else {
           response = { content: `Error calling LLM: ${llmErr.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
@@ -390,6 +391,7 @@ export class Agent {
     onContentChunk?: (chunk: string) => void,
     modelName?: string,
     sessionId?: string,
+    sessionDisabledTools?: string[],
   ): Promise<{ content: string; toolCalls?: ToolCall[]; reasoningContent?: string; usage?: { promptTokens: number } }> {
     const startTime = Date.now();
     const requestBody: Record<string, any> = { messages };
@@ -412,7 +414,10 @@ export class Agent {
     };
 
     if (toolDefinitions.length > 0) {
-      let enabledTools = toolDefinitions.filter(t => !this.disabledTools.has(t.function.name));
+      // Combine agent-level disabled tools (from config) with session-level disabled tools
+      const sessionDisabled = new Set(sessionDisabledTools || []);
+      const combinedDisabled = new Set([...this.disabledTools, ...sessionDisabled]);
+      let enabledTools = toolDefinitions.filter(t => !combinedDisabled.has(t.function.name));
       const mcpDefs = this.mcp?.getToolDefinitions() || [];
       if (mcpDefs.length > 0) {
         enabledTools = enabledTools.concat(mcpDefs);
@@ -522,6 +527,27 @@ export class Agent {
     }
   }
 
+  // Tools that bypass truncation (return small/bounded output or need raw content)
+  private readonly _whitelistTools = new Set([
+    'read', 'write', 'edit', 'patch',
+    'browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot',
+    'browser_get_content', 'browser_get_links',
+    'desktop_screenshot', 'desktop_viewport',
+    'desktop_click', 'desktop_type', 'desktop_move', 'desktop_drag', 'desktop_scroll', 'desktop_keypress',
+    'desktop_snapshot_region',
+    'memory_save', 'memory_read', 'memory_list', 'memory_delete',
+    'skill_list', 'skill_load', 'skill_save', 'skill_delete',
+    'plan_create', 'plan_update', 'plan_get', 'plan_remove',
+    'attachment_list', 'save_attached_file',
+    'web_search', 'view_image',
+  ]);
+
+  private _truncateOrReturn(content: string, maxLines: number, label: string): string {
+    const toolName = label.split(':')[0].trim();
+    if (this._whitelistTools.has(toolName)) return content;
+    return truncateOutput(content, maxLines, label);
+  }
+
   private async executeTool(toolCall: ToolCall, sessionId?: string): Promise<string> {
     const toolName = toolCall.name.toLowerCase();
     const params = toolCall.parameters;
@@ -553,11 +579,23 @@ export class Agent {
       case 'patch':
         return await tools.patchFile(params.filePath, params.patch);
       case 'glob':
-        return await tools.glob(params.pattern, params.rootDir);
+        {
+          const result = await tools.glob(params.pattern, params.rootDir);
+          const maxLines = getConfig().maxToolOutputLines || 20;
+          return this._truncateOrReturn(result, maxLines, `glob: ${params.pattern}`);
+        }
       case 'grep':
-        return await tools.grep(params.pattern, params.rootDir, params.include);
+        {
+          const result = await tools.grep(params.pattern, params.rootDir, params.include);
+          const maxLines = getConfig().maxToolOutputLines || 20;
+          return this._truncateOrReturn(result, maxLines, `grep: ${params.pattern}`);
+        }
       case 'shell':
-        return await tools.shell(params.command, params.cwd || this.currentProjectPath || undefined);
+        {
+          const result = await tools.shell(params.command, params.cwd || this.currentProjectPath || undefined);
+          const maxLines = getConfig().maxToolOutputLines || 20;
+          return this._truncateOrReturn(result, maxLines, `shell: ${params.command}`);
+        }
       case 'browser_navigate':
         if (!this.browser) return 'Browser not initialized';
         return await this.browser.navigate(params.url);
@@ -576,6 +614,48 @@ export class Agent {
       case 'browser_get_links':
         if (!this.browser) return 'Browser not initialized';
         return await this.browser.getLinks();
+      case 'browser_evaluate_js':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.evaluateJs(params.script);
+      case 'browser_xpath':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.xpath(params.xpath);
+      case 'browser_scroll':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.scroll(params.direction, params.amount);
+      case 'browser_wait_for':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.waitFor(params.condition, params.timeout);
+      case 'browser_select':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.selectOption(params.selector, params.value, params.label, params.index);
+      case 'browser_get_visible_elements':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.getVisibleElements();
+      case 'browser_get_ax_tree':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.getAccessibilityTree();
+      case 'browser_get_react_tree':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.getReactComponentTree();
+      case 'browser_hover':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.hover(params.selector);
+      case 'browser_click_xpath':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.clickXPath(params.xpath);
+      case 'browser_extract_content':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.extractContent(params.selector, params.options);
+      case 'browser_get_page_structure':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.getPageStructure();
+      case 'browser_scroll_to':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.scrollToElement(params.selector);
+      case 'browser_wait_for_selector':
+        if (!this.browser) return 'Browser not initialized';
+        return await this.browser.waitForSelector(params.selector, params.timeout);
       case 'desktop_screenshot':
         if (!this.desktop) return 'Desktop automation not initialized';
         return await this.desktop.getScreenshotBase64();
@@ -606,7 +686,11 @@ export class Agent {
       case 'web_search':
         return await tools.webSearch(params.query, params.numResults);
       case 'web_fetch':
-        return await tools.webFetch(params.url, params.format);
+        {
+          const result = await tools.webFetch(params.url, params.format);
+          const maxLines = getConfig().maxToolOutputLines || 20;
+          return this._truncateOrReturn(result, maxLines, `web_fetch: ${params.url}`);
+        }
       case 'memory_save':
         return await tools.memorySave(params.key, params.value);
       case 'memory_read':

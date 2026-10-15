@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { applyPatch } from 'diff';
 import TurndownService from 'turndown';
@@ -88,7 +88,7 @@ function saveFullOutput(content: string, suffix: string): string {
   return filePath;
 }
 
-function truncateOutput(content: string, maxLines: number, label: string): string {
+export function truncateOutput(content: string, maxLines: number, label: string): string {
   if (maxLines < 0) return content;
   const suffix = label.replace(/[^a-z0-9]/gi, '_').slice(0, 20);
   // Byte-size guard: if content exceeds 100KB, save and truncate even if it's one long line
@@ -396,6 +396,65 @@ export async function toolGrep(
   }
 }
 
+const PYTHON_DIR = path.join(__dirname, '..', '..', 'python');
+const RESIZE_SCRIPT = path.join(PYTHON_DIR, 'resize_image.py');
+
+const IMAGE_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.tiff', '.tif',
+]);
+
+/**
+ * View an image file from disk. Resizes to match desktop screenshot rules
+ * (800px max dimension, JPEG quality 50) so token usage stays consistent.
+ * Relative paths are resolved against the project directory if provided.
+ */
+export async function toolViewImage(filePath: string, projectPath?: string): Promise<string> {
+  try {
+    const baseDir = projectPath || process.cwd();
+    const absPath = path.resolve(baseDir, filePath);
+    if (!fs.existsSync(absPath)) {
+      return `Error: File not found: ${absPath}`;
+    }
+
+    const ext = path.extname(absPath).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) {
+      return `Error: Unsupported image format '${ext}'. Supported formats: ${[...IMAGE_EXTENSIONS].join(', ')}`;
+    }
+
+    const stats = fs.statSync(absPath);
+    if (stats.size === 0) {
+      return 'Error: Image file is empty.';
+    }
+
+    const maxFileSize = 10 * 1024 * 1024;
+    if (stats.size > maxFileSize) {
+      return `Error: Image file too large (${(stats.size / 1024 / 1024).toFixed(1)}MB). Maximum supported size is 10MB.`;
+    }
+
+    // Resize to match desktop screenshot rules (1024px max dim, PNG)
+    // so token usage stays consistent with screenshots.
+    return new Promise<string>((resolve) => {
+      const proc = spawn('python', [RESIZE_SCRIPT, absPath, '1024']);
+
+      let stdout = '';
+      proc.stdout.on('data', (data) => { stdout += data.toString(); });
+      proc.stderr.on('data', (data) => {
+        // Silently ignore Python warnings
+      });
+
+      proc.on('close', (code) => {
+        if (code !== 0) {
+          resolve(`Error: Failed to process image. The Python resize script exited with code ${code}.`);
+          return;
+        }
+        resolve(`data:image/png;base64,${stdout.trim()}`);
+      });
+    });
+  } catch (err: any) {
+    return `Error reading image: ${err.message}`;
+  }
+}
+
 export async function toolShell(command: string, cwd?: string): Promise<string> {
   try {
     const { stdout, stderr } = await execAsync(command, {
@@ -631,6 +690,7 @@ export const tools = {
   patchFile: toolPatchFile,
   glob: toolGlob,
   grep: toolGrep,
+  view_image: toolViewImage,
   shell: toolShell,
   webSearch: toolWebSearch,
   webFetch: toolWebFetch,
@@ -743,6 +803,20 @@ export const toolDefinitions = [
   {
     type: 'function',
     function: {
+      name: 'view_image',
+      description: 'Read an image file from disk and return it as a base64-encoded image. The model will receive the image and can analyze it (e.g., describe content, read text, identify objects). Supports common formats: jpg, jpeg, png, gif, webp, bmp, svg, tiff. Relative paths are resolved against the project directory.',
+      parameters: {
+        type: 'object',
+        properties: {
+          filePath: { type: 'string', description: 'Path to the image file on disk' },
+        },
+        required: ['filePath'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'shell',
       description: 'Execute a shell command. Output is truncated to the configured max lines (see environment context). Full output is saved to a temp file for later access. Use cwd to set the working directory (defaults to server CWD).',
       parameters: {
@@ -831,6 +905,202 @@ export const toolDefinitions = [
         type: 'object',
         properties: {},
         required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_evaluate_js',
+      description: 'Execute JavaScript code in the browser page context. Returns the result of the last expression.',
+      parameters: {
+        type: 'object',
+        properties: {
+          script: { type: 'string', description: 'JavaScript code to execute in the page' },
+        },
+        required: ['script'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_xpath',
+      description: 'Find DOM elements using XPath selectors. Returns element details including text, attributes, and position.',
+      parameters: {
+        type: 'object',
+        properties: {
+          xpath: { type: 'string', description: 'XPath expression to find elements (e.g., "//div[@class=\'content\']")' },
+        },
+        required: ['xpath'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_scroll',
+    description: 'Scroll the page in a direction. Supports: up, down, left, right, top, bottom, uppage, downpage.',
+      parameters: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', description: 'Scroll direction: up, down, left, right, top, bottom, uppage, downpage' },
+          amount: { type: 'number', description: 'Pixels to scroll (default: 500 for directional, 200 for up/down)' },
+        },
+        required: ['direction'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_wait_for',
+    description: 'Wait for a condition before proceeding. Supports: selector:css, xpath:expression, networkidle, load, domcontentloaded.',
+      parameters: {
+        type: 'object',
+        properties: {
+          condition: { type: 'string', description: 'Condition to wait for: selector:css-selector, xpath:xpath-expression, networkidle, load, domcontentloaded' },
+          timeout: { type: 'number', description: 'Timeout in milliseconds (default: 10000)' },
+        },
+        required: ['condition'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_select',
+    description: 'Select an option from a dropdown/select element by value, label, or index.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector for the <select> element' },
+          value: { type: 'string', description: 'Value of the option to select' },
+          label: { type: 'string', description: 'Label text of the option to select' },
+          index: { type: 'number', description: 'Index of the option to select (0-based)' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_visible_elements',
+    description: 'Get all visible interactive elements with position info (x, y, width, height). Useful for coordinate-based clicking.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_ax_tree',
+    description: 'Get the browser accessibility tree (AXTree) — rich structure with role, name, and state. Best for React/SPA apps.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_react_tree',
+    description: 'Extract the React component tree from the page (if the page uses React). Useful for understanding SPA structure.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_hover',
+    description: 'Hover over an element by CSS selector. Useful for revealing tooltips, dropdowns, and hover states.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector of the element to hover over' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_click_xpath',
+    description: 'Click an element found by XPath selector. Useful for clicking specific elements when CSS selectors are insufficient.',
+      parameters: {
+        type: 'object',
+        properties: {
+          xpath: { type: 'string', description: 'XPath expression to find the element to click (e.g., "//a[contains(@href, "/r/crypto/comments/")]")' },
+        },
+        required: ['xpath'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_extract_content',
+    description: 'Extract structured content from a page section. Returns title, author, body, links, and comments in a clean format.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS or XPath selector to extract content from' },
+          maxComments: { type: 'number', description: 'Maximum number of comments to extract (default: 50)' },
+          includeLinks: { type: 'boolean', description: 'Whether to include links in the extraction (default: true)' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_page_structure',
+    description: 'Get a summary of the page structure including title, links, headings, and whether a CAPTCHA is present.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_scroll_to',
+    description: 'Scroll the browser viewport to a specific element.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS or XPath selector of the element to scroll to' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_wait_for_selector',
+    description: 'Wait for a specific selector to appear on the page.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS or XPath selector to wait for' },
+          timeout: { type: 'number', description: 'Timeout in milliseconds (default: 10000)' },
+        },
+        required: ['selector'],
       },
     },
   },

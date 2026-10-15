@@ -30,16 +30,10 @@ export interface ModelConfig {
 }
 
 export interface Config {
-  agentModel?: ModelConfig;
-  // Flat fallback keys (deprecated, use agentModel instead)
-  endpoint?: string;
-  apiKey?: string;
-  model?: string;
-  maxTokens?: number;
-  contextWindow?: number;
-  // Multiple model support
+  // Named model definitions — single source of truth for all model configs
   models?: ModelConfig[];
-  defaultModel?: string;
+  // References into the models[] array by name
+  activeModel?: string;
   backupModel?: string;
   // Core config
   maxToolIterations: number;
@@ -63,6 +57,8 @@ export interface Config {
   // Auto session summary — ask the model to generate a short label + topic
   // summary after the first turn of an untitled session.
   autoSessionSummary?: boolean;
+  // Temp output file cleanup TTL in minutes (default: 60)
+  tempOutputCleanupTTLMinutes?: number;
 }
 
 export interface STTConfig {
@@ -94,6 +90,8 @@ export interface DesktopConfig {
 export interface SubAgentConfig {
   enabled: boolean;
   maxAgentSlots: number;
+  // Name of the model to use for sub-agents (reference into models[] array)
+  model?: string;
 }
 
 export interface UIAutomationConfig {
@@ -174,6 +172,7 @@ export interface Session {
   projectId?: string;
   thinkingEnabled?: boolean;
   voiceMode?: boolean;
+  disabledTools?: string[];
 }
 
 // WebSocket event types

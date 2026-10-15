@@ -36,7 +36,12 @@ const defaultShellConfig: ShellConfig = {
 };
 
 const defaultConfig: Config = {
-  agentModel: { ...defaultModelConfig },
+  // Default model — used when no models[] are configured
+  models: [{
+    ...defaultModelConfig,
+    name: 'Default',
+  }],
+  activeModel: 'Default',
   maxToolIterations: 10,
   imageTokensPerImage: 1024,
   llmTimeoutMs: 180000,
@@ -44,10 +49,9 @@ const defaultConfig: Config = {
   reasoningEffort: 'medium',
   maxToolOutputLines: 20,
   disabledTools: [
-    'browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_get_content', 'browser_get_links',
     'desktop_viewport', 'desktop_screenshot', 'desktop_snapshot_region', 'desktop_click', 'desktop_type', 'desktop_move', 'desktop_drag', 'desktop_scroll', 'desktop_keypress',
   ],
-  subAgents: defaultSubAgentConfig,
+  subAgents: { ...defaultSubAgentConfig, model: 'Default' },
   uiAutomation: defaultUIAutomationConfig,
   shell: defaultShellConfig,
   mcpServers: [],
@@ -83,6 +87,7 @@ const defaultConfig: Config = {
     maxSizeMB: 25,
   },
   webFetchMaxInlineKB: 50,
+  tempOutputCleanupTTLMinutes: 60,
 };
 
 export function loadEnvFile(): void {
@@ -93,7 +98,7 @@ export function loadEnvFile(): void {
       const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
       if (m && process.env[m[1]] === undefined) {
         process.env[m[1]] = m[2] || '';
-      }
+};
     }
   } catch (err) {
     console.error('Failed to load .env:', err);
@@ -117,22 +122,11 @@ export function getEffectiveThinking(name?: string): boolean {
   return getModelDefaultThinking(name);
 }
 
-function normalizeModelConfig(src: any, fallback?: ModelConfig): ModelConfig {
-  return {
-    endpoint: src?.endpoint || fallback?.endpoint || defaultModelConfig.endpoint,
-    apiKey: src?.apiKey ?? fallback?.apiKey ?? defaultModelConfig.apiKey,
-    model: src?.model || fallback?.model || defaultModelConfig.model,
-    maxTokens: src?.maxTokens ?? fallback?.maxTokens ?? defaultModelConfig.maxTokens,
-    contextWindow: src?.contextWindow || fallback?.contextWindow || defaultModelConfig.contextWindow,
-    temperature: src?.temperature ?? fallback?.temperature,
-    thinkingEnabled: src?.thinkingEnabled ?? fallback?.thinkingEnabled ?? defaultModelConfig.thinkingEnabled,
-    preserveThinking: src?.preserveThinking ?? fallback?.preserveThinking ?? defaultModelConfig.preserveThinking,
-  };
-}
 
 export function getNamedModels(): ModelConfig[] {
+  // Primary: use models[] array if defined
   if (config.models && config.models.length > 0) return config.models;
-  if (config.agentModel) return [{ ...config.agentModel, name: config.agentModel.name || 'Default' }];
+  // Fallback: create a default model entry
   return [{ ...defaultModelConfig, name: 'Default' }];
 }
 
@@ -142,7 +136,7 @@ export function getModelConfig(name: string): ModelConfig | undefined {
 
 export function getActiveModelName(): string {
   if (activeModelName) return activeModelName;
-  if (config.defaultModel) return config.defaultModel;
+  if (config.activeModel) return config.activeModel;
   const models = getNamedModels();
   return models[0]?.name || 'Default';
 }
@@ -167,7 +161,8 @@ export function getAgentModel(modelName?: string): ModelConfig {
   const active = getActiveModelName();
   const activeConfig = getModelConfig(active);
   if (activeConfig) return activeConfig;
-  return config.agentModel || normalizeModelConfig(config, defaultModelConfig);
+  // Fallback: create default model config
+  return { ...defaultModelConfig, name: 'Default' };
 }
 
 export function getModelDefaultThinking(name?: string): boolean {
@@ -184,9 +179,7 @@ export function loadConfig(): Config {
       config = {
         ...defaultConfig,
         ...loaded,
-        agentModel: loaded.agentModel
-          ? { ...defaultConfig.agentModel, ...loaded.agentModel }
-          : normalizeModelConfig(loaded, defaultModelConfig as any),
+        // models[] loaded directly — no transformation needed
 
         stt: { ...defaultConfig.stt, ...(loaded.stt || {}) },
         tts: { ...defaultConfig.tts, ...(loaded.tts || {}) },
@@ -200,7 +193,7 @@ export function loadConfig(): Config {
       };
 
       if (!activeModelName) {
-        activeModelName = config.defaultModel || getNamedModels()[0]?.name;
+        activeModelName = config.activeModel || getNamedModels()[0]?.name;
       }
 
       // Only seed the override from disk on first load. Runtime re-loads must

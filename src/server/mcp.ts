@@ -163,10 +163,18 @@ export class MCPManager {
     if (s.connected && s.client) return true;
 
     try {
+      // Merge custom env vars with the parent process environment so
+      // PATH, SYSTEMROOT, etc. are inherited. Custom vars take precedence.
+      const mergedEnv: Record<string, string> = { ...process.env } as any;
+      if (s.config.env) {
+        for (const [k, v] of Object.entries(s.config.env)) {
+          mergedEnv[k] = v;
+        }
+      }
       const transport = new StdioClientTransport({
         command: s.config.command,
         args: s.config.args || [],
-        env: s.config.env || {},
+        env: mergedEnv,
         stderr: 'pipe',
       });
       const client = new Client({ name: 'yukiweb', version: '0.1.0' });

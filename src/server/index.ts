@@ -172,6 +172,12 @@ function createSession(projectId?: string): Session {
     createdAt: new Date(),
     updatedAt: new Date(),
     thinkingEnabled: undefined,
+    disabledTools: [
+      'browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_get_content', 'browser_get_links',
+      'browser_evaluate_js', 'browser_xpath', 'browser_scroll', 'browser_wait_for', 'browser_select',
+      'browser_get_visible_elements', 'browser_get_ax_tree', 'browser_get_react_tree', 'browser_hover',
+      'browser_click_xpath', 'browser_extract_content', 'browser_get_page_structure', 'browser_scroll_to', 'browser_wait_for_selector',
+    ],
   };
 
   const systemPrompt = loadSystemPrompt();
@@ -482,7 +488,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 // Periodic cleanup of temp output files older than 15 minutes
 const tempOutputDir = path.join(os.tmpdir(), 'yukiweb-outputs');
 setInterval(() => {
-  const cutoff = Date.now() - 15 * 60 * 1000;
+  const ttlMinutes = (getConfig().tempOutputCleanupTTLMinutes || 60);
+  const cutoff = Date.now() - ttlMinutes * 60 * 1000;
   try {
     if (fs.existsSync(tempOutputDir)) {
       const entries = fs.readdirSync(tempOutputDir);
@@ -552,6 +559,21 @@ function sendPlanUpdate(ws: WebSocket, sessionId: string): void {
   } catch { /* ignore */ }
 }
 
+function getEnabledToolsForSession(session: Session): Array<{ name: string; enabled: boolean }> {
+  const configDisabled = new Set(loadConfig().disabledTools || []);
+  const sessionDisabled = new Set(session.disabledTools || []);
+  return toolNames.map(name => ({
+    name,
+    enabled: !configDisabled.has(name) && !sessionDisabled.has(name),
+  }));
+}
+
+function getSessionDisabledToolsForSession(session: Session): string[] {
+  const configDisabled = loadConfig().disabledTools || [];
+  const sessionDisabled = session.disabledTools || [];
+  return sessionDisabled.filter(t => !configDisabled.includes(t));
+}
+
 function getSession(id?: string): Session {
   if (id && sessions.has(id)) {
     activeSessionId = id;
@@ -598,7 +620,7 @@ wss.on('connection', (ws) => {
 
   ws.send(JSON.stringify({
     type: 'tools:list',
-    data: { tools: toolNames.map(name => ({ name, enabled: !(loadConfig().disabledTools || []).includes(name) })).filter(t => t.enabled) },
+    data: { tools: getEnabledToolsForSession(session) },
   }));
 
   ws.send(JSON.stringify({
@@ -863,7 +885,24 @@ wss.on('connection', (ws) => {
       }
 
       if (message.type === 'tools:toggle') {
-        agent.setToolEnabled(message.data.toolName, message.data.enabled);
+        // Update session-level disabled tools (affects only this session)
+        if (!session.disabledTools) session.disabledTools = [];
+        const idx = session.disabledTools.indexOf(message.data.toolName);
+        if (message.data.enabled && idx !== -1) {
+          session.disabledTools.splice(idx, 1);
+        } else if (!message.data.enabled && idx === -1) {
+          session.disabledTools.push(message.data.toolName);
+        }
+        session.updatedAt = new Date();
+        saveSession(session);
+        ws.send(JSON.stringify({
+          type: 'tools:toggled',
+          data: { toolName: message.data.toolName, enabled: message.data.enabled },
+        }));
+        ws.send(JSON.stringify({
+          type: 'tools:list',
+          data: { tools: getEnabledToolsForSession(session) },
+        }));
       }
 
       if (message.type === 'mcp:toggle') {
