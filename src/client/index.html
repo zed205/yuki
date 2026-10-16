@@ -290,6 +290,13 @@
     <div class="bg-surface border border-border rounded-xl shadow-2xl w-[360px] max-w-[95vw] flex flex-col p-4">
       <h2 class="text-sm font-semibold mb-3">New Project</h2>
       <input id="add-project-input" type="text" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary placeholder-muted" placeholder="Project name" />
+      <div id="add-project-path-wrap" class="hidden mt-2">
+        <label class="text-xs text-muted mb-1 block">Directory (optional)</label>
+        <div class="flex gap-2">
+          <input id="add-project-path-input" type="text" class="flex-1 min-w-0 bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary" placeholder="Directory (leave empty for default)" />
+          <button id="add-project-path-browse-btn" type="button" class="px-3 py-2 text-xs bg-surface2 border border-border rounded-lg text-text hover:border-primary hover:text-primary transition-colors shrink-0">Browse…</button>
+        </div>
+      </div>
       <div class="flex justify-end gap-2 mt-3">
         <button id="add-project-cancel-btn" class="px-3 py-1.5 text-xs text-muted hover:text-text transition-colors">Cancel</button>
         <button id="add-project-save-btn" class="px-4 py-1.5 text-xs bg-primaryDark text-white rounded-lg hover:bg-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed" disabled>Add</button>

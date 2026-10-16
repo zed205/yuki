@@ -48,6 +48,9 @@
   const confirmOkBtn = document.getElementById('confirm-ok-btn');
   const addProjectModal = document.getElementById('add-project-modal');
   const addProjectInput = document.getElementById('add-project-input');
+  const addProjectPathWrap = document.getElementById('add-project-path-wrap');
+  const addProjectPathInput = document.getElementById('add-project-path-input');
+  const addProjectPathBrowseBtn = document.getElementById('add-project-path-browse-btn');
   const addProjectCancelBtn = document.getElementById('add-project-cancel-btn');
   const addProjectSaveBtn = document.getElementById('add-project-save-btn');
   const searchBtn = document.getElementById('search-btn');
@@ -1290,9 +1293,9 @@ function scrollToBottom() {
 
   function setIsWaiting(waiting) {
     isWaiting = waiting;
-    sendBtn.disabled = waiting;
-    messageInput.disabled = waiting;
-    stopBtn.disabled = !waiting;
+    if (sendBtn) sendBtn.disabled = waiting;
+    if (messageInput) messageInput.disabled = waiting;
+    if (stopBtn) stopBtn.disabled = !waiting;
 
     const existing = document.querySelector('.typing-indicator');
     if (waiting && !existing) {
@@ -2733,12 +2736,15 @@ function scrollToBottom() {
   // --- Add Project Modal ---
   function openAddProjectModal() {
     addProjectInput.value = '';
+    addProjectPathInput.value = '';
     addProjectSaveBtn.disabled = true;
+    addProjectPathWrap.classList.remove('hidden');
     addProjectModal.classList.remove('hidden');
     setTimeout(() => addProjectInput.focus(), 100);
   }
 
   function closeAddProjectModal() {
+    addProjectPathWrap.classList.add('hidden');
     addProjectModal.classList.add('hidden');
   }
 
@@ -2754,12 +2760,13 @@ function scrollToBottom() {
   addProjectSaveBtn.addEventListener('click', async () => {
     const name = addProjectInput.value.trim();
     if (!name) return;
+    const path = addProjectPathInput.value.trim() || undefined;
     closeAddProjectModal();
     try {
       await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, path }),
       });
       loadTree();
     } catch (err) {
@@ -2800,10 +2807,58 @@ function scrollToBottom() {
   if (renamePathBrowseBtn) {
     renamePathBrowseBtn.addEventListener('click', async () => {
       try {
-        const dirHandle = await window.showDirectoryPicker({ mode: 'readonly' });
-        renamePathInput.value = dirHandle.path || dirHandle.name;
+        // Try showDirectoryPicker first (Chrome/Edge 86+)
+        if (window.showDirectoryPicker) {
+          const dirHandle = await window.showDirectoryPicker({ mode: 'readonly' });
+          renamePathInput.value = dirHandle.path || dirHandle.name;
+          return;
+        }
+        // Fallback: use hidden file input with webkitdirectory
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.webkitdirectory = true;
+        input.mozdirectory = true;
+        input.addEventListener('change', (e) => {
+          const filePath = e.target.files[0]?.path || e.target.files[0]?.webkitRelativePath || '';
+          if (filePath) {
+            const dirPath = filePath.split('/')[0];
+            renamePathInput.value = dirPath;
+          }
+          input.remove();
+        });
+        input.click();
       } catch (err) {
-        // User cancelled or API not available
+        console.error('Directory picker error:', err.message || err);
+      }
+    });
+  }
+
+  // Add project path browse button
+  if (addProjectPathBrowseBtn) {
+    addProjectPathBrowseBtn.addEventListener('click', async () => {
+      try {
+        // Try showDirectoryPicker first (Chrome/Edge 86+)
+        if (window.showDirectoryPicker) {
+          const dirHandle = await window.showDirectoryPicker({ mode: 'readonly' });
+          addProjectPathInput.value = dirHandle.path || dirHandle.name;
+          return;
+        }
+        // Fallback: use hidden file input with webkitdirectory
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.webkitdirectory = true;
+        input.mozdirectory = true;
+        input.addEventListener('change', (e) => {
+          const filePath = e.target.files[0]?.path || e.target.files[0]?.webkitRelativePath || '';
+          if (filePath) {
+            const dirPath = filePath.split('/')[0];
+            addProjectPathInput.value = dirPath;
+          }
+          input.remove();
+        });
+        input.click();
+      } catch (err) {
+        console.error('Directory picker error:', err.message || err);
       }
     });
   }
