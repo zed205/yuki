@@ -289,6 +289,9 @@ body.resizing-sidebar {
 }
 
 /* Utility summary */
+#utility-summary {
+  padding: 0.75rem 1rem;
+}
 #util-model {
   font-size: 0.7rem;
   color: #c9d1d9;
