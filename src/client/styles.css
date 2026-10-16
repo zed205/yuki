@@ -166,32 +166,6 @@ html {
   #sidebar.mobile-open {
     transform: translateX(0);
   }
-  #sidebar.collapsed {
-    width: 16rem !important;
-  }
-  #sidebar.collapsed .sidebar-content,
-  #sidebar.collapsed .session-info,
-  #sidebar.collapsed .session-menu-container {
-    display: block !important;
-  }
-  #sidebar.collapsed .sidebar-header {
-    flex-direction: row;
-    padding: 1rem 1rem;
-    border-bottom: 1px solid #30363d;
-    justify-content: normal;
-  }
-  #sidebar.collapsed .sidebar-avatar {
-    width: 2rem;
-    height: 2rem;
-    font-size: 0.75rem;
-  }
-  #sidebar.collapsed .sidebar-sessions {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 0.5rem;
-    gap: 0;
-  }
 }
 
 /* Sidebar resize handle */
@@ -224,6 +198,7 @@ html {
 body.resizing-sidebar #sidebar-resizer::after {
   background: #58a6ff;
 }
+
 #sidebar.resizing {
   transition: none !important;
 }
@@ -295,6 +270,24 @@ body.resizing-sidebar {
   color: #8b949e !important;
 }
 
+/* Tooltip for collapsed sidebar items */
+.jstree-item-tooltip {
+  position: fixed;
+  background: #21262d;
+  color: #c9d1d9;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  pointer-events: none;
+  border: 1px solid #30363d;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  display: none;
+}
+
 /* Utility summary */
 #util-model {
   font-size: 0.7rem;
@@ -316,7 +309,7 @@ body.resizing-sidebar {
   color: #c9d1d9;
 }
 
-/* Message wrapper shrink-wraps the bubble so absolute children position correctly */
+/* Message wrapper */
 .msg-wrapper {
   width: fit-content;
   max-width: 90%;
@@ -347,7 +340,7 @@ body.resizing-sidebar {
   white-space: pre-wrap;
 }
 .hidden {
-  display: none !important;
+  display: none;
 }
 
 /* Drop zone highlight */
@@ -366,7 +359,7 @@ body.resizing-sidebar {
   list-style: none;
 }
 
-/* --- jsTree dark tree (Project > Sessions) --- */
+/* --- jsTree dark tree --- */
 #session-tree,
 #session-tree.jstree-focused {
   background: transparent;
@@ -390,12 +383,23 @@ body.resizing-sidebar {
   background: transparent;
   box-shadow: none;
   display: block;
+  font-weight: 400 !important;
+  line-height: 1.4;
+  text-shadow: none !important;
+}
+
+#session-tree .jstree-anchor *,
+#session-tree .jstree-anchor span,
+#session-tree .tree-node-title,
+#session-tree .tree-node-summary,
+#session-tree .tree-node-meta {
+  font-weight: 400 !important;
+  text-shadow: none !important;
 }
 #session-tree .jstree-anchor .jstree-themeicon {
   display: none;
 }
 
-/* Toggle arrows without theme sprite */
 #session-tree .jstree-ocl {
   position: absolute;
   left: 0;
@@ -429,7 +433,6 @@ body.resizing-sidebar {
   display: none;
 }
 
-/* Full-row hover/selection */
 #session-tree .jstree-wholerow {
   height: 100%;
   background: transparent;
@@ -467,6 +470,7 @@ body.resizing-sidebar {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.875rem;
+  font-weight: 400 !important;
 }
 .tree-session {
   padding-right: 32px;
@@ -477,7 +481,6 @@ body.resizing-sidebar {
   font-size: 0.875rem;
   color: #c9d1d9;
 }
-/* Summary text shown below the title in session tree nodes */
 .tree-session .tree-node-summary {
   display: block;
   overflow: hidden;
@@ -496,6 +499,7 @@ body.resizing-sidebar {
   white-space: nowrap;
   font-size: 0.875rem;
   color: #8b949e;
+  font-weight: 400 !important;
 }
 #session-tree .jstree-leaf > .jstree-anchor.jstree-clicked .tree-node-title {
   color: #58a6ff;
@@ -592,4 +596,354 @@ body.resizing-sidebar {
 }
 #voice-dropdown-menu .menu-item-active .text-muted {
   color: #58a6ff !important;
+}
+
+/* Options menu */
+#options-menu {
+  animation: dropdown-fade-in 0.15s ease-out;
+}
+#options-menu.show {
+  display: block;
+}
+#options-menu.hidden {
+  display: none;
+}
+#options-menu .menu-item-active {
+  background: #30363d;
+}
+#options-menu .menu-item-active .text-muted {
+  color: #58a6ff !important;
+}
+
+/* ========================================
+   MOBILE RESPONSIVE STYLES
+   ======================================== */
+
+/* Prevent horizontal scrollbar on mobile */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* Force no horizontal scroll on all containers */
+body > * {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* Top bar (mobile only) */
+#top-bar {
+  display: none;
+  max-width: 100vw;
+  box-sizing: border-box;
+}
+
+/* ===== Mobile: max-width 768px ===== */
+@media (max-width: 768px) {
+  /* Show top bar */
+  #top-bar {
+    display: flex !important;
+    box-sizing: border-box !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+
+  /* Scale down font */
+  html {
+    font-size: 15px;
+  }
+
+  /* Force no horizontal scroll on main content */
+  main {
+    overflow-x: hidden !important;
+    max-width: 100vw !important;
+  }
+
+  /* Sidebar off-canvas */
+  #sidebar {
+    position: fixed !important;
+    z-index: 40 !important;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 4px 0 12px rgba(0,0,0,0.3);
+    width: 16rem !important;
+    max-width: 100vw !important;
+    box-sizing: border-box !important;
+  }
+  #sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  #sidebar-backdrop {
+    z-index: 35 !important;
+  }
+  #sidebar-close {
+    display: block !important;
+  }
+
+  /* Sidebar compact */
+  .sidebar-header {
+    padding: 0.75rem !important;
+  }
+  #utility-summary {
+    padding: 0.5rem !important;
+  }
+  #model-select {
+    font-size: 0.8rem !important;
+    padding: 0.375rem 0.5rem !important;
+  }
+  #util-context-text {
+    font-size: 0.75rem !important;
+  }
+  #add-project-btn,
+  #search-btn {
+    font-size: 0.75rem !important;
+    padding: 0.375rem 0.5rem !important;
+  }
+
+  /* Input area */
+  .p-4 {
+    padding: 0.5rem !important;
+  }
+  #input-form {
+    gap: 0.375rem !important;
+    flex-wrap: nowrap !important;
+  }
+  #message-input {
+    min-height: 44px !important;
+    padding: 0.5rem 0.75rem !important;
+    font-size: 16px !important;
+  }
+  #stop-btn {
+    min-width: 44px !important;
+    min-height: 44px !important;
+    padding: 0.375rem !important;
+  }
+
+  /* Modals: full screen */
+  #tools-modal > div,
+  #search-modal > div,
+  #rename-modal > div,
+  #confirm-modal > div,
+  #add-project-modal > div {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+  #search-modal {
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    padding-top: 0 !important;
+  }
+
+  /* Browser panel: slide-up sheet */
+  #browser-panel {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: calc(100vh - 6rem) !important;
+    max-height: calc(100vh - 6rem) !important;
+    top: auto !important;
+    bottom: 0.5rem !important;
+    left: 0 !important;
+    right: 0 !important;
+    border-radius: 0.5rem 0.5rem 0 0 !important;
+    margin: 0 !important;
+  }
+  #browser-url {
+    width: 100px !important;
+    font-size: 0.7rem !important;
+  }
+  #browser-panel > div:first-child {
+    flex-wrap: wrap !important;
+    gap: 0.25rem !important;
+    padding: 0.5rem !important;
+  }
+
+  /* Options menu */
+  #options-menu {
+    width: calc(100vw - 2rem) !important;
+    max-width: calc(100vw - 2rem) !important;
+    right: 0 !important;
+    left: auto !important;
+  }
+
+  /* Plan bar */
+  #plan-bar {
+    padding: 0.375rem !important;
+  }
+  #plan-bar .max-w-5xl {
+    max-width: 100% !important;
+  }
+  #plan-title {
+    font-size: 0.7rem !important;
+  }
+  #plan-progress,
+  #plan-chevron {
+    font-size: 0.65rem !important;
+  }
+
+  /* Image preview: horizontal scroll */
+  #image-preview {
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    padding-bottom: 0.25rem !important;
+  }
+  #image-preview > div {
+    flex-shrink: 0 !important;
+  }
+
+  /* Messages area */
+  #messages {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+  }
+  #scroll-container {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    padding-top: 4rem !important; /* Account for top bar */
+    overflow-x: hidden !important;
+    max-width: 100vw !important;
+  }
+  .msg-wrapper {
+    max-width: 95% !important;
+  }
+  #messages,
+  #plan-bar,
+  #input-form,
+  #image-preview,
+  #voice-status {
+    padding-left: 0.25rem !important;
+    padding-right: 0.25rem !important;
+    overflow-x: hidden !important;
+    max-width: 100% !important;
+  }
+
+  /* Message content */
+  .message-content h1 { font-size: 1.1rem; }
+  .message-content h2 { font-size: 1rem; }
+  .message-content h3 { font-size: 0.95rem; }
+  .message-content h4 { font-size: 0.9rem; }
+  .message-content code { font-size: 0.8em; }
+  .message-content pre code { font-size: 0.75rem; }
+  .message-content th,
+  .message-content td {
+    padding: 0.1rem 0.35rem !important;
+  }
+  .message-content table {
+    font-size: 0.8rem !important;
+  }
+  .message-content li {
+    margin-left: 1.25rem !important;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+}
+
+/* Very small screens: max-width 480px */
+@media (max-width: 480px) {
+  html {
+    font-size: 14px;
+  }
+  .p-4 {
+    padding: 0.375rem !important;
+  }
+  #input-form {
+    flex-wrap: wrap !important;
+  }
+  #message-input {
+    flex: 1 1 100% !important;
+    order: 5;
+    min-height: 48px !important;
+  }
+  #options-menu-btn,
+  #options-thinking-btn,
+  #options-tools-btn,
+  #options-voice-mode-btn,
+  #options-mic-btn,
+  #options-tts-btn {
+    flex: 1 !important;
+    min-width: 0 !important;
+  }
+  #stop-btn {
+    flex: 0 0 auto !important;
+  }
+  #options-menu {
+    width: calc(100vw - 1rem) !important;
+    max-width: calc(100vw - 1rem) !important;
+    right: 0.5rem !important;
+    left: auto !important;
+  }
+}
+
+/* ===== Touch-friendly adjustments ===== */
+@media (hover: none) and (pointer: coarse) {
+  button,
+  a,
+  [role="button"],
+  select {
+    min-height: 44px;
+  }
+  #message-input {
+    min-height: 44px;
+  }
+  #session-tree .jstree-anchor {
+    padding: 6px 6px 6px 24px;
+    min-height: 40px;
+  }
+  .tree-menu-btn {
+    width: 28px !important;
+    height: 28px !important;
+  }
+}
+
+/* ===== Landscape mobile ===== */
+@media (max-height: 500px) and (orientation: landscape) {
+  #scroll-container {
+    padding-top: 3rem !important;
+  }
+  .p-4 {
+    padding: 0.375rem !important;
+  }
+  #input-form {
+    flex-wrap: nowrap !important;
+  }
+  #message-input {
+    flex: 1 1 auto !important;
+    order: unset !important;
+  }
+}
+
+/* ===== Safe area insets for notched devices ===== */
+@supports (padding: max(0px)) {
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-top: env(safe-area-inset-top);
+  }
+  #top-bar {
+    top: env(safe-area-inset-top) !important;
+  }
+  .p-4 {
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+}
+
+/* ===== Reduced motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  #sidebar {
+    transition: none;
+  }
+  .tree-menu-btn,
+  #options-menu {
+    transition: none;
+  }
+  @keyframes pulse-recording {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 1; }
+  }
 }

@@ -2,7 +2,7 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
   <title>Yuki</title>
   <link rel="icon" type="image/svg+xml" href="/yuki.svg">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -32,111 +32,157 @@
   </script>
 </head>
 <body class="bg-bg text-text h-screen flex overflow-hidden">
-  <div id="sidebar-backdrop" class="hidden fixed inset-0 z-30 bg-black/50 md:hidden"></div>
+  <!-- Sidebar backdrop for mobile -->
+  <div id="sidebar-backdrop" class="hidden fixed inset-0 z-30 bg-black/50"></div>
+
+  <!-- Sidebar -->
   <aside id="sidebar" class="w-64 flex-shrink-0 bg-surface border-r border-border flex flex-col transition-all duration-200">
     <div id="sidebar-resizer"></div>
+    <!-- Sidebar header -->
     <div class="sidebar-header p-4 border-b border-border flex items-center gap-2">
-      <div class="sidebar-avatar w-8 h-8 rounded-lg bg-[#d4760a] flex items-center justify-center text-white font-bold text-sm shrink-0">Y</div>
+      <div class="sidebar-avatar w-8 h-8 rounded-lg bg-[#d4760a] flex items-center justify-center text-white font-bold text-sm shrink-0" title="Yuki">Y</div>
       <div class="flex-1 min-w-0 sidebar-content">
         <h1 class="text-xl font-bold text-text">Yuki</h1>
         <div id="status" class="text-sm text-muted mt-1">Disconnected</div>
       </div>
-      <button id="sidebar-toggle" class="hidden md:inline-block shrink-0 p-1 rounded text-muted hover:text-text hover:bg-surface2 transition-colors text-sm leading-none">&#171;</button>
+      <button id="sidebar-toggle" class="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-surface2 transition-colors text-sm leading-none" title="Toggle sidebar">&#171;</button>
+      <button id="sidebar-close" class="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-surface2 transition-colors text-sm leading-none md:hidden" title="Close sidebar">&#10005;</button>
     </div>
-    <div id="utility-summary" class="sidebar-content px-3 py-2.5 border-b border-border space-y-1.5">
+
+    <!-- Utility summary -->
+    <div id="utility-summary" class="sidebar-content border-b border-border space-y-2">
+      <!-- Model select -->
       <select id="model-select" class="w-full bg-surface2 border border-border rounded-md px-2 py-1.5 text-sm text-text focus:outline-none focus:border-primary" title="Model"></select>
-      <div class="flex items-center gap-1">
-        <span id="util-secure-icon" class="shrink-0">&#x1f512;</span>
-        <span id="util-endpoint" class="truncate">—</span>
+      <!-- Endpoint row -->
+      <div class="flex items-center gap-1 min-w-0">
+        <span id="util-secure-icon" class="shrink-0 flex-shrink-0">&#x1f512;</span>
+        <span id="util-endpoint" class="truncate text-xs">—</span>
       </div>
-      <div class="flex items-center gap-1.5">
-        <div class="flex-1 h-[9px] bg-surface2 rounded-full overflow-hidden">
+      <!-- Context bar -->
+      <div class="flex items-center gap-1.5 min-w-0">
+        <div class="flex-1 h-[9px] bg-surface2 rounded-full overflow-hidden min-w-0">
           <div id="util-context-bar" class="h-full rounded-full transition-all" style="width:0%"></div>
         </div>
-        <span id="util-context-text" class="shrink-0 whitespace-nowrap">0 / 0</span>
+        <span id="util-context-text" class="shrink-0 text-xs whitespace-nowrap">0 / 0</span>
       </div>
     </div>
+
+    <!-- Action buttons -->
     <div class="p-3">
       <div class="flex items-center gap-2">
         <button id="add-project-btn" class="flex-1 px-3 py-2 border border-border rounded-md text-sm text-text hover:bg-surface2 hover:text-primary transition-colors">
           <svg class="inline-block w-4 h-4 -mt-0.5 mr-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
-          </svg><span class="sidebar-content">New Project</span>
+          </svg><span class="sidebar-content">New</span>
         </button>
         <button id="search-btn" class="flex-1 px-3 py-2 border border-border rounded-md text-sm text-text hover:bg-surface2 hover:text-primary transition-colors">
           <svg class="inline-block w-4 h-4 -mt-0.5 mr-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="7"/>
             <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg><span class="sidebar-content">Search Sessions</span>
+          </svg><span class="sidebar-content">Search</span>
         </button>
       </div>
     </div>
+
+    <!-- Session tree -->
     <div id="session-tree" class="flex-1 overflow-y-auto px-1 py-1 sidebar-sessions"></div>
-    
   </aside>
 
-  <button id="mobile-menu-btn" class="md:hidden fixed top-4 left-4 z-50 p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Menu">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-    </svg>
-  </button>
+  <!-- Top bar (mobile only) -->
+  <div id="top-bar" class="fixed top-0 left-0 right-0 z-40 bg-surface border-b border-border h-14 flex items-center px-3 gap-3 md:hidden">
+    <!-- Hamburger menu -->
+    <button id="topbar-menu-btn" class="p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Menu">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
+    
+    <!-- Yuki logo/name -->
+    <div class="flex-1 flex items-center gap-2 min-w-0">
+      <div class="w-7 h-7 rounded-md bg-[#d4760a] flex items-center justify-center text-white font-bold text-xs shrink-0">Y</div>
+      <span class="font-bold text-text truncate">Yuki</span>
+    </div>
+    
+    <!-- Context usage circle -->
+    <div id="topbar-context" class="relative w-8 h-8 flex items-center justify-center shrink-0" title="Context usage">
+      <svg viewBox="0 0 36 36" class="w-8 h-8 transform -rotate-90">
+        <circle cx="18" cy="18" r="15.915" fill="none" stroke="#21262d" stroke-width="3"></circle>
+        <circle id="topbar-context-circle" cx="18" cy="18" r="15.915" fill="none" stroke="#58a6ff" stroke-width="3" stroke-dasharray="0 100" stroke-linecap="round"></circle>
+      </svg>
+      <span id="topbar-context-text" class="absolute text-[8px] font-medium text-muted">0%</span>
+    </div>
+  </div>
+
+  <!-- Main content -->
   <main class="flex-1 flex flex-col min-w-0">
-    <div class="flex-1 overflow-y-auto px-4 pb-2 pt-12 md:pt-0" id="scroll-container">
+    <!-- Messages area -->
+    <div class="flex-1 overflow-y-auto px-4 pb-2 pt-14 md:pt-0" id="scroll-container">
       <div id="messages" class="max-w-5xl mx-auto space-y-4 py-4"></div>
     </div>
 
+    <!-- Plan bar -->
     <div id="plan-bar" class="hidden px-4 py-2 border-t border-border bg-surface2/50">
       <div class="max-w-5xl mx-auto">
         <button id="plan-toggle" class="flex items-center gap-2 w-full text-left cursor-pointer">
-          <span class="text-xs font-semibold text-primary" id="plan-title"></span>
-          <span class="text-xs text-muted" id="plan-progress"></span>
-          <span class="ml-auto text-xs text-muted transition-transform duration-200" id="plan-chevron">&#x25BC;</span>
+          <span class="text-xs font-semibold text-primary truncate" id="plan-title"></span>
+          <span class="text-xs text-muted ml-auto" id="plan-progress"></span>
+          <span class="ml-2 text-xs text-muted transition-transform duration-200 shrink-0" id="plan-chevron">&#x25BC;</span>
         </button>
         <div id="plan-steps" class="mt-1.5 space-y-0.5"></div>
       </div>
     </div>
+
+    <!-- Input area -->
     <div class="p-4 border-t border-border bg-surface">
+      <!-- Image preview -->
       <div id="image-preview" class="max-w-5xl mx-auto hidden mb-3 flex flex-wrap gap-2"></div>
+      <!-- Voice status -->
       <div id="voice-status" class="max-w-5xl mx-auto hidden mb-3 flex items-center justify-center">
         <div class="flex items-center gap-2 bg-surface2 border border-border rounded-full px-4 py-1.5 text-xs text-muted">
           <span id="voice-status-dot" class="voice-status-dot w-2 h-2 rounded-full bg-success animate-pulse"></span>
           <span id="voice-status-label">Listening…</span>
         </div>
       </div>
-      <form id="input-form" class="max-w-5xl mx-auto flex items-center gap-1 sm:gap-2">
-        <button type="button" id="thinking-btn" class="p-1.5 sm:p-2 rounded-lg text-yellow-400 hover:text-yellow-300 hover:bg-surface2 transition-colors" title="Toggle thinking (reasoning)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.04-2.04 2.5 2.5 0 0 1-.44-4.96A2.5 2.5 0 0 1 7 9.5 2.5 2.5 0 0 1 9.5 2Z"/>
-            <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.04-2.04 2.5 2.5 0 0 0 .44-4.96A2.5 2.5 0 0 0 17 9.5 2.5 2.5 0 0 0 14.5 2Z"/>
-          </svg>
-        </button>
-        <button type="button" id="tools-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Toggle tools">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-          </svg>
-        </button>
-        <div class="relative inline-block">
-          <button type="button" id="voice-dropdown-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors" title="Voice options">
+      <!-- Input form -->
+      <form id="input-form" class="max-w-5xl mx-auto flex items-end gap-2">
+        <!-- Options menu button -->
+        <div class="relative inline-block shrink-0">
+          <button type="button" id="options-menu-btn" class="p-2 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors shrink-0" title="Options">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
-              <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+              <circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>
             </svg>
           </button>
-          <div id="voice-dropdown-menu" class="hidden absolute bottom-full left-0 mb-2 w-[220px] bg-surface border border-border rounded-xl shadow-2xl z-50 overflow-hidden">
+          <div id="options-menu" class="hidden absolute bottom-full left-0 mb-2 w-[240px] bg-surface border border-border rounded-xl shadow-2xl z-50 overflow-hidden">
             <div class="p-1.5 space-y-0.5">
-              <button type="button" id="voice-mode-menu-item" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Continuous voice conversation">
+              <!-- Thinking toggle -->
+              <button type="button" id="options-thinking-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Toggle thinking (reasoning)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.04-2.04 2.5 2.5 0 0 1-.44-4.96A2.5 2.5 0 0 1 7 9.5 2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.04-2.04 2.5 2.5 0 0 0 .44-4.96A2.5 2.5 0 0 0 17 9.5 2.5 2.5 0 0 0 14.5 2Z"/></svg>
+                <span class="flex-1">Thinking</span>
+                <span id="thinking-indicator" class="text-xs text-muted">Off</span>
+              </button>
+              <!-- Tools toggle -->
+              <button type="button" id="options-tools-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Toggle tools">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                <span class="flex-1">Tools</span>
+                <span id="tools-indicator" class="text-xs text-muted">Off</span>
+              </button>
+              <div class="border-t border-border my-1"></div>
+              <!-- Voice Mode -->
+              <button type="button" id="options-voice-mode-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Continuous voice conversation">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
                 <span class="flex-1">Voice Mode</span>
                 <span id="voice-mode-indicator" class="text-xs text-muted">Off</span>
               </button>
-              <button type="button" id="mic-menu-item" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Speak (Ctrl+M)">
+              <!-- Speak -->
+              <button type="button" id="options-mic-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Speak (Ctrl+M)">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
                 <span class="flex-1">Speak</span>
                 <span id="mic-indicator" class="text-xs text-muted">Idle</span>
               </button>
               <div class="border-t border-border my-1"></div>
-              <button type="button" id="tts-menu-item" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Toggle auto TTS">
+              <!-- Auto TTS -->
+              <button type="button" id="options-tts-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Toggle auto TTS">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                 <span class="flex-1">Auto TTS</span>
                 <span id="tts-indicator" class="text-xs text-muted">Off</span>
@@ -144,24 +190,25 @@
             </div>
           </div>
         </div>
+        <!-- Text input -->
         <textarea
           id="message-input"
-          placeholder="Type a message... (Ctrl+Enter to send)"
+          placeholder="Type a message..."
           rows="1"
-          class="flex-1 bg-surface2 border border-border rounded-lg px-4 py-2 text-text text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder-muted resize-none leading-relaxed"
+          class="flex-1 bg-surface2 border border-border rounded-lg px-4 py-2 text-text text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder-muted resize-none leading-relaxed min-h-[40px]"
         ></textarea>
-        <button type="button" id="stop-btn" class="p-1.5 sm:p-2 rounded-lg text-muted hover:text-danger hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" title="Stop current action" disabled>
+        <!-- Stop button -->
+        <button type="button" id="stop-btn" class="p-2 rounded-lg text-muted hover:text-danger hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0" title="Stop current action" disabled>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="6" width="12" height="12" rx="1"/>
           </svg>
         </button>
-        <button type="submit" id="send-btn" class="px-3 sm:px-4 py-1.5 sm:py-2 bg-primaryDark text-white rounded-lg text-sm font-medium hover:bg-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Send</button>
       </form>
     </div>
   </main>
 
-    <!-- Browser Panel -->
-  <div id="browser-panel" class="hidden fixed bottom-24 right-4 w-[700px] max-w-[95vw] h-[500px] max-h-[80vh] md:max-w-[700px] bg-surface border border-border rounded-lg shadow-2xl z-50 flex flex-col overflow-hidden">
+  <!-- Browser Panel -->
+  <div id="browser-panel" class="hidden fixed bottom-24 right-4 w-[700px] max-w-[95vw] h-[500px] max-h-[80vh] bg-surface border border-border rounded-lg shadow-2xl z-50 flex flex-col overflow-hidden">
     <div class="flex items-center justify-between px-4 py-2 border-b border-border bg-surface2">
       <h2 class="text-sm font-semibold">Browser</h2>
       <div class="flex gap-2 items-center">
@@ -178,7 +225,7 @@
 
   <!-- Tools Modal -->
   <div id="tools-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[400px] max-w-[95vw] md:max-w-[400px] max-h-[70vh] flex flex-col">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[400px] max-w-[95vw] max-h-[70vh] flex flex-col">
       <div class="flex items-center justify-between px-4 py-3 border-b border-border">
         <h2 class="text-sm font-semibold">Tools</h2>
         <button id="close-tools-btn" class="text-muted hover:text-text transition-colors">
@@ -190,14 +237,14 @@
   </div>
 
   <!-- Search Sessions Modal -->
-  <div id="search-modal" class="hidden fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/50">
-    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[520px] max-w-[95vw] max-h-[70vh] flex flex-col">
+  <div id="search-modal" class="hidden fixed inset-0 z-50 flex items-start justify-center bg-black/50">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[520px] max-w-[95vw] max-h-[70vh] flex flex-col mt-[10vh]">
       <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted shrink-0">
           <circle cx="11" cy="11" r="7"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input id="search-input" type="text" class="flex-1 bg-transparent text-sm text-text focus:outline-none placeholder-muted" placeholder="Search session names and contents..." autocomplete="off" />
+        <input id="search-input" type="text" class="flex-1 bg-transparent text-sm text-text focus:outline-none placeholder-muted" placeholder="Search sessions..." autocomplete="off" />
         <button id="close-search-btn" class="text-muted hover:text-text transition-colors shrink-0">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -208,7 +255,7 @@
 
   <!-- Rename Modal -->
   <div id="rename-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[400px] max-w-[95vw] md:max-w-[400px] flex flex-col p-4">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[400px] max-w-[95vw] flex flex-col p-4">
       <h2 id="rename-modal-title" class="text-sm font-semibold mb-3">Rename Session</h2>
       <input id="rename-input" type="text" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary" placeholder="Session name" />
       <div id="rename-error" class="hidden text-xs text-danger mt-1"></div>
@@ -228,7 +275,7 @@
 
   <!-- Confirm Modal -->
   <div id="confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[380px] max-w-[95vw] md:max-w-[380px] flex flex-col p-4">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[380px] max-w-[95vw] flex flex-col p-4">
       <h2 id="confirm-title" class="text-sm font-semibold mb-2"></h2>
       <p id="confirm-message" class="text-xs text-muted mb-4 leading-relaxed"></p>
       <div class="flex justify-end gap-2">
@@ -240,7 +287,7 @@
 
   <!-- Add Project Modal -->
   <div id="add-project-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[360px] max-w-[95vw] md:max-w-[360px] flex flex-col p-4">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[360px] max-w-[95vw] flex flex-col p-4">
       <h2 class="text-sm font-semibold mb-3">New Project</h2>
       <input id="add-project-input" type="text" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary placeholder-muted" placeholder="Project name" />
       <div class="flex justify-end gap-2 mt-3">

@@ -8,11 +8,13 @@
   const statusEl = document.getElementById('status');
   const sessionTreeEl = document.getElementById('session-tree');
   const addProjectBtn = document.getElementById('add-project-btn');
-  const voiceDropdownBtn = document.getElementById('voice-dropdown-btn');
-  const voiceDropdownMenu = document.getElementById('voice-dropdown-menu');
-  const voiceModeMenuItem = document.getElementById('voice-mode-menu-item');
-  const micMenuItem = document.getElementById('mic-menu-item');
-  const ttsMenuItem = document.getElementById('tts-menu-item');
+  const optionsMenuBtn = document.getElementById('options-menu-btn');
+  const optionsMenu = document.getElementById('options-menu');
+  const optionsVoiceModeBtn = document.getElementById('options-voice-mode-btn');
+  const optionsMicBtn = document.getElementById('options-mic-btn');
+  const optionsTtsBtn = document.getElementById('options-tts-btn');
+  const optionsThinkingBtn = document.getElementById('options-thinking-btn');
+  const optionsToolsBtn = document.getElementById('options-tools-btn');
   const voiceModeIndicator = document.getElementById('voice-mode-indicator');
   const micIndicator = document.getElementById('mic-indicator');
   const ttsIndicator = document.getElementById('tts-indicator');
@@ -128,15 +130,44 @@
     const pct = Math.min(100, Math.round((estTokens / maxCtx) * 100));
     document.getElementById('util-context-bar').style.width = pct + '%';
     document.getElementById('util-context-text').textContent = `${Math.round(estTokens / 100) / 10}k / ${Math.round(maxCtx / 1000)}k`;
+    
+    // Update top bar context circle (mobile)
+    const circle = document.getElementById('topbar-context-circle');
+    const circleText = document.getElementById('topbar-context-text');
+    if (circle) {
+      // Circumference = 2 * PI * r = 2 * PI * 15.915 ≈ 100
+      circle.setAttribute('stroke-dasharray', `${pct} 100`);
+      // Change color based on usage
+      if (pct > 90) circle.setAttribute('stroke', '#f85149'); // red
+      else if (pct > 70) circle.setAttribute('stroke', '#f0883e'); // orange
+      else circle.setAttribute('stroke', '#58a6ff'); // blue
+    }
+    if (circleText) {
+      circleText.textContent = pct + '%';
+    }
   }
 
   function updateThinkingBtnVisual() {
     if (thinkingEnabled) {
-      thinkingBtn.className = 'p-2 rounded-lg text-yellow-400 hover:text-yellow-300 hover:bg-surface2 transition-colors';
-      thinkingBtn.title = 'Thinking enabled — click to disable';
+      if (thinkingBtn) {
+        thinkingBtn.className = 'p-2 rounded-lg text-yellow-400 hover:text-yellow-300 hover:bg-surface2 transition-colors';
+        thinkingBtn.title = 'Thinking enabled — click to disable';
+      }
+      const ind = document.getElementById('thinking-indicator');
+      if (ind) {
+        ind.textContent = 'On';
+        ind.className = 'text-xs text-primary';
+      }
     } else {
-      thinkingBtn.className = 'p-2 rounded-lg text-muted/50 hover:text-muted hover:bg-surface2 transition-colors';
-      thinkingBtn.title = 'Thinking disabled — click to enable';
+      if (thinkingBtn) {
+        thinkingBtn.className = 'p-2 rounded-lg text-muted/50 hover:text-muted hover:bg-surface2 transition-colors';
+        thinkingBtn.title = 'Thinking disabled — click to enable';
+      }
+      const ind = document.getElementById('thinking-indicator');
+      if (ind) {
+        ind.textContent = 'Off';
+        ind.className = 'text-xs text-muted';
+      }
     }
   }
 
@@ -1326,6 +1357,7 @@ function scrollToBottom() {
         id: 'proj-' + p.id,
         parent: '#',
         text: projectNodeHtml(p),
+        title: p.name,
         state: { opened: false },
         data: { kind: 'project', projectId: p.id, name: p.name },
       });
@@ -1334,6 +1366,7 @@ function scrollToBottom() {
           id: 'sess-' + s.id,
           parent: 'proj-' + p.id,
           text: sessionNodeHtml(s),
+          title: s.title || 'Session',
           data: { kind: 'session', sessionId: s.id, projectId: p.id, title: s.title || '' },
         });
       }
@@ -1793,11 +1826,11 @@ function scrollToBottom() {
     if (state === 'Recording...' || state === 'Push-to-talk') {
       micIndicator.textContent = state;
       micIndicator.className = 'text-xs text-danger';
-      micMenuItem.classList.add('menu-item-active');
+      optionsMicBtn.classList.add('menu-item-active');
     } else {
       micIndicator.textContent = state || 'Idle';
       micIndicator.className = 'text-xs text-muted';
-      micMenuItem.classList.remove('menu-item-active');
+      optionsMicBtn.classList.remove('menu-item-active');
     }
   }
 
@@ -1808,11 +1841,11 @@ function scrollToBottom() {
       ttsIndicator.className = on ? 'text-xs text-primary' : 'text-xs text-muted';
     }
     if (on) {
-      ttsMenuItem.classList.add('menu-item-active');
+      optionsTtsBtn.classList.add('menu-item-active');
     } else {
-      ttsMenuItem.classList.remove('menu-item-active');
+      optionsTtsBtn.classList.remove('menu-item-active');
     }
-    ttsMenuItem.title = on ? 'Auto TTS: on (click to disable)' : 'Toggle auto TTS';
+    optionsTtsBtn.title = on ? 'Auto TTS: on (click to disable)' : 'Toggle auto TTS';
   }
 
   // --- Voice Mode ---
@@ -1839,17 +1872,17 @@ function scrollToBottom() {
 
   function updateVoiceModeVisual() {
     if (voiceMode) {
-      voiceModeMenuItem.classList.add('menu-item-active');
+      optionsVoiceModeBtn.classList.add('menu-item-active');
       voiceModeIndicator.textContent = 'On';
       voiceModeIndicator.className = 'text-xs text-primary';
-      voiceDropdownBtn.classList.add('text-primary');
+      optionsMenuBtn.classList.add('text-primary');
     } else {
-      voiceModeMenuItem.classList.remove('menu-item-active');
+      optionsVoiceModeBtn.classList.remove('menu-item-active');
       voiceModeIndicator.textContent = 'Off';
       voiceModeIndicator.className = 'text-xs text-muted';
-      voiceDropdownBtn.classList.remove('text-primary');
+      optionsMenuBtn.classList.remove('text-primary');
     }
-    voiceDropdownBtn.title = voiceMode ? 'Voice mode: on (click to exit)' : 'Voice options';
+    optionsMenuBtn.title = voiceMode ? 'Voice mode: on (click to exit)' : 'Voice options';
   }
 
   function syncVoiceMode(enabled) {
@@ -2269,12 +2302,73 @@ function scrollToBottom() {
 
   const sidebar = document.getElementById('sidebar');
   const sidebarToggle = document.getElementById('sidebar-toggle');
-  const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+  const sidebarClose = document.getElementById('sidebar-close');
+  const topbarMenuBtn = document.getElementById('topbar-menu-btn');
   const sidebarBackdrop = document.getElementById('sidebar-backdrop');
 
   sidebarToggle.addEventListener('click', () => {
     sidebar.classList.toggle('collapsed');
     sidebarToggle.innerHTML = sidebar.classList.contains('collapsed') ? '&#187;' : '&#171;';
+    try { localStorage.setItem('yukiweb-sidebar-collapsed', String(sidebar.classList.contains('collapsed'))); } catch (e) {}
+  });
+
+  // Restore collapsed state from localStorage
+  try {
+    if (localStorage.getItem('yukiweb-sidebar-collapsed') === 'true') {
+      sidebar.classList.add('collapsed');
+      sidebarToggle.innerHTML = '&#187;';
+    }
+  } catch (e) {}
+
+  sidebarClose.addEventListener('click', () => {
+    if (window.innerWidth < 768) {
+      closeMobileSidebar();
+    } else {
+      sidebar.classList.toggle('collapsed');
+      sidebarToggle.innerHTML = sidebar.classList.contains('collapsed') ? '&#187;' : '&#171;';
+      try { localStorage.setItem('yukiweb-sidebar-collapsed', String(sidebar.classList.contains('collapsed'))); } catch (e) {}
+    }
+  });
+
+  // --- Collapsed sidebar tooltips ---
+  const tooltipEl = document.createElement('div');
+  tooltipEl.className = 'jstree-item-tooltip';
+  document.body.appendChild(tooltipEl);
+
+  function showTooltip(text, x, y) {
+    if (!text) { tooltipEl.style.display = 'none'; return; }
+    tooltipEl.textContent = text;
+    tooltipEl.style.display = 'block';
+    tooltipEl.style.left = (x + 12) + 'px';
+    tooltipEl.style.top = (y - 10) + 'px';
+    tooltipEl.style.opacity = '1';
+  }
+
+  function hideTooltip() {
+    tooltipEl.style.opacity = '0';
+    setTimeout(() => { tooltipEl.style.display = 'none'; }, 150);
+  }
+
+  // Delegate hover events for jstree anchors
+  sessionTreeEl.addEventListener('mouseenter', (e) => {
+    if (!sidebar.classList.contains('collapsed')) return;
+    const anchor = e.target.closest('.jstree-anchor');
+    if (!anchor) return;
+    const title = anchor.getAttribute('title') || anchor.textContent.trim();
+    const rect = anchor.getBoundingClientRect();
+    showTooltip(title, rect.right, rect.top);
+  });
+
+  sessionTreeEl.addEventListener('mousemove', (e) => {
+    if (!sidebar.classList.contains('collapsed')) return;
+    const anchor = e.target.closest('.jstree-anchor');
+    if (!anchor) return;
+    const title = anchor.getAttribute('title') || anchor.textContent.trim();
+    showTooltip(title, e.clientX, e.clientY);
+  });
+
+  sessionTreeEl.addEventListener('mouseleave', () => {
+    if (tooltipEl.style.display === 'block') hideTooltip();
   });
 
   const sidebarResizer = document.getElementById('sidebar-resizer');
@@ -2324,10 +2418,16 @@ function scrollToBottom() {
     sidebarBackdrop.classList.add('hidden');
   }
 
-  mobileMenuBtn.addEventListener('click', () => {
+  if (topbarMenuBtn) topbarMenuBtn.addEventListener('click', () => {
     if (sidebar.classList.contains('mobile-open')) {
       closeMobileSidebar();
     } else {
+      // If collapsed, expand first then open
+      if (sidebar.classList.contains('collapsed')) {
+        sidebar.classList.remove('collapsed');
+        sidebarToggle.innerHTML = '&#171;';
+        try { localStorage.removeItem('yukiweb-sidebar-collapsed'); } catch (e) {}
+      }
       openMobileSidebar();
     }
   });
@@ -2335,39 +2435,48 @@ function scrollToBottom() {
   sidebarBackdrop.addEventListener('click', closeMobileSidebar);
 
   window.addEventListener('resize', () => {
-    if (window.innerWidth >= 768) {
+    const isMobile = window.innerWidth < 768;
+    if (isMobile) {
+      // When entering mobile: if sidebar was collapsed on desktop, keep it collapsed
+      // and close any mobile-open state
+      if (sidebar.classList.contains('collapsed')) {
+        closeMobileSidebar();
+      }
+    } else {
+      // When entering desktop: close mobile sidebar but preserve collapsed state
       closeMobileSidebar();
     }
   });
 
-  // --- Voice Dropdown ---
-  function toggleVoiceDropdown(open) {
+  // --- Options Menu ---
+  let optionsMenuOpen = false;
+  function toggleOptionsMenu(open) {
     if (typeof open === 'boolean') {
-      voiceDropdownOpen = open;
-      voiceDropdownMenu.style.setProperty('display', open ? 'block' : 'none', 'important');
+      optionsMenuOpen = open;
+      optionsMenu.style.setProperty('display', open ? 'block' : 'none', 'important');
       if (open) {
-        voiceDropdownMenu.classList.add('show');
+        optionsMenu.classList.add('show');
       } else {
-        voiceDropdownMenu.classList.remove('show');
+        optionsMenu.classList.remove('show');
       }
     } else {
-      voiceDropdownOpen = !voiceDropdownOpen;
-      voiceDropdownMenu.style.setProperty('display', voiceDropdownOpen ? 'block' : 'none', 'important');
+      optionsMenuOpen = !optionsMenuOpen;
+      optionsMenu.style.setProperty('display', optionsMenuOpen ? 'block' : 'none', 'important');
     }
   }
 
-  voiceDropdownBtn.addEventListener('click', (e) => {
+  optionsMenuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleVoiceDropdown();
+    toggleOptionsMenu();
   });
 
-  voiceModeMenuItem.addEventListener('click', () => {
-    toggleVoiceDropdown(false);
+  optionsVoiceModeBtn.addEventListener('click', () => {
+    toggleOptionsMenu(false);
     toggleVoiceMode();
   });
 
-  micMenuItem.addEventListener('click', () => {
-    toggleVoiceDropdown(false);
+  optionsMicBtn.addEventListener('click', () => {
+    toggleOptionsMenu(false);
     if (voiceMode) {
       exitVoiceMode();
       return;
@@ -2379,16 +2488,26 @@ function scrollToBottom() {
     }
   });
 
-  ttsMenuItem.addEventListener('click', () => {
-    toggleVoiceDropdown(false);
+  optionsTtsBtn.addEventListener('click', () => {
+    toggleOptionsMenu(false);
     setAutoTTS(!autoTTS);
   });
 
-  // Close dropdown when clicking outside
+  optionsThinkingBtn.addEventListener('click', () => {
+    toggleOptionsMenu(false);
+    toggleThinking();
+  });
+
+  optionsToolsBtn.addEventListener('click', () => {
+    toggleOptionsMenu(false);
+    toggleTools();
+  });
+
+  // Close menu when clicking outside
   document.addEventListener('click', (e) => {
-    if (voiceDropdownMenu && voiceDropdownOpen &&
-        !voiceDropdownMenu.contains(e.target) && !voiceDropdownBtn.contains(e.target)) {
-      toggleVoiceDropdown(false);
+    if (optionsMenu && optionsMenuOpen &&
+        !optionsMenu.contains(e.target) && !optionsMenuBtn.contains(e.target)) {
+      toggleOptionsMenu(false);
     }
   });
 
@@ -2452,15 +2571,13 @@ function scrollToBottom() {
     if (chevron) chevron.classList.toggle('-rotate-90', !planExpanded);
   });
 
-  toolsBtn.addEventListener('click', () => {
+  if (toolsBtn) toolsBtn.addEventListener('click', () => {
     toolsModal.classList.remove('hidden');
     renderToolsUI();
   });
 
-  thinkingBtn.addEventListener('click', () => {
-    thinkingEnabled = !thinkingEnabled;
-    updateThinkingBtnVisual();
-    send('thinking:toggle', { enabled: thinkingEnabled });
+  if (thinkingBtn) thinkingBtn.addEventListener('click', () => {
+    toggleThinking();
   });
 
   closeToolsBtn.addEventListener('click', () => {
@@ -2470,6 +2587,18 @@ function scrollToBottom() {
   toolsModal.addEventListener('click', (e) => {
     if (e.target === toolsModal) toolsModal.classList.add('hidden');
   });
+
+  // --- Thinking & Tools toggle functions ---
+  function toggleThinking() {
+    thinkingEnabled = !thinkingEnabled;
+    updateThinkingBtnVisual();
+    send('thinking:toggle', { enabled: thinkingEnabled });
+  }
+
+  function toggleTools() {
+    toolsModal.classList.remove('hidden');
+    renderToolsUI();
+  }
 
   // --- Session Search Modal ---
   let searchTimer = null;
