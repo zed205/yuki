@@ -2819,10 +2819,12 @@ function scrollToBottom() {
         input.webkitdirectory = true;
         input.mozdirectory = true;
         input.addEventListener('change', (e) => {
-          const filePath = e.target.files[0]?.path || e.target.files[0]?.webkitRelativePath || '';
-          if (filePath) {
-            const dirPath = filePath.split('/')[0];
-            renamePathInput.value = dirPath;
+          if (e.target.files && e.target.files.length > 0) {
+            // Get the first file's path and extract the directory name
+            const firstFile = e.target.files[0];
+            const fullPath = firstFile.webkitRelativePath || firstFile.name;
+            const dirName = fullPath.split('/')[0];
+            renamePathInput.value = dirName;
           }
           input.remove();
         });
@@ -2849,10 +2851,12 @@ function scrollToBottom() {
         input.webkitdirectory = true;
         input.mozdirectory = true;
         input.addEventListener('change', (e) => {
-          const filePath = e.target.files[0]?.path || e.target.files[0]?.webkitRelativePath || '';
-          if (filePath) {
-            const dirPath = filePath.split('/')[0];
-            addProjectPathInput.value = dirPath;
+          if (e.target.files && e.target.files.length > 0) {
+            // Get the first file's path and extract the directory name
+            const firstFile = e.target.files[0];
+            const fullPath = firstFile.webkitRelativePath || firstFile.name;
+            const dirName = fullPath.split('/')[0];
+            addProjectPathInput.value = dirName;
           }
           input.remove();
         });

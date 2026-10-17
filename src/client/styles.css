@@ -902,6 +902,21 @@ body > * {
     width: 28px !important;
     height: 28px !important;
   }
+  /* Transparent menu buttons on mobile */
+  #session-tree .tree-menu-btn {
+    background: transparent !important;
+  }
+  /* Hide borders on mobile */
+  #session-tree .jstree-wholerow,
+  #session-tree .jstree-anchor {
+    border: none !important;
+    box-shadow: none !important;
+  }
+  /* Highlight active session on mobile */
+  #session-tree .jstree-leaf > .jstree-wholerow.jstree-wholerow-clicked {
+    background: #21262d !important;
+    box-shadow: none !important;
+  }
 }
 
 /* ===== Landscape mobile ===== */
