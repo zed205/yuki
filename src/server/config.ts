@@ -1,7 +1,7 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, UIAutomationConfig, ShellConfig, ShellEngine } from '../shared/types';
+import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, ShellEngine } from '../shared/types';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
 const configPath = path.join(configDir, 'config.json');
@@ -22,6 +22,16 @@ const defaultModelConfig: ModelConfig = {
 const defaultSubAgentConfig: SubAgentConfig = {
   enabled: false,
   maxAgentSlots: 4,
+};
+
+const defaultObserverConfig: ObserverConfig = {
+  enabled: false,
+  model: "",
+  mode: "periodic",
+  interval: 3,
+  maxSuggestions: 3,
+  timeoutMs: 30000,
+  minConfidence: 0.5,
 };
 
 const defaultUIAutomationConfig: UIAutomationConfig = {
@@ -88,6 +98,7 @@ const defaultConfig: Config = {
   },
   webFetchMaxInlineKB: 50,
   tempOutputCleanupTTLMinutes: 60,
+  observer: { ...defaultObserverConfig },
 };
 
 export function loadEnvFile(): void {
@@ -188,6 +199,7 @@ export function loadConfig(): Config {
         contextManagement: { ...defaultConfig.contextManagement, ...(loaded.contextManagement || {}) },
         rawLLMLog: { ...defaultConfig.rawLLMLog, ...(loaded.rawLLMLog || {}) },
         subAgents: { ...defaultConfig.subAgents, ...(loaded.subAgents || {}) },
+        observer: { ...defaultConfig.observer, ...(loaded.observer || {}) },
         uiAutomation: { ...defaultConfig.uiAutomation, ...(loaded.uiAutomation || {}) },
         shell: { ...defaultConfig.shell, ...(loaded.shell || {}) },
       };
@@ -290,4 +302,26 @@ export function loadVoiceSystemPrompt(): string {
   }
 
   return defaultVoicePrompt;
+}
+
+// --- Observer Config Accessors ---
+
+export function getObserverConfig(): ObserverConfig {
+  return config.observer ?? defaultObserverConfig;
+}
+
+export function getObserverModelConfig(): ModelConfig | undefined {
+  const obsCfg = getObserverConfig();
+  if (!obsCfg.enabled) return undefined;
+  // If model is specified, look it up; otherwise return the active model config
+  if (obsCfg.model && obsCfg.model.trim() !== '') {
+    return getModelConfig(obsCfg.model);
+  }
+  // Use the same model as the active agent
+  const activeName = getActiveModelName();
+  return getModelConfig(activeName);
+}
+
+export function getObserverTimeoutMs(): number {
+  return getObserverConfig().timeoutMs ?? 30000;
 }

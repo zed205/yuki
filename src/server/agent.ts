@@ -14,6 +14,7 @@ import { BrowserAutomation } from './browser';
 import { DesktopAutomation } from './automation';
 import { MCPManager } from './mcp';
 import { logLLMRequestResponse } from './llm-logger';
+import { Observer } from './observer';
 
 function getSystemInfo(projectPath?: string): string {
   const maxLines = getConfig().maxToolOutputLines || 20;
@@ -40,6 +41,8 @@ export class Agent {
   private cancelled = false;
   private abortController: AbortController | null = null;
   private disabledTools: Set<string> = new Set();
+  private observer: Observer | null = null;
+  private observerTurnCount = 0;
   currentProjectPath: string = '';
   currentModelName: string = '';
   private openai: OpenAI | null = null;
@@ -61,6 +64,95 @@ export class Agent {
     this.cancelled = true;
     this.abortController?.abort();
   }
+  /** Evaluate observer feedback and inject it if significant enough. Returns true if feedback was injected. */
+  private async getObserverFeedback(
+    messages: Array<Record<string, any>>,
+    ws: WebSocket,
+    session: Session,
+    iterations: number,
+  ): Promise<boolean> {
+    const obsCfg = getConfig().observer;
+    if (!obsCfg?.enabled) return false;
+
+    // Check if observer should run this turn
+    if (obsCfg.mode === 'periodic' && (iterations % obsCfg.interval!) !== 0) return false;
+
+    // Build tool results map from messages (tool responses are in the messages array)
+    const toolResults = new Map<string, string>();
+    for (const msg of messages) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        toolResults.set(msg.tool_call_id, msg.content || '');
+      }
+    }
+
+    try {
+      if (!this.observer) {
+        this.observer = new Observer();
+      }
+
+      // Get feedback from observer
+      const feedback = await this.observer.evaluate(
+        session.messages,
+        toolResults,
+        session.id,
+      );
+
+      // Skip if confidence is too low
+      if (feedback.confidence < (obsCfg.minConfidence ?? 0.5)) {
+        return false;
+      }
+
+      // Format feedback for injection
+      const feedbackText = this.formatFeedbackForObserver(feedback);
+      if (!feedbackText || feedbackText.trim() === '') {
+        return false;
+      }
+
+      // Send feedback to client for visibility
+      this.sendToClient(ws, 'observer:feedback', {
+        feedback,
+        sessionId: session.id,
+      });
+
+      // Inject feedback into the messages array (as a system message)
+      const feedbackMsg: Record<string, any> = {
+        role: 'system',
+        content: feedbackText,
+      };
+      messages.push(feedbackMsg);
+      session.messages.push({
+        id: `obs_${session.id}_${iterations}`,
+        role: 'system',
+        content: feedbackText,
+        timestamp: new Date(),
+        sessionId: session.id,
+        pruned: true, // Mark as pruned so it doesn't accumulate in history
+      });
+
+      console.log(`[observer] feedback injected: ${feedback.status} (confidence: ${feedback.confidence})`);
+      return true;
+    } catch (err: any) {
+      console.error(`[observer] evaluation failed: ${err.message}`);
+      return false;
+    }
+  }
+
+  /** Format observer feedback for injection into the agent context. */
+  private formatFeedbackForObserver(feedback: { status: string; concern?: string | undefined | null; suggestion?: string | undefined | null; confidence: number }): string {
+    if (!feedback.concern && !feedback.suggestion) return '';
+
+    let block = '\n\n## Observer Feedback\n';
+    block += `**Assessment**: ${feedback.status}\n`;
+    if (feedback.concern) {
+      block += `**Concern**: ${feedback.concern}\n`;
+    }
+    if (feedback.suggestion) {
+      block += `**Suggestion**: ${feedback.suggestion}\n`;
+    }
+    block += `Accept this feedback and adjust your approach accordingly.\n`;
+    return block;
+  }
+
 
   setServices(
     audio: AudioPipeline,
@@ -283,6 +375,13 @@ export class Agent {
 
         session.messages.push(assistantMsg);
         this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+
+        // Run observer evaluation if enabled
+        try {
+          await this.getObserverFeedback(messages, ws, session, iterations);
+        } catch (obsErr) {
+          console.error('[agent] observer error (non-fatal):', obsErr);
+        }
 
         if (this.cancelled) {
           console.log('[agent] cancelled after tool execution, returning');

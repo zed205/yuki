@@ -49,6 +49,7 @@ export interface Config {
   desktop: DesktopConfig;
   maxToolOutputLines: number;
   subAgents?: SubAgentConfig;
+  observer?: ObserverConfig;
   uiAutomation?: UIAutomationConfig;
   contextManagement?: ContextManagementConfig;
   rawLLMLog?: RawLLMLogConfig;
@@ -92,6 +93,23 @@ export interface SubAgentConfig {
   maxAgentSlots: number;
   // Name of the model to use for sub-agents (reference into models[] array)
   model?: string;
+}
+
+export interface ObserverConfig {
+  enabled: boolean;
+  // Name of the model to use for the observer (reference into models[] array).
+  // If empty, uses the same model as the active agent model.
+  model?: string;
+  // How often to run the observer: 'every' (every turn) or 'periodic' (every N turns)
+  mode: 'every' | 'periodic';
+  // When mode is 'periodic', run observer every N agent turns
+  interval: number;
+  // Maximum number of suggestions to inject per evaluation (prevents context bloat)
+  maxSuggestions: number;
+  // Timeout in ms for the observer call
+  timeoutMs: number;
+  // If the observer's confidence in a concern is below this, skip it (0-1)
+  minConfidence: number;
 }
 
 export interface UIAutomationConfig {
