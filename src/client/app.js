@@ -696,6 +696,10 @@
         updatePlanBar(data.data.plan);
         break;
 
+      case 'observer:feedback':
+        showObserverFeedback(data.data.feedback, data.data.sessionId);
+        break;
+
       case 'message:reverted':
         messageInput.value = data.data.text;
         messageInput.dispatchEvent(new Event('input'));
@@ -1272,6 +1276,76 @@
           statusEl.className = 'tool-status ml-auto text-xs text-yellow-400 font-medium';
         }
       }
+
+  /** Display observer feedback as a distinct collapsible block in the chat. */
+  function showObserverFeedback(feedback, sessionId) {
+    if (!feedback || (!feedback.concern && !feedback.suggestion)) return;
+
+    const details = document.createElement('details');
+    details.className = 'bg-amber-950/20 border border-amber-700/40 rounded-lg text-sm group font-sans w-full min-w-0';
+    details.id = 'observer-' + sessionId + '-' + Date.now();
+    details.open = true;
+
+    const summary = document.createElement('summary');
+    summary.className = 'flex items-center gap-2 px-3 py-2 cursor-pointer text-xs hover:bg-amber-900/20 rounded-lg list-none overflow-hidden';
+
+    const arrow = document.createElement('span');
+    arrow.className = 'text-amber-400 transition-transform group-open:rotate-90 text-[10px] shrink-0';
+    arrow.innerHTML = '\u25B6';
+
+    const icon = document.createElement('span');
+    icon.className = 'shrink-0 text-amber-400';
+    icon.textContent = '\u26A0';
+
+    const label = document.createElement('span');
+    label.className = 'font-medium text-amber-300 shrink-0';
+    label.textContent = 'Observer';
+
+    const statusSpan = document.createElement('span');
+    const statusColors = {
+      on_track: 'text-green-400',
+      drifting: 'text-yellow-400',
+      stuck: 'text-orange-400',
+      off_track: 'text-red-400',
+      complete: 'text-green-400',
+    };
+    const color = statusColors[feedback.status] || 'text-muted';
+    statusSpan.className = 'ml-auto text-xs ' + color + ' font-medium shrink-0 capitalize';
+    statusSpan.textContent = feedback.status.replace(/_/g, ' ');
+
+    summary.appendChild(arrow);
+    summary.appendChild(icon);
+    summary.appendChild(label);
+    summary.appendChild(statusSpan);
+
+    const body = document.createElement('div');
+    body.className = 'px-3 pb-2 pt-1';
+
+    if (feedback.concern) {
+      const concernP = document.createElement('p');
+      concernP.className = 'text-amber-200/80 text-xs mb-1';
+      concernP.innerHTML = '<span class="text-amber-400 font-medium">Concern:</span> ' + escapeHtml(feedback.concern);
+      body.appendChild(concernP);
+    }
+
+    if (feedback.suggestion) {
+      const suggP = document.createElement('p');
+      suggP.className = 'text-amber-200/80 text-xs';
+      suggP.innerHTML = '<span class="text-amber-400 font-medium">Suggestion:</span> ' + escapeHtml(feedback.suggestion);
+      body.appendChild(suggP);
+    }
+
+    details.appendChild(summary);
+    details.appendChild(body);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex justify-start observer-feedback-wrapper max-w-[85%] my-1';
+    wrapper.appendChild(details);
+
+    messagesEl.appendChild(wrapper);
+    scrollToBottom();
+  }
+
 
       const resultEl = el.querySelector('.tool-result');
       if (resultEl && result) {
