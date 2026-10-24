@@ -15,6 +15,8 @@
   const optionsTtsBtn = document.getElementById('options-tts-btn');
   const optionsThinkingBtn = document.getElementById('options-thinking-btn');
   const optionsToolsBtn = document.getElementById('options-tools-btn');
+  const optionsCompactBtn = document.getElementById('options-compact-btn');
+  const compactIndicator = document.getElementById('compact-indicator');
   const voiceModeIndicator = document.getElementById('voice-mode-indicator');
   const micIndicator = document.getElementById('mic-indicator');
   const ttsIndicator = document.getElementById('tts-indicator');
@@ -63,6 +65,7 @@
   // State
   let ws = null;
   let isWaiting = false;
+  let pendingCompactionRefresh = false;
   let currentStreamingId = null;
   let currentStreamingContent = '';
   let currentSessionId = null;
@@ -707,11 +710,6 @@
         loadSessionMessages(currentSessionId);
         break;
 
-      case 'message:pruned':
-      case 'message:unpruned':
-        loadSessionMessages(currentSessionId);
-        break;
-
       case 'chat:stopped':
         AudioPlayer.stop();
         if (thinkingBubble) removeThinkingBubble();
@@ -731,6 +729,26 @@
           messagesEl.appendChild(el);
           scrollToBottom();
         }
+        break;
+
+      case 'context:compacted':
+        if (compactIndicator) compactIndicator.textContent = 'Done';
+        // Refresh the transcript so the freshly-written summary shows up in history.
+        // If the model is mid-turn, defer until it finishes (see setIsWaiting).
+        if (currentSessionId) {
+          if (!isWaiting) {
+            loadSessionMessages(currentSessionId);
+          } else {
+            pendingCompactionRefresh = true;
+          }
+        }
+        setTimeout(() => { if (compactIndicator && !isWaiting) compactIndicator.textContent = 'Ready'; }, 3000);
+        break;
+
+      case 'context:compact-failed':
+        console.log('[Compaction] Failed:', data.data.reason);
+        if (compactIndicator) compactIndicator.textContent = 'Failed';
+        setTimeout(() => { if (compactIndicator && !isWaiting) compactIndicator.textContent = 'Ready'; }, 3000);
         break;
     }
   }
@@ -1064,10 +1082,10 @@
     menuEl.style.left = rect.left + 'px';
   }
 
-  function appendMessage(role, content, messageId, pruned) {
+  function appendMessage(role, content, messageId, compacted) {
     const msgEl = document.createElement('div');
     msgEl.dataset.messageId = messageId || '';
-    if (pruned) msgEl.dataset.pruned = '1';
+    if (compacted) msgEl.dataset.compacted = '1';
 
     const wrapper = document.createElement('div');
     wrapper.className = 'relative group';
@@ -1076,7 +1094,7 @@
       resetTTGroup();
       msgEl.className = 'flex justify-end';
       const bubble = document.createElement('div');
-      bubble.className = (pruned ? 'opacity-40 ' : '') + 'bg-userMsg rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed';
+      bubble.className = (compacted ? 'opacity-40 ' : '') + 'bg-userMsg rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed';
 
       const contentEl = document.createElement('div');
       contentEl.className = 'message-content whitespace-pre-wrap break-words';
@@ -1101,7 +1119,7 @@
 
       const menuEl = createMsgMenu([
         { label: 'Revert', action: () => { send('message:revert', { messageId: msgEl.dataset.messageId, sessionId: currentSessionId }); } },
-        { label: pruned ? 'Unprune' : 'Prune', action: () => { send(pruned ? 'message:unprune' : 'message:prune', { messageId: msgEl.dataset.messageId, sessionId: currentSessionId }); } },
+        { label: 'Compact', action: () => { send('context:compact', {}); } },
       ]);
       wrapper.appendChild(menuEl);
 
@@ -1110,7 +1128,7 @@
       sealTTGroup();
       msgEl.className = 'flex justify-start';
       const bubble = document.createElement('div');
-      bubble.className = (pruned ? 'opacity-40 ' : '') + 'bg-asstMsg border border-border rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed';
+      bubble.className = (compacted ? 'opacity-40 ' : '') + 'bg-asstMsg border border-border rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed';
 
       const contentEl = document.createElement('div');
       contentEl.className = 'message-content prose prose-sm prose-invert max-w-none break-words';
@@ -1148,6 +1166,46 @@
     scrollToBottom();
     updateContextUsage();
     return msgEl;
+  }
+
+  const SUMMARY_PREFIX = 'Summary of previous conversation:';
+
+  function isSummaryMessage(msg) {
+    return msg && msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith(SUMMARY_PREFIX);
+  }
+
+  function appendSummaryMessage(content) {
+    const el = document.createElement('div');
+    el.className = 'flex justify-start my-2';
+
+    const details = document.createElement('details');
+    details.className = 'summary-card max-w-[85%] bg-summaryBg border border-summaryBorder rounded-xl text-sm group';
+    details.open = false; // collapsed by default, like other bubbles
+
+    const summary = document.createElement('summary');
+    summary.className = 'flex items-center gap-2 px-4 py-2.5 cursor-pointer text-text rounded-xl list-none select-none';
+
+    const arrow = document.createElement('span');
+    arrow.className = 'text-muted transition-transform group-open:rotate-90 text-[10px]';
+    arrow.textContent = '▶';
+
+    const label = document.createElement('span');
+    label.className = 'text-sm leading-relaxed text-text';
+    label.textContent = 'Compaction';
+
+    summary.appendChild(arrow);
+    summary.appendChild(label);
+
+    const body = document.createElement('div');
+    body.className = 'whitespace-pre-wrap break-words leading-relaxed px-4 pb-2.5 pt-1 text-muted border-t border-summaryBorder/50';
+    body.textContent = content.slice(SUMMARY_PREFIX.length).replace(/^\n/, '');
+
+    details.appendChild(summary);
+    details.appendChild(body);
+
+    el.appendChild(details);
+    messagesEl.appendChild(el);
+    scrollToBottom();
   }
 
   function streamingChunk(chunk, messageId) {
@@ -1370,6 +1428,8 @@ function scrollToBottom() {
     if (sendBtn) sendBtn.disabled = waiting;
     if (messageInput) messageInput.disabled = waiting;
     if (stopBtn) stopBtn.disabled = !waiting;
+    if (optionsCompactBtn) optionsCompactBtn.disabled = waiting;
+    if (compactIndicator) compactIndicator.textContent = waiting ? 'Busy' : 'Ready';
 
     const existing = document.querySelector('.typing-indicator');
     if (waiting && !existing) {
@@ -1380,6 +1440,14 @@ function scrollToBottom() {
       scrollToBottom();
     } else if (!waiting && existing) {
       existing.remove();
+    }
+
+    // If a compaction happened while the model was busy, refresh now that we are idle.
+    if (!waiting && wasWaiting && pendingCompactionRefresh) {
+      pendingCompactionRefresh = false;
+      if (currentSessionId) {
+        loadSessionMessages(currentSessionId);
+      }
     }
   }
 
@@ -1763,6 +1831,10 @@ function scrollToBottom() {
       thinkingBubble = null;
       for (let mi = 0; mi < session.messages.length; mi++) {
         const msg = session.messages[mi];
+        if (isSummaryMessage(msg)) {
+          appendSummaryMessage(msg.content);
+          continue;
+        }
         if (msg.role !== 'system') {
           if (msg.role === 'assistant') {
             // Finalize previous thinking bubble before showing a new step
@@ -1785,7 +1857,7 @@ function scrollToBottom() {
             }
           }
           if (msg.content) {
-            appendMessage(msg.role, msg.content, msg.id, msg.pruned);
+            appendMessage(msg.role, msg.content, msg.id, msg.compacted);
             if (msg.role === 'assistant') {
               lastAssistantMessage = msg.content;
             }
@@ -2580,6 +2652,15 @@ function scrollToBottom() {
     toggleTools();
   });
 
+  if (optionsCompactBtn) {
+    optionsCompactBtn.addEventListener('click', () => {
+      if (!isWaiting) {
+        toggleOptionsMenu(false);
+        send('context:compact', {});
+      }
+    });
+  }
+
   // Close menu when clicking outside
   document.addEventListener('click', (e) => {
     if (optionsMenu && optionsMenuOpen &&
@@ -2975,4 +3056,5 @@ function scrollToBottom() {
   // Start
   initTree();
   connect();
+  setIsWaiting(false);
 })();

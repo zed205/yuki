@@ -142,6 +142,8 @@ function loadSessions(): void {
         projectId: data.projectId || 'default',
         thinkingEnabled: data.thinkingEnabled,
         voiceMode: data.voiceMode,
+        charsPerToken: typeof data.charsPerToken === 'number' ? data.charsPerToken : undefined,
+        lastPromptTokens: typeof data.lastPromptTokens === 'number' ? data.lastPromptTokens : undefined,
         createdAt: new Date(data.createdAt),
         updatedAt: new Date(data.updatedAt),
         messages: data.messages.map((m: any) => ({
@@ -832,58 +834,6 @@ wss.on('connection', (ws) => {
         }
       }
 
-      if (message.type === 'message:prune') {
-        const msgId = message.data.messageId;
-        const sid = message.data.sessionId;
-        const targetSession = sid && sessions.has(sid) ? sessions.get(sid)! : session;
-        const idx = targetSession.messages.findIndex((m) => m.id === msgId);
-        if (idx !== -1) {
-          let prevUserIdx = -1;
-          for (let i = idx - 1; i >= 0; i--) {
-            if (targetSession.messages[i].role === 'user') {
-              prevUserIdx = i;
-              break;
-            }
-          }
-          const startIdx = prevUserIdx !== -1 ? prevUserIdx : 0;
-          for (let i = startIdx; i <= idx; i++) {
-            targetSession.messages[i].pruned = true;
-          }
-          targetSession.updatedAt = new Date();
-          saveSession(targetSession);
-          ws.send(JSON.stringify({
-            type: 'message:pruned',
-            data: { messageId: msgId, fromIdx: startIdx, toIdx: idx },
-          }));
-        }
-      }
-
-      if (message.type === 'message:unprune') {
-        const msgId = message.data.messageId;
-        const sid = message.data.sessionId;
-        const targetSession = sid && sessions.has(sid) ? sessions.get(sid)! : session;
-        const idx = targetSession.messages.findIndex((m) => m.id === msgId);
-        if (idx !== -1) {
-          let prevUserIdx = -1;
-          for (let i = idx - 1; i >= 0; i--) {
-            if (targetSession.messages[i].role === 'user') {
-              prevUserIdx = i;
-              break;
-            }
-          }
-          const startIdx = prevUserIdx !== -1 ? prevUserIdx : 0;
-          for (let i = startIdx; i <= idx; i++) {
-            targetSession.messages[i].pruned = false;
-          }
-          targetSession.updatedAt = new Date();
-          saveSession(targetSession);
-          ws.send(JSON.stringify({
-            type: 'message:unpruned',
-            data: { messageId: msgId },
-          }));
-        }
-      }
-
       if (message.type === 'tools:toggle') {
         // Update session-level disabled tools (affects only this session)
         if (!session.disabledTools) session.disabledTools = [];
@@ -966,6 +916,12 @@ wss.on('connection', (ws) => {
             data: { sessionId: id, title },
           }));
         }
+      }
+
+      if (message.type === 'context:compact') {
+        console.log('[server] context:compact received, session has', session.messages.length, 'messages');
+        await agent.triggerCompaction(session, getConfig(), ws);
+        saveSession(session);
       }
 
       if (message.type === 'session:move') {

@@ -1,4 +1,4 @@
-﻿import * as fs from 'fs';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, ShellEngine } from '../shared/types';
@@ -46,7 +46,7 @@ const defaultShellConfig: ShellConfig = {
 };
 
 const defaultConfig: Config = {
-  // Default model — used when no models[] are configured
+  // Default model � used when no models[] are configured
   models: [{
     ...defaultModelConfig,
     name: 'Default',
@@ -56,8 +56,10 @@ const defaultConfig: Config = {
   imageTokensPerImage: 1024,
   llmTimeoutMs: 180000,
   thinkingEnabled: false,
-  reasoningEffort: 'medium',
-  maxToolOutputLines: 20,
+  maxToolOutputChars: 20000,
+  maxReadLines: 200,
+  maxReadChars: 20000,
+  readNumbered: true,
   disabledTools: [
     'desktop_viewport', 'desktop_screenshot', 'desktop_snapshot_region', 'desktop_click', 'desktop_type', 'desktop_move', 'desktop_drag', 'desktop_scroll', 'desktop_keypress',
   ],
@@ -81,6 +83,7 @@ const defaultConfig: Config = {
     expandToolOutputs: true,
     enableImagePaste: true,
     collapseThinkingTools: true,
+    desktopNotifications: true,
   },
   autoSessionSummary: true,
   desktop: {
@@ -90,13 +93,16 @@ const defaultConfig: Config = {
   contextManagement: {
     enabled: true,
     compactionThreshold: 0.85,
-    compactionTarget: 0.25,
+    hardStopThreshold: 0.95,
+    estimateSafetyMargin: 1.15,
+    toolResultMaxChars: 16000,
+    charsPerToken: 3.0,
+    stagedSummaryBudget: 0.5,
   },
   rawLLMLog: {
     enabled: false,
     maxSizeMB: 25,
   },
-  webFetchMaxInlineKB: 50,
   tempOutputCleanupTTLMinutes: 60,
   observer: { ...defaultObserverConfig },
 };
@@ -181,16 +187,37 @@ export function getModelDefaultThinking(name?: string): boolean {
   return cfg.thinkingEnabled ?? getConfig().thinkingEnabled ?? false;
 }
 
+
+/**
+ * One-time migration: reasoningEffort used to be a top-level (global) config
+ * key. It is now per-model. If a legacy top-level value is present, apply it to
+ * every model that does not set its own, then drop the global key.
+ */
+function migrateReasoningEffort(loaded: any): void {
+  if (!loaded || typeof loaded !== 'object') return;
+  const legacy = loaded.reasoningEffort;
+  if (legacy === undefined) return;
+  if (Array.isArray(loaded.models)) {
+    for (const m of loaded.models) {
+      if (m && typeof m === 'object' && m.reasoningEffort === undefined) {
+        m.reasoningEffort = legacy;
+      }
+    }
+  }
+  delete loaded.reasoningEffort;
+}
+
 export function loadConfig(): Config {
   try {
     if (fs.existsSync(configPath)) {
       let raw = fs.readFileSync(configPath, 'utf-8');
       if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
       const loaded = JSON.parse(raw);
+      migrateReasoningEffort(loaded);
       config = {
         ...defaultConfig,
         ...loaded,
-        // models[] loaded directly — no transformation needed
+        // models[] loaded directly � no transformation needed
 
         stt: { ...defaultConfig.stt, ...(loaded.stt || {}) },
         tts: { ...defaultConfig.tts, ...(loaded.tts || {}) },

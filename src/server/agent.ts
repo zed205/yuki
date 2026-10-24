@@ -5,7 +5,7 @@ import OpenAI from 'openai';
 import { WebSocket } from 'ws';
 import { getConfig } from './config';
 import { tools, toolDefinitions, planToolNames, truncateOutput } from './tools';
-import { Message, ToolCall, Session, Plan, PlanStep, Attachment } from '../shared/types';
+import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
 import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking } from './config';
 import { getProject } from './project';
@@ -15,9 +15,123 @@ import { DesktopAutomation } from './automation';
 import { MCPManager } from './mcp';
 import { logLLMRequestResponse } from './llm-logger';
 import { Observer } from './observer';
+import {
+  calibrateFromUsage,
+  capToolResult,
+  estimateRequestTokens,
+  estimateSessionTokens,
+  isImageResult,
+  projectedPromptTokens,
+  requestChars,
+  resolveCharsPerToken,
+  textTokens,
+} from './context-budget';
+
+export const SUMMARY_PREFIX = 'Summary of previous conversation:';
+
+const SUMMARY_TEMPLATE = `Output exactly this Markdown structure and keep the section order unchanged:
+
+---
+## Goal
+
+- [single-sentence task summary]
+
+## Constraints & Preferences
+
+- [user constraints, preferences, specs, or "(none)"]
+
+## Accomplished
+
+- [completed work or "(none)"]
+
+### In Progress
+
+- [current work or "(none)"]
+
+### Blocked
+
+- [blockers or "(none)"]
+
+## Key Decisions
+
+- [decision and why, or "(none)"]
+
+## Next Steps
+
+- [ordered next actions or "(none)"]
+
+## Critical Context
+
+- [important technical facts, errors, open questions, or "(none)"]
+
+## Relevant Files
+
+- [file or directory path: why it matters, or "(none)"]
+
+---
+
+Keep every section, even when empty.
+Use terse bullets, not prose paragraphs.
+Preserve exact file paths, commands, error strings, and identifiers when known.
+Do not mention the summary process or that context was compacted.`;
+
+const CREATE_ANCHOR = 'Create a new anchored summary from the conversation history above.';
+
+/** Tools whose results are binary payloads — truncating them destroys the data. */
+const IMAGE_RESULT_TOOLS = new Set([
+  'desktop_screenshot', 'desktop_snapshot_region', 'desktop_viewport',
+  'browser_screenshot', 'view_image',
+]);
+
+function buildAnchor(prevSummary?: string): string {
+  if (!prevSummary) return CREATE_ANCHOR;
+  return [
+    'Update the anchored summary below using the conversation history above.',
+    'Preserve still-true details, remove stale details, and merge in the new facts.',
+    '<previous-summary>',
+    prevSummary,
+    '</previous-summary>',
+  ].join('\n');
+}
+
+/** Cost a stored message will contribute to a summarization request. */
+function summaryEntryCost(m: Message, cpt: number, imageTokens: number, resultLimit: number): number {
+  let total = textTokens(m.content, cpt) + textTokens(m.reasoningContent, cpt) + 8;
+  for (const tc of m.toolCalls || []) {
+    total += textTokens(JSON.stringify(tc.parameters ?? {}), cpt) + 8;
+    if (tc.result) total += textTokens(capToolResult(tc.name, tc.parameters, tc.result, resultLimit), cpt);
+  }
+  if (m.attachments) total += m.attachments.filter(a => a.isImage).length * imageTokens;
+  return total;
+}
+
+/** Split a summarization target into request-sized chunks, preserving order. */
+function chunkByBudget(
+  messages: Message[],
+  maxTokens: number,
+  cpt: number,
+  imageTokens: number,
+  resultLimit: number,
+): Message[][] {
+  const chunks: Message[][] = [];
+  let current: Message[] = [];
+  let total = 0;
+  for (const m of messages) {
+    const cost = summaryEntryCost(m, cpt, imageTokens, resultLimit);
+    if (current.length > 0 && total + cost > maxTokens) {
+      chunks.push(current);
+      current = [];
+      total = 0;
+    }
+    current.push(m);
+    total += cost;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
 
 function getSystemInfo(projectPath?: string): string {
-  const maxLines = getConfig().maxToolOutputLines || 20;
+  const maxChars = getConfig().maxToolOutputChars ?? 20000;
   const now = new Date();
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const dateStr = `${months[now.getMonth()]} ${now.getFullYear()}`;
@@ -28,7 +142,8 @@ function getSystemInfo(projectPath?: string): string {
     `Username: ${os.userInfo().username}`,
     `Shell: ${process.env.SHELL || process.env.ComSpec || 'unknown'}`,
     `CWD: ${projectPath || process.cwd()}`,
-    `${maxLines < 0 ? 'Tool output truncation is disabled (maxToolOutputLines=-1).' : `Tool outputs for read, web_fetch, and shell are truncated to ${maxLines} lines. The truncation message includes the full output file path. Use read(..., offset, limit) where offset and limit are line numbers to page through output.`}`,
+    `${maxChars < 0 ? 'Tool output size control is disabled (maxToolOutputChars=-1).' : maxChars === 0 ? 'Tool outputs are written to disk with no inline preview (maxToolOutputChars=0).' : `Tool outputs for web_fetch and shell are capped at ${maxChars} chars. Overflow is saved to disk; use read(..., offset, limit) where offset and limit are line numbers to page through output.`}`,
+    `The read tool always returns content inline (independent of maxToolOutputChars), capped at ${getConfig().maxReadLines ?? 200} lines and ${getConfig().maxReadChars ?? 20000} chars per call, with line numbers ${getConfig().readNumbered ?? true ? 'enabled' : 'disabled'}. Use offset/limit to page through larger files.`,
   ];
   return lines.join('\n');
 }
@@ -46,6 +161,8 @@ export class Agent {
   currentProjectPath: string = '';
   currentModelName: string = '';
   private openai: OpenAI | null = null;
+  private lastRequestChars = 0;
+  private toolDefsChars: number | null = null;
 
   setToolEnabled(name: string, enabled: boolean) {
     if (enabled) {
@@ -72,10 +189,15 @@ export class Agent {
     iterations: number,
   ): Promise<boolean> {
     const obsCfg = getConfig().observer;
+    console.log('[observer] getObserverFeedback called, enabled=%s, mode=%s, iter=%d', obsCfg?.enabled, obsCfg?.mode, iterations);
     if (!obsCfg?.enabled) return false;
 
     // Check if observer should run this turn
-    if (obsCfg.mode === 'periodic' && (iterations % obsCfg.interval!) !== 0) return false;
+    if (obsCfg.mode === 'periodic' && (iterations % obsCfg.interval!) !== 0) {
+      console.log('[observer] skipped (periodic, iter %d mod %d != 0)', iterations, obsCfg.interval);
+      return false;
+    }
+    console.log('[observer] proceeding to evaluate');
 
     // Build tool results map from messages (tool responses are in the messages array)
     const toolResults = new Map<string, string>();
@@ -179,7 +301,7 @@ export class Agent {
     this.currentAttachments = attachments || [];
     this.abortController = new AbortController();
     const config = { ...getConfig() };
-    let systemPrompt = session.messages.find((m) => m.role === 'system')?.content || '';
+    let systemPrompt = session.messages.find(m => m.role === 'system' && !this.isSummaryMessage(m))?.content || '';
     if (session.voiceMode) {
       systemPrompt = loadVoiceSystemPrompt();
     }
@@ -190,59 +312,14 @@ export class Agent {
     // Compact if conversation exceeds threshold
     const cm = config.contextManagement;
     if (cm?.enabled) {
-      const ctxWindow = getAgentModel().contextWindow || 64000;
-      const estimate = this.estimateSessionTokens(session, config);
-      if (estimate > ctxWindow * cm.compactionThreshold) {
-        await this.compactConversation(session, config, ws);
-      }
+      await this.compactIfOverBudget(session, config, ws);
     }
 
-    let messages: Array<Record<string, any>> = [];
-
-    if (systemPrompt) {
-      const envBlock = `\n\n## Environment Context\n${getSystemInfo(this.currentProjectPath)}`;
-      const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.\n\n${getPlanSummary(session.id)}`;
-      const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside `<think>` blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
-      const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement — the content literally isn\'t in the response.';
-      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote + toolOutputNote });
-    }
-
-    const historyMessages = session.messages
-      .filter((m) => m.role !== 'system' && !m.pruned)
-      .slice(0, -1); // last message is the current user msg (re-added below with images)
-
-    for (const msg of historyMessages) {
-      const entry: Record<string, any> = {
-        role: msg.role,
-        content: msg.content,
-      };
-      if (msg.reasoningContent) {
-        entry.reasoning_content = msg.reasoningContent;
-      }
-      if (msg.toolCalls) {
-        entry.tool_calls = msg.toolCalls.map(tc => ({
-          id: tc.id,
-          type: 'function',
-          function: { name: tc.name, arguments: JSON.stringify(tc.parameters) },
-        }));
-        messages.push(entry);
-        for (const tc of msg.toolCalls) {
-          if (tc.result) {
-            messages.push({ role: 'tool', tool_call_id: tc.id, content: tc.result });
-          }
-        }
-      } else {
-        messages.push(entry);
-      }
-    }
-
-    messages.push({
-      role: 'user',
-      content: buildUserContent(userMessage, images, this.currentAttachments),
-    });
+    let messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
 
     let iterations = 0;
     let hasToolCalls = true;
+    let midTurnCompactions = 0;
     const cfgIter = getConfig().maxToolIterations;
     const maxIterations = cfgIter === -1 ? Infinity : (cfgIter || 10);
 
@@ -252,8 +329,26 @@ export class Agent {
         this.cancelled = false;
         return;
       }
+
+      // Context is re-checked every iteration, not just once per user turn: a
+      // single long tool loop can otherwise grow the prompt past the window.
+      const guard = midTurnCompactions < 2
+        ? await this.enforceContextBudget(messages, session, config, ws, userMessage, images, systemPrompt)
+        : 'ok';
+      if (guard === 'halt') {
+        session.updatedAt = new Date();
+        return;
+      }
+      if (guard === 'compacted') {
+        midTurnCompactions++;
+        messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
+        continue;
+      }
+
       iterations++;
       const streamMsgId = this.generateId();
+
+      this.lastRequestChars = requestChars(messages) + this.toolDefsOverheadChars();
 
       let response;
       try {
@@ -281,6 +376,13 @@ export class Agent {
       console.log(`[agent] iter=${iterations} hasToolCalls=${!!(response.toolCalls && response.toolCalls.length > 0)} contentLen=${response.content?.length || 0} toolCount=${response.toolCalls?.length || 0}`);
 
       if (response.usage?.promptTokens) {
+        const before = session.charsPerToken;
+        calibrateFromUsage(session, response.usage.promptTokens, this.lastRequestChars);
+        const cpt = resolveCharsPerToken(session, config);
+        console.log(
+          `[agent] context: actual=${response.usage.promptTokens} est=${Math.round(this.lastRequestChars / cpt)} ` +
+          `chars/token=${cpt.toFixed(2)} (was ${before ? before.toFixed(2) : 'n/a'})`,
+        );
         this.sendContextUpdate(ws, response.usage.promptTokens, getAgentModel().contextWindow || 64000);
       }
 
@@ -367,13 +469,13 @@ export class Agent {
             messages.push({
               role: 'tool',
               tool_call_id: toolCall.id,
-              content: toolCall.result || '',
+              content: this.contextToolResult(toolCall, config),
             });
           }
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         }
 
-        session.messages.push(assistantMsg);
+        session.messages.push(this.forStorage(assistantMsg, config));
         this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
 
         // Run observer evaluation if enabled
@@ -482,6 +584,7 @@ export class Agent {
     return this.openai;
   }
 
+
   private async callLLM(
     messages: Array<Record<string, any>>,
     config: any,
@@ -529,26 +632,27 @@ export class Agent {
 
     const thinkingEnabled = getEffectiveThinking(targetModel);
     if (thinkingEnabled) {
-      createParams.chat_template_kwargs = { enable_thinking: true, preserve_thinking: agentCfg.preserveThinking ?? true };
-      createParams.thinking_budget_tokens = agentCfg.maxTokens === -1 ? 16000 : Math.min(agentCfg.maxTokens || 16000, 64384);
+      const kwargs: Record<string, any> = { enable_thinking: true, preserve_thinking: agentCfg.preserveThinking ?? true };
+      if (agentCfg.reasoningEffort) {
+        kwargs.reasoning_effort = agentCfg.reasoningEffort;
+      }
+      createParams.chat_template_kwargs = kwargs;
     } else {
       createParams.chat_template_kwargs = { enable_thinking: false };
-      createParams.thinking_budget_tokens = 0;
     }
-
     Object.assign(requestBody, createParams);
     delete requestBody.stream;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), config.llmTimeoutMs ?? 180000);
+
+    let fullContent = '';
+    let fullReasoning = '';
     let onAbort: (() => void) | null = null;
     if (signal) {
       onAbort = () => controller.abort();
       signal.addEventListener('abort', onAbort, { once: true });
     }
-
-    let fullContent = '';
-    let fullReasoning = '';
     let sawToolCall = false;
     const toolCallAccumulators: Map<string, { id: string; name: string; arguments: string }> = new Map();
     let usageResult: { promptTokens: number } | undefined;
@@ -641,10 +745,10 @@ export class Agent {
     'web_search', 'view_image',
   ]);
 
-  private _truncateOrReturn(content: string, maxLines: number, label: string): string {
+  private _truncateOrReturn(content: string, maxChars: number, label: string): string {
     const toolName = label.split(':')[0].trim();
     if (this._whitelistTools.has(toolName)) return content;
-    return truncateOutput(content, maxLines, label);
+    return truncateOutput(content, maxChars, label);
   }
 
   private async executeTool(toolCall: ToolCall, sessionId?: string): Promise<string> {
@@ -680,20 +784,20 @@ export class Agent {
       case 'glob':
         {
           const result = await tools.glob(params.pattern, params.rootDir);
-          const maxLines = getConfig().maxToolOutputLines || 20;
-          return this._truncateOrReturn(result, maxLines, `glob: ${params.pattern}`);
+          const maxChars = getConfig().maxToolOutputChars ?? 20000;
+          return this._truncateOrReturn(result, maxChars, `glob: ${params.pattern}`);
         }
       case 'grep':
         {
           const result = await tools.grep(params.pattern, params.rootDir, params.include);
-          const maxLines = getConfig().maxToolOutputLines || 20;
-          return this._truncateOrReturn(result, maxLines, `grep: ${params.pattern}`);
+          const maxChars = getConfig().maxToolOutputChars ?? 20000;
+          return this._truncateOrReturn(result, maxChars, `grep: ${params.pattern}`);
         }
       case 'shell':
         {
           const result = await tools.shell(params.command, params.cwd || this.currentProjectPath || undefined);
-          const maxLines = getConfig().maxToolOutputLines || 20;
-          return this._truncateOrReturn(result, maxLines, `shell: ${params.command}`);
+          const maxChars = getConfig().maxToolOutputChars ?? 20000;
+          return this._truncateOrReturn(result, maxChars, `shell: ${params.command}`);
         }
       case 'browser_navigate':
         if (!this.browser) return 'Browser not initialized';
@@ -787,8 +891,8 @@ export class Agent {
       case 'web_fetch':
         {
           const result = await tools.webFetch(params.url, params.format);
-          const maxLines = getConfig().maxToolOutputLines || 20;
-          return this._truncateOrReturn(result, maxLines, `web_fetch: ${params.url}`);
+          const maxChars = getConfig().maxToolOutputChars ?? 20000;
+          return this._truncateOrReturn(result, maxChars, `web_fetch: ${params.url}`);
         }
       case 'memory_save':
         return await tools.memorySave(params.key, params.value);
@@ -868,136 +972,367 @@ export class Agent {
     this.sendToClient(ws, 'context:update', { promptTokens, maxTokens });
   }
 
-  private async compactConversation(session: Session, config: any, ws: WebSocket): Promise<void> {
-    const systemMsg = session.messages.find(m => m.role === 'system');
-    const nonSystem = session.messages.filter(m => m.role !== 'system');
+  /**
+   * Assemble the request array from stored history. Factored out so a mid-turn
+   * compaction can rebuild it against the shortened session.
+   */
+  private buildRequestMessages(
+    session: Session,
+    config: any,
+    userMessage: string,
+    images: string[],
+    systemPrompt: string,
+  ): Array<Record<string, any>> {
+    const messages: Array<Record<string, any>> = [];
 
-    const keepCount = Math.min(4, nonSystem.length);
-    if (nonSystem.length - keepCount < 1) return;
-
-    const toSummarize = nonSystem.slice(0, -keepCount);
-    const keep = nonSystem.slice(-keepCount);
-
-    // Find previous summary to update if it exists
-    const prevSummaryMsg = toSummarize.find(m => m.role === 'system' && m.content.startsWith('Summary of previous conversation:'));
-    const prevSummary = prevSummaryMsg?.content.replace('Summary of previous conversation:\n', '') || undefined;
-    const toSummarizeFiltered = prevSummaryMsg ? toSummarize.filter(m => m !== prevSummaryMsg) : toSummarize;
-
-    const SUMMARY_TEMPLATE = `Output exactly this Markdown structure and keep the section order unchanged:
-
----
-## Goal
-
-- [single-sentence task summary]
-
-## Constraints & Preferences
-
-- [user constraints, preferences, specs, or "(none)"]
-
-## Accomplished
-
-- [completed work or "(none)"]
-
-### In Progress
-
-- [current work or "(none)"]
-
-### Blocked
-
-- [blockers or "(none)"]
-
-## Key Decisions
-
-- [decision and why, or "(none)"]
-
-## Next Steps
-
-- [ordered next actions or "(none)"]
-
-## Critical Context
-
-- [important technical facts, errors, open questions, or "(none)"]
-
-## Relevant Files
-
-- [file or directory path: why it matters, or "(none)"]
-
----
-
-Keep every section, even when empty.
-Use terse bullets, not prose paragraphs.
-Preserve exact file paths, commands, error strings, and identifiers when known.
-Do not mention the summary process or that context was compacted.`;
-
-    const anchor = prevSummary
-      ? [
-          'Update the anchored summary below using the conversation history above.',
-          'Preserve still-true details, remove stale details, and merge in the new facts.',
-          '<previous-summary>',
-          prevSummary,
-          '</previous-summary>',
-        ].join('\n')
-      : 'Create a new anchored summary from the conversation history above.';
-
-    const summaryPrompt: Array<Record<string, any>> = [
-      { role: 'system', content: 'You are an anchored context summarization assistant for coding sessions.' },
-      ...toSummarizeFiltered.map(m => {
-        const entry: Record<string, any> = { role: m.role as string, content: m.content };
-        if (m.reasoningContent) entry.reasoning_content = m.reasoningContent;
-        return entry;
-      }),
-      { role: 'user', content: [anchor, SUMMARY_TEMPLATE].join('\n\n') },
-    ];
-
-    try {
-      const openai = this.getOpenAI();
-      const agentCfg = getAgentModel();
-      const beforeTokens = this.estimateSessionTokens(session, config);
-
-      const response = await openai.chat.completions.create({
-        model: agentCfg.model,
-        messages: summaryPrompt as any,
-        max_tokens: 4096,
-        stream: false,
-      });
-
-      const summary = response.choices?.[0]?.message?.content || '';
-      if (!summary) return;
-
-      session.messages = [
-        ...(systemMsg ? [systemMsg] : []),
-        { id: `${session.id}-summary`, role: 'system', content: `Summary of previous conversation:\n${summary}`, timestamp: new Date(), sessionId: session.id },
-        ...keep,
-      ];
-      session.updatedAt = new Date();
-
-      const afterTokens = this.estimateSessionTokens(session, config);
-      const saved = Math.max(0, beforeTokens - afterTokens);
-
-      this.sendToClient(ws, 'context:compacted', {
-        savedTokens: saved,
-        messagesCompacted: toSummarize.length,
-        sessionId: session.id,
-      });
-    } catch (err) {
-      console.error('[agent] compaction failed:', err);
+    if (systemPrompt) {
+      const envBlock = `\n\n## Environment Context\n${getSystemInfo(this.currentProjectPath)}`;
+      const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.\n\n${getPlanSummary(session.id)}`;
+      const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
+      const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement — the content literally isn\'t in the response.';
+      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote + toolOutputNote });
     }
+
+    // The anchored summary is a system-role message, so the history filter below
+    // would drop it. Without this it is written and never actually sent back.
+    const anchored = session.messages.find(m => this.isSummaryMessage(m) && !m.pruned);
+    if (anchored) {
+      messages.push({ role: 'system', content: anchored.content });
+    }
+
+    // Only go back to the start, or to the last compaction summary. Anything
+    // older than the anchor has been folded into it and is no longer replayed.
+    const anchorIndex = anchored ? session.messages.indexOf(anchored) : -1;
+    const historyMessages = session.messages
+      .filter((m, idx) => m.role !== 'system' && !m.pruned && !m.compacted && idx > anchorIndex)
+      .slice(0, -1); // last message is the current user msg (re-added below with images)
+
+    for (const msg of historyMessages) {
+      const entry: Record<string, any> = {
+        role: msg.role,
+        content: msg.content,
+      };
+      if (msg.reasoningContent) {
+        entry.reasoning_content = msg.reasoningContent;
+      }
+      if (msg.toolCalls) {
+        entry.tool_calls = msg.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.parameters) },
+        }));
+        messages.push(entry);
+        for (const tc of msg.toolCalls) {
+          if (tc.result) {
+            messages.push({ role: 'tool', tool_call_id: tc.id, content: tc.result });
+          }
+        }
+      } else {
+        messages.push(entry);
+      }
+    }
+
+    messages.push({
+      role: 'user',
+      content: buildUserContent(userMessage, images, this.currentAttachments),
+    });
+
+    return messages;
+  }
+
+  /** Tool schemas ride along with every request and are pure overhead. */
+  private toolDefsOverheadChars(): number {
+    if (this.toolDefsChars === null) {
+      try {
+        this.toolDefsChars = JSON.stringify(toolDefinitions).length;
+      } catch {
+        this.toolDefsChars = 0;
+      }
+    }
+    return this.toolDefsChars;
+  }
+
+  private storedResultLimit(config: any): number {
+    const limit = config?.contextManagement?.toolResultMaxChars;
+    return typeof limit === 'number' && limit > 0 ? limit : 16000;
+  }
+
+  private isSummaryMessage(msg: Message): boolean {
+    return msg.id === `${msg.sessionId}-summary` || (msg.role === 'system' && (msg.content || '').startsWith(SUMMARY_PREFIX));
+  }
+
+  /** The copy of a tool result that enters the context (and therefore history). */
+  private contextToolResult(toolCall: ToolCall, config: any): string {
+    const full = toolCall.result || '';
+    if (IMAGE_RESULT_TOOLS.has(toolCall.name) || isImageResult(full)) return full;
+    return capToolResult(toolCall.name, toolCall.parameters, full, this.storedResultLimit(config));
+  }
+
+  /**
+   * What gets written to the session file. Tool results are capped here so the
+   * UI still renders the full output for this turn while every later turn — and
+   * every restart — replays a bounded copy.
+   */
+  private forStorage(msg: Message, config: any): Message {
+    if (!msg.toolCalls?.length) return msg;
+    const limit = this.storedResultLimit(config);
+    let capped = false;
+    const toolCalls = msg.toolCalls.map(tc => {
+      const full = tc.result || '';
+      if (!full || full.length <= limit) return tc;
+      if (IMAGE_RESULT_TOOLS.has(tc.name) || isImageResult(full)) return tc;
+      capped = true;
+      return { ...tc, result: capToolResult(tc.name, tc.parameters, full, limit) };
+    });
+    return capped ? { ...msg, toolCalls } : msg;
   }
 
   private estimateSessionTokens(session: Session, config: any): number {
-    let total = 0;
-    for (const msg of session.messages) {
-      const content = msg.content || '';
-      total += Math.ceil(content.length / 4) + 10;
-      if (msg.toolCalls) {
-        for (const tc of msg.toolCalls) {
-          total += Math.ceil(JSON.stringify(tc.parameters).length / 4) + 5;
-          if (tc.result) total += Math.ceil(tc.result.length / 4) + 5;
+    return estimateSessionTokens(session, config, this.toolDefsOverheadChars());
+  }
+
+  /** Turn-start compaction: cheap, runs once before the tool loop. */
+  private async compactIfOverBudget(session: Session, config: any, ws: WebSocket): Promise<void> {
+    const cm = config.contextManagement;
+    if (!cm?.enabled) return;
+    const ctxWindow = getAgentModel().contextWindow || 64000;
+    const projected = projectedPromptTokens(
+      session,
+      this.estimateSessionTokens(session, config),
+      cm.estimateSafetyMargin ?? 1.15,
+    );
+    if (projected > ctxWindow * (cm.compactionThreshold ?? 0.85)) {
+      await this.compactConversation(session, config, ws);
+    }
+  }
+
+  /**
+   * Per-iteration budget guard. Returns:
+   *   'ok'        — safe to call the model
+   *   'compacted' — session was compacted; caller must rebuild its message array
+   *   'halt'      — at the wall with nothing left to compact; turn is over
+   */
+  private async enforceContextBudget(
+    messages: Array<Record<string, any>>,
+    session: Session,
+    config: any,
+    ws: WebSocket,
+    userMessage: string,
+    images: string[],
+    systemPrompt: string,
+  ): Promise<'ok' | 'compacted' | 'halt'> {
+    const cm = config.contextManagement;
+    if (!cm?.enabled) return 'ok';
+
+    const ctxWindow = getAgentModel().contextWindow || 64000;
+    const cpt = resolveCharsPerToken(session, cm);
+    const liveEstimate = estimateRequestTokens(messages, session, config)
+      + Math.ceil(this.toolDefsOverheadChars() / cpt);
+    const projected = projectedPromptTokens(session, liveEstimate, cm.estimateSafetyMargin ?? 1.15);
+
+    if (projected <= ctxWindow * (cm.compactionThreshold ?? 0.85)) return 'ok';
+
+    const atWall = projected > ctxWindow * (cm.hardStopThreshold ?? 0.95);
+    console.log(
+      `[agent] budget guard: projected=${projected}/${ctxWindow} ` +
+      `(live=${liveEstimate}, lastActual=${session.lastPromptTokens || 0}, cpt=${cpt.toFixed(2)})`,
+    );
+
+    const compacted = await this.compactConversation(session, config, ws);
+    if (compacted) return 'compacted';
+
+    // Nothing could be reclaimed — either the turn is tiny or compaction failed.
+    if (atWall) {
+      console.warn('[agent] halting turn: context window exhausted and nothing left to compact');
+      this.sendToClient(ws, 'chat:response', {
+        message:
+          'I stopped because this session ran out of context window and there was nothing left to compact. ' +
+          'Start a new session, or ask me to work in smaller pieces — the earlier findings are summarized in the anchored summary.',
+        reasoningContent: '',
+        messageId: '',
+        sessionId: session.id,
+      });
+      return 'halt';
+    }
+    return 'ok';
+  }
+
+  /**
+   * Public method to trigger manual context compaction from the client.
+   */
+  async triggerCompaction(session: Session, config: any, ws: WebSocket): Promise<void> {
+    console.log(`[agent] triggerCompaction called, session has ${session.messages.length} messages`);
+    const reason = await this.compactConversation(session, config, ws);
+    if (reason) {
+      console.log(`[agent] compactConversation failed: ${reason}`);
+      this.sendToClient(ws, 'context:compact-failed', {
+        sessionId: session.id,
+        reason,
+      });
+      return;
+    }
+    console.log('[agent] compactConversation returned true');
+  }
+
+  /**
+   * Fold the conversation up to (but not including) the current message into a
+   * single anchored summary. The folded turns are kept in the session log (for
+   * reference) but flagged `compacted` so the agent's request history only ever
+   * reaches back to the last compaction summary.
+   * Returns an empty string when the session was rewritten, or a reason string
+   * describing why compaction could not proceed.
+   */
+  private async compactConversation(session: Session, config: any, ws: WebSocket): Promise<string> {
+    const cm = config.contextManagement || {};
+    const cpt = resolveCharsPerToken(session, cm);
+    const imageTokens = config.imageTokensPerImage || 1024;
+    const ctxWindow = getAgentModel().contextWindow || 64000;
+
+    // The anchored summary is itself a system message. It must be pulled out
+    // explicitly, otherwise the second compaction silently drops the whole chain.
+    const summaryMsg = session.messages.find(m => this.isSummaryMessage(m));
+    const systemMsg = session.messages.find(m => m.role === 'system' && m !== summaryMsg);
+
+    const rest = session.messages.filter(m => m !== systemMsg && m !== summaryMsg);
+    if (rest.length < 1) return 'There is no conversation to compact.';
+
+    // Never summarize away the message currently being answered.
+    const pinned = rest.slice(-1);
+    const toSummarize = rest.slice(0, -1);
+    if (toSummarize.length < 1) return 'There is nothing to compact yet.';
+
+    const prevSummary = summaryMsg && (summaryMsg.content || '').startsWith(SUMMARY_PREFIX)
+      ? summaryMsg.content.slice(SUMMARY_PREFIX.length).replace(/^\n/, '')
+      : undefined;
+
+    const beforeTokens = this.estimateSessionTokens(session, config);
+    const resultLimit = Math.min(this.storedResultLimit(config), 8000);
+
+    try {
+      const summary = await this.summarizeForAnchor(toSummarize, prevSummary, cm, ctxWindow, resultLimit, cpt, imageTokens);
+      if (!summary) {
+        return 'The summarizer produced no output.';
+      }
+
+      // Keep the folded turns in the log for the user's reference, but mark them
+      // so they are no longer replayed to the model.
+      for (const m of toSummarize) {
+        m.compacted = true;
+      }
+
+      // Drop any prior summary and insert the refreshed running anchor at the
+      // compaction boundary — right before the message currently being answered
+      // (the pinned message). This way the transcript reads naturally:
+      //   [compacted turns (dimmed)] -> [Summary] -> [recent conversation]
+      // instead of the summary being yanked to the very top.
+      const summaryMessage: Message = {
+        id: `${session.id}-summary`,
+        role: 'system',
+        content: `${SUMMARY_PREFIX}\n${summary}`,
+        timestamp: new Date(),
+        sessionId: session.id,
+      };
+      session.messages = session.messages.filter(m => m !== summaryMsg);
+      const pinnedMsg = pinned[0];
+      const insertAt = pinnedMsg ? session.messages.indexOf(pinnedMsg) : session.messages.length;
+      if (insertAt < 0) {
+        session.messages.push(summaryMessage);
+      } else {
+        session.messages.splice(insertAt, 0, summaryMessage);
+      }
+      session.updatedAt = new Date();
+
+      const afterTokens = this.estimateSessionTokens(session, config);
+      this.sendToClient(ws, 'context:compacted', {
+        savedTokens: Math.max(0, beforeTokens - afterTokens),
+        messagesCompacted: toSummarize.length,
+        sessionId: session.id,
+      });
+      return '';
+    } catch (err) {
+      return `Compaction failed with an error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /**
+   * Summarize into the anchor, staging the work when the history alone would
+   * not fit in one request — otherwise the summarizer 400s and nothing compacts.
+   */
+  private async summarizeForAnchor(
+    messages: Message[],
+    prevSummary: string | undefined,
+    cm: any,
+    ctxWindow: number,
+    resultLimit: number,
+    cpt: number,
+    imageTokens: number,
+  ): Promise<string> {
+    const budget = Math.floor(ctxWindow * (cm.stagedSummaryBudget ?? 0.5));
+    const overhead = textTokens(SUMMARY_TEMPLATE, cpt) + (prevSummary ? textTokens(prevSummary, cpt) : 0) + 300;
+    const chunks = chunkByBudget(messages, Math.max(2000, budget - overhead), cpt, imageTokens, resultLimit);
+
+    if (chunks.length <= 1) {
+      return this.runSummaryRequest(this.summaryEntries(messages, resultLimit), buildAnchor(prevSummary));
+    }
+
+    console.log(`[agent] staging compaction across ${chunks.length} chunks`);
+    const partials: string[] = [];
+    for (const chunk of chunks) {
+      const partial = await this.runSummaryRequest(this.summaryEntries(chunk, resultLimit), CREATE_ANCHOR);
+      if (partial) partials.push(partial);
+    }
+    if (partials.length === 0) return '';
+
+    const merged = partials
+      .map((p, i) => `<partial-summary index="${i + 1}">\n${p}\n</partial-summary>`)
+      .join('\n\n');
+    return this.runSummaryRequest([{ role: 'user', content: merged }], buildAnchor(prevSummary));
+  }
+
+  /** Tool results are included: they are usually the substance being compacted. */
+  private summaryEntries(messages: Message[], resultLimit: number): Array<Record<string, any>> {
+    const entries: Array<Record<string, any>> = [];
+    for (const m of messages) {
+      const entry: Record<string, any> = { role: m.role, content: m.content || '' };
+      if (m.reasoningContent) entry.reasoning_content = m.reasoningContent;
+      if (m.toolCalls?.length) {
+        entry.tool_calls = m.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.parameters) },
+        }));
+      }
+      entries.push(entry);
+      for (const tc of m.toolCalls || []) {
+        if (tc.result) {
+          entries.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: capToolResult(tc.name, tc.parameters, tc.result, resultLimit),
+          });
         }
       }
-      if (msg.images) total += (msg.images.length * (config.imageTokensPerImage || 1024));
     }
-    return total;
+    return entries;
+  }
+
+  private async runSummaryRequest(history: Array<Record<string, any>>, anchor: string): Promise<string> {
+    const openai = this.getOpenAI();
+    const agentCfg = getAgentModel();
+    const response = await withModelLoadRetry(
+      () => openai.chat.completions.create({
+        model: agentCfg.model,
+        messages: [
+          { role: 'system', content: 'You are an anchored context summarization assistant for coding sessions.' },
+          ...(history as any[]),
+          { role: 'user', content: [anchor, SUMMARY_TEMPLATE].join('\n\n') },
+        ],
+        max_tokens: 4096,
+        stream: false,
+      }),
+      2, 3000, 'context compaction',
+    );
+    return response.choices?.[0]?.message?.content || '';
   }
 
   private sendToClient(ws: WebSocket, type: string, data: any): void {

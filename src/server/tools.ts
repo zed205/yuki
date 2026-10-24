@@ -88,19 +88,22 @@ function saveFullOutput(content: string, suffix: string): string {
   return filePath;
 }
 
-export function truncateOutput(content: string, maxLines: number, label: string): string {
-  if (maxLines < 0) return content;
+export function truncateOutput(content: string, maxChars: number, label: string): string {
+  // maxChars < 0: size control disabled — return full content inline, never save.
+  if (maxChars < 0) return content;
   const suffix = label.replace(/[^a-z0-9]/gi, '_').slice(0, 20);
-  // Byte-size guard: if content exceeds 100KB, save and truncate even if it's one long line
-  if (content.length > 100 * 1024) {
+
+  // maxChars == 0: write full output to disk immediately, no inline preview.
+  if (maxChars === 0) {
     const savedPath = saveFullOutput(content, suffix);
-    return `[Output is ${(content.length / 1024).toFixed(0)}KB but the maximum is 100KB. Full output saved to: ${savedPath}. Use read(..., offset, limit) where offset and limit are byte numbers to page through it.]`;
+    return `[Output written to disk without inline preview. Full output saved to: ${savedPath}. Use read(..., offset, limit) where offset and limit are line numbers to page through it.]`;
   }
-  const lines = content.split('\n');
-  if (lines.length <= maxLines) return content;
+
+  // maxChars > 0: cap output at maxChars characters; overflow is saved to disk.
+  if (content.length <= maxChars) return content;
   const savedPath = saveFullOutput(content, suffix);
-  const truncated = lines.slice(0, maxLines).join('\n');
-  return `${truncated}\n\n[Output truncated at ${maxLines} lines. Full output saved to: ${savedPath}. Use read(..., offset, limit) where offset and limit are line numbers to page through it.]`;
+  const truncated = content.slice(0, maxChars);
+  return `${truncated}\n\n[Output truncated at ${maxChars} chars. Full output saved to: ${savedPath}. Use read(..., offset, limit) where offset and limit are line numbers to page through it.]`;
 }
 
 function stripHTML(html: string): string {
@@ -205,20 +208,42 @@ export async function toolRead(filePath: string, offset?: number, limit?: number
 
     const content = fs.readFileSync(absPath, 'utf-8');
     const lines = content.split('\n');
+    const maxReadLines = getConfig().maxReadLines ?? 200;
+    const maxReadChars = getConfig().maxReadChars ?? 20000;
 
-    if (offset !== undefined || limit !== undefined) {
-      const start = offset !== undefined ? Math.max(0, offset) : 0;
-      const count = limit !== undefined ? Math.max(1, limit) : lines.length;
-      const slice = lines.slice(start, start + count);
-      const numbered = slice.map((line, i) => `${start + i + 1}: ${line}`);
-      const end = Math.min(start + count, lines.length);
-      return numbered.join('\n') + `\n\n[Showing lines ${start + 1}-${end} of ${lines.length}]`;
+    // Resolve the line window. maxReadLines caps the number of lines returned
+    // (0 = no line cap). An explicit limit is honored but never exceeds it.
+    const start = offset !== undefined ? Math.max(0, offset) : 0;
+    let count: number;
+    if (limit !== undefined) {
+      count = Math.max(1, limit);
+      if (maxReadLines > 0) count = Math.min(count, maxReadLines);
+    } else if (maxReadLines > 0) {
+      count = maxReadLines;
+    } else {
+      count = lines.length;
     }
 
-    const maxLines = getConfig().maxToolOutputLines || 20;
-    const numbered = lines.map((line, i) => `${i + 1}: ${line}`);
-    const joined = numbered.join('\n');
-    return truncateOutput(joined, maxLines, `file: ${path.basename(absPath)}`);
+    if (start >= lines.length) {
+      return `[Offset ${start} is past the end of the file (${lines.length} lines).]`;
+    }
+
+    const slice = lines.slice(start, start + count);
+    const end = Math.min(start + count, lines.length);
+    const readNumbered = getConfig().readNumbered ?? true;
+    const rendered = readNumbered
+      ? slice.map((line, i) => `${start + i + 1}: ${line}`)
+      : slice;
+    const joined = rendered.join('\n');
+
+    // maxReadChars caps the total characters returned (0 = no char cap).
+    if (maxReadChars > 0 && joined.length > maxReadChars) {
+      const savedPath = saveFullOutput(content, `file_${path.basename(absPath)}`);
+      const truncated = joined.slice(0, maxReadChars);
+      return `${truncated}\n\n[Showing lines ${start + 1}-${end} of ${lines.length}, truncated at ${maxReadChars} chars. Full output saved to: ${savedPath}. Use read(..., offset, limit) where offset and limit are line numbers to page through it.]`;
+    }
+
+    return `${joined}\n\n[Showing lines ${start + 1}-${end} of ${lines.length}]`;
   } catch (err: any) {
     return `Error reading file: ${err.message}`;
   }
@@ -389,8 +414,8 @@ export async function toolGrep(
     walk(searchDir);
 
     if (results.length === 0) return 'No matches found.';
-    const maxLines = getConfig().maxToolOutputLines || 20;
-    return truncateOutput(results.join('\n'), maxLines, 'grep output');
+    const maxChars = getConfig().maxToolOutputChars ?? 20000;
+    return truncateOutput(results.join('\n'), maxChars, 'grep output');
   } catch (err: any) {
     return `Error grepping: ${err.message}`;
   }
@@ -465,8 +490,8 @@ export async function toolShell(command: string, cwd?: string): Promise<string> 
 
     const output = stdout || '(no output)';
     const full = stderr ? `${output}\n\nSTDERR:\n${stderr}` : output;
-    const maxLines = getConfig().maxToolOutputLines || 20;
-    return truncateOutput(full, maxLines, 'shell output');
+    const maxChars = getConfig().maxToolOutputChars ?? 20000;
+    return truncateOutput(full, maxChars, 'shell output');
   } catch (err: any) {
     return `Command failed:\n${err.message}`;
   }
@@ -624,12 +649,11 @@ export async function toolWebFetch(url: string, format?: string): Promise<string
     const isBinary = /^(application\/(pdf|zip|gzip|x-zip|x-tar|x-gzip|octet-stream)|image\/|audio\/|video\/)/i.test(contentType);
 
     const html = await response.text();
-    const maxInlineBytes = (getConfig().webFetchMaxInlineKB || 50) * 1024;
 
     // Detect binary content that wasn't caught by Content-Type (PDF magic bytes, null bytes)
     const detectedBinary = /^%PDF-/i.test(html.trim()) || html.indexOf('\x00') !== -1;
 
-    // Save to disk if binary or too large — no inline preview
+    // Save binary content to disk — no inline preview
     if (isBinary || detectedBinary) {
       const urlExt = url.split('.').pop()?.split('?')[0]?.toLowerCase() || 'bin';
       const savedPath = saveFullOutput(html, `fetch_${urlExt || 'bin'}`);
@@ -637,30 +661,15 @@ export async function toolWebFetch(url: string, format?: string): Promise<string
       return `Content saved to: ${savedPath} (${sizeLabel}). Binary file — your other tools may not be able to read this.`;
     }
 
-    if (html.length > maxInlineBytes) {
-      // Process to markdown before saving so reads return clean text, not raw HTML
-      const cleaned = html
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-        .replace(/<link[^>]*>/gi, '')
-        .replace(/<meta[^>]*>/gi, '')
-        .replace(/<!--[\s\S]*?-->/g, '');
-      const markdown = stripDataUris(turndown.turndown(cleaned) || html);
-      const savedPath = saveFullOutput(markdown, 'fetch_txt');
-      const totalLines = markdown.split('\n').length;
-      const totalKB = (markdown.length / 1024).toFixed(0);
-      return `Content saved to: ${savedPath} (${totalKB}KB, ${totalLines} lines). Start with read offset=0 limit=25 to preview, then request more if needed.`;
-    }
-
     const mode = format || 'markdown';
-    const maxLines = getConfig().maxToolOutputLines || 20;
+    const maxChars = getConfig().maxToolOutputChars ?? 20000;
 
     if (mode === 'raw') {
-      return truncateOutput(html, maxLines, `fetch: ${url}`);
+      return truncateOutput(html, maxChars, `fetch: ${url}`);
     }
 
     if (mode === 'accessibility-tree') {
-      return truncateOutput(buildAccessibilityTree(html), maxLines, `a11y tree: ${url}`);
+      return truncateOutput(buildAccessibilityTree(html), maxChars, `a11y tree: ${url}`);
     }
 
     const cleaned = html
@@ -674,7 +683,7 @@ export async function toolWebFetch(url: string, format?: string): Promise<string
     if (!markdown.trim()) {
       return 'No readable content found on the page.';
     }
-    return truncateOutput(markdown, maxLines, `fetch: ${url}`);
+    return truncateOutput(markdown, maxChars, `fetch: ${url}`);
   } catch (err: any) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       return `Fetch timed out after 15 seconds for: ${url}`;

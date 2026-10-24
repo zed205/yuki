@@ -142,6 +142,10 @@ html {
   display: none;
 }
 
+.summary-card summary::-webkit-details-marker {
+  display: none;
+}
+
 .animation-delay-200 {
   animation-delay: 200ms;
 }

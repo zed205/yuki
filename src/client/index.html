@@ -21,6 +21,11 @@
             primaryDark: '#1f6feb',
             userMsg: '#1c3a5f',
             asstMsg: '#161b22',
+            // Compaction summary bubble: assistant-bubble colours skewed ~3%
+            // toward aqua/teal — a low-intensity highlight that's just enough
+            // to spot while scrolling back without standing out too much.
+            summaryBg: '#394548',
+            summaryBorder: '#455457',
             danger: '#f85149',
             success: '#3fb950',
             muted: '#8b949e',
@@ -180,12 +185,18 @@
                 <span class="flex-1">Speak</span>
                 <span id="mic-indicator" class="text-xs text-muted">Idle</span>
               </button>
-              <div class="border-t border-border my-1"></div>
               <!-- Auto TTS -->
               <button type="button" id="options-tts-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Toggle auto TTS">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                 <span class="flex-1">Auto TTS</span>
                 <span id="tts-indicator" class="text-xs text-muted">Off</span>
+              </button>
+              <div class="border-t border-border my-1"></div>
+              <!-- Compaction -->
+              <button type="button" id="options-compact-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed" title="Manually trigger context compaction">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M21 12V7H7a5 5 0 0 1 0-10h1"/><path d="M3 12a9 9 0 0 0 15 6.7L22 16"/><path d="M21 17v4h-4"/></svg>
+                <span class="flex-1">Compaction</span>
+                <span id="compact-indicator" class="text-xs text-muted">Ready</span>
               </button>
             </div>
           </div>
