@@ -987,7 +987,14 @@ export class Agent {
 
     if (systemPrompt) {
       const envBlock = `\n\n## Environment Context\n${getSystemInfo(this.currentProjectPath)}`;
-      const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.\n\n${getPlanSummary(session.id)}`;
+      // NOTE: the live plan STATE (getPlanSummary) intentionally does NOT live
+      // here. This head message must stay byte-identical across turns so the
+      // shared prompt prefix stays cacheable (prefix caching reuses from the
+      // head; changing the head invalidates the whole cached prefix). The live
+      // plan state is instead emitted as a separate tail system message in
+      // buildRequestMessages, inside the recency zone, right before the current
+      // user message — where a changing element only invalidates a short suffix.
+      const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.`;
       const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
       const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement — the content literally isn\'t in the response.';
       messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote + toolOutputNote });
@@ -1031,6 +1038,16 @@ export class Agent {
         messages.push(entry);
       }
     }
+
+    // Live, mutable planning state lives here — a separate system-role message
+    // at the tail (the recency zone), right before the current user message.
+    // Kept as `system` so it retains system-prompt priority in the instruction
+    // hierarchy, while being positioned so that when it changes it only
+    // invalidates a short suffix of the cached prefix, not the whole head.
+    messages.push({
+      role: 'system',
+      content: `## Current Plan\n${getPlanSummary(session.id)}`,
+    });
 
     messages.push({
       role: 'user',
