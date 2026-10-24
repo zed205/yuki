@@ -991,9 +991,10 @@ export class Agent {
       // here. This head message must stay byte-identical across turns so the
       // shared prompt prefix stays cacheable (prefix caching reuses from the
       // head; changing the head invalidates the whole cached prefix). The live
-      // plan state is instead emitted as a separate tail system message in
-      // buildRequestMessages, inside the recency zone, right before the current
-      // user message — where a changing element only invalidates a short suffix.
+      // plan state is instead folded into the current user message at the tail
+      // (the recency zone) — where a changing element only invalidates a short
+      // suffix, and where it avoids Qwen's "system message must be at the
+      // beginning" template constraint.
       const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.`;
       const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
       const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement — the content literally isn\'t in the response.';
@@ -1039,20 +1040,29 @@ export class Agent {
       }
     }
 
-    // Live, mutable planning state lives here — a separate system-role message
-    // at the tail (the recency zone), right before the current user message.
-    // Kept as `system` so it retains system-prompt priority in the instruction
-    // hierarchy, while being positioned so that when it changes it only
-    // invalidates a short suffix of the cached prefix, not the whole head.
-    messages.push({
-      role: 'system',
-      content: `## Current Plan\n${getPlanSummary(session.id)}`,
-    });
-
-    messages.push({
-      role: 'user',
-      content: buildUserContent(userMessage, images, this.currentAttachments),
-    });
+    // Live, mutable planning state rides along on the CURRENT user message —
+    // kept at the tail (the recency zone) so the prompt head and all prior
+    // history stay byte-identical and cacheable; when the plan changes only this
+    // final message (which changes every turn anyway) differs.
+    // NOTE: this MUST NOT be a `system`-role message. Qwen's chat template
+    // raises "System message must be at the beginning" for any system message
+    // placed mid-conversation, so the volatile plan state is folded into the
+    // user turn (user role is valid anywhere) instead.
+    const currentUserContent = buildUserContent(userMessage, images, this.currentAttachments);
+    const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n`;
+    if (typeof currentUserContent === 'string') {
+      messages.push({ role: 'user', content: planNote + currentUserContent });
+    } else {
+      // Multimodal: buildUserContent guarantees a text part first; prepend the plan to it.
+      const parts = Array.isArray(currentUserContent) ? [...currentUserContent] : [{ type: 'text', text: String(currentUserContent) }];
+      const first = parts[0];
+      if (first && typeof first.text === 'string') {
+        first.text = planNote + first.text;
+      } else {
+        parts.unshift({ type: 'text', text: planNote.trim() });
+      }
+      messages.push({ role: 'user', content: parts });
+    }
 
     return messages;
   }
