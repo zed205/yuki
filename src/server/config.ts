@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, ShellEngine } from '../shared/types';
+import { splitLines } from './utils/line-endings';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
 const configPath = path.join(configDir, 'config.json');
@@ -111,7 +112,7 @@ export function loadEnvFile(): void {
   try {
     const envPath = path.join(process.cwd(), '.env');
     if (!fs.existsSync(envPath)) return;
-    for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+    for (const line of splitLines(fs.readFileSync(envPath, 'utf-8'))) {
       const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
       if (m && process.env[m[1]] === undefined) {
         process.env[m[1]] = m[2] || '';
@@ -267,6 +268,11 @@ export function getConfig(): Config {
   return config;
 }
 
+/** Absolute path to the active YukiWeb config file (shown in tool errors). */
+export function getConfigPath(): string {
+  return configPath;
+}
+
 export function loadSystemPrompt(): string {
   try {
     if (fs.existsSync(systemPromptPath)) {
@@ -329,6 +335,12 @@ export function loadVoiceSystemPrompt(): string {
   }
 
   return defaultVoicePrompt;
+}
+
+// --- Sub-Agent Config Accessors ---
+
+export function getSubAgentConfig(): SubAgentConfig {
+  return config.subAgents ?? defaultSubAgentConfig;
 }
 
 // --- Observer Config Accessors ---

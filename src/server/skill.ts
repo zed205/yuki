@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const skillsDir = path.join(os.homedir(), '.config', 'yukiweb', 'skills');
 
@@ -25,7 +26,7 @@ export function skillLoad(name: string): string {
   ensureDir();
   const filePath = path.join(skillsDir, `${name}.md`);
   if (!fs.existsSync(filePath)) return `Skill "${name}" not found. Available skills:\n${skillList()}`;
-  return fs.readFileSync(filePath, 'utf-8');
+  return normalizeLineEndings(fs.readFileSync(filePath, 'utf-8'));
 }
 
 export function skillSave(name: string, description: string, instructions: string): string {

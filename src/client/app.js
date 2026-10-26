@@ -16,6 +16,8 @@
   const optionsThinkingBtn = document.getElementById('options-thinking-btn');
   const optionsToolsBtn = document.getElementById('options-tools-btn');
   const optionsCompactBtn = document.getElementById('options-compact-btn');
+  const optionsNotificationsBtn = document.getElementById('options-notifications-btn');
+  const notificationsIndicator = document.getElementById('notifications-indicator');
   const compactIndicator = document.getElementById('compact-indicator');
   const voiceModeIndicator = document.getElementById('voice-mode-indicator');
   const micIndicator = document.getElementById('mic-indicator');
@@ -81,8 +83,12 @@
   let pastedFiles = [];
   let collapseTT = true;
   let ttGroup = null;
+  // Active sub-agent bubbles, keyed by server-side agentId.
+  const agentBubbles = new Map();
   let enableImagePaste = false;
   let connectedConfig = {};
+  // Desktop notifications (completion alerts) — default on, synced from server config
+  let desktopNotifications = true;
   // Stores auto-generated summaries per session
   const sessionSummaries = new Map();
 
@@ -110,6 +116,7 @@
     { name: 'Memory', tools: ['memory_save', 'memory_read', 'memory_list', 'memory_delete'] },
     { name: 'Skill', tools: ['skill_list', 'skill_load', 'skill_save', 'skill_delete'] },
     { name: 'Plan', tools: ['plan_create', 'plan_update', 'plan_get', 'plan_remove'] },
+    { name: 'Agents', tools: ['spawn_agent'] },
   ];
 
   function updateUtilitySummary() {
@@ -482,6 +489,22 @@
   }
 
   // --- Message Handling ---
+  // --- Toast (transient notice, bottom-center) ---
+  let toastTimer = null;
+  function showToast(text, ms = 3000) {
+    let el = document.getElementById('app-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'app-toast';
+      el.className = 'fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] bg-surface2 border border-border text-text text-sm px-4 py-2 rounded-lg shadow-2xl opacity-0 transition-opacity duration-200 pointer-events-none';
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.classList.remove('opacity-0');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add('opacity-0'), ms);
+  }
+
   function handleMessage(data) {
     switch (data.type) {
       case 'session:connected':
@@ -490,6 +513,19 @@
         thinkingEnabled = data.data.thinkingEnabled === true;
         enableImagePaste = !!data.data.config?.enableImagePaste;
         connectedConfig = data.data.config || {};
+        desktopNotifications = data.data.config?.desktopNotifications !== false;
+        if (notificationsIndicator) {
+          notificationsIndicator.textContent = desktopNotifications ? 'On' : 'Off';
+          notificationsIndicator.className = desktopNotifications ? 'text-xs text-primary' : 'text-xs text-muted';
+        }
+        if (optionsNotificationsBtn) {
+          if (desktopNotifications) optionsNotificationsBtn.classList.add('menu-item-active');
+          else optionsNotificationsBtn.classList.remove('menu-item-active');
+          optionsNotificationsBtn.title = desktopNotifications ? 'Notifications: on (click to disable)' : 'Toggle desktop notifications';
+        }
+        if (desktopNotifications && 'Notification' in window && Notification.permission === 'default') {
+          try { Notification.requestPermission(); } catch (e) {}
+        }
         collapseTT = connectedConfig.collapseThinkingTools !== false;
         voiceMode = !!data.data.voiceMode;
         updateVoiceModeVisual();
@@ -538,6 +574,10 @@
         }
         break;
 
+      case 'notifications:toggled':
+        desktopNotifications = data.data.enabled === true;
+        break;
+
       case 'thinking:toggled':
         thinkingEnabled = data.data.enabled;
         updateThinkingBtnVisual();
@@ -552,6 +592,23 @@
         break;
 
       case 'chat:response':
+        // Steering: the model finished this iteration but a steer arrived, so
+        // the turn continues. Finalize this iteration's bubbles and keep
+        // waiting — no completion handling, no TTS, no notification.
+        if (data.data.continuing) {
+          if (thinkingBubble) finalizeThinkingBubble();
+          thinkingStreamed = false;
+          if (data.data.message) {
+            if (currentStreamingContent) {
+              updateLastMessage(data.data.message);
+            } else {
+              appendMessage('assistant', data.data.message);
+            }
+          }
+          currentStreamingId = null;
+          currentStreamingContent = '';
+          break;
+        }
         if (thinkingStreamed) {
           // Thinking was streamed via chunks — finalize bubble only if no tool calls follow
           if (!data.data.toolCalls || data.data.toolCalls.length === 0) {
@@ -586,6 +643,7 @@
         thinkingStreamed = false;
         if (data.data.toolCalls) {
           for (const tc of data.data.toolCalls) {
+            if (tc.name === 'spawn_agent') continue;
             showToolCall(tc);
           }
         }
@@ -602,6 +660,7 @@
         currentStreamingContent = '';
         if (!data.data.toolCalls || data.data.toolCalls.length === 0) {
           setIsWaiting(false);
+          notifyCompletion();
           voiceTurnInProgress = false;
         }
         if (voiceMode && lastAssistantMessage) {
@@ -612,11 +671,40 @@
         break;
 
       case 'tool:call':
+        if (data.data.toolCall && data.data.toolCall.name === 'spawn_agent') break;
         updateToolCall(data.data.toolCall);
         break;
 
       case 'tool:result':
         updateToolResult(data.data.toolCallId, data.data.result, data.data.status);
+        break;
+
+      case 'subagent:spawn':
+        showAgentSpawn(data.data);
+        break;
+
+      case 'subagent:thinking':
+        agentThinkingChunk(data.data.agentId, data.data.chunk);
+        break;
+
+      case 'subagent:chunk':
+        agentContentChunk(data.data.agentId, data.data.chunk);
+        break;
+
+      case 'subagent:tool_call':
+        agentToolCall(data.data.agentId, data.data.toolCall);
+        break;
+
+      case 'subagent:tool_result':
+        agentToolResult(data.data.agentId, data.data.toolCallId, data.data.result, data.data.status);
+        break;
+
+      case 'subagent:response':
+        agentResponse(data.data.agentId, data.data.message);
+        break;
+
+      case 'subagent:done':
+        agentDone(data.data.agentId, data.data.status, data.data.durationMs, data.data.error);
         break;
 
       case 'context:update':
@@ -710,9 +798,16 @@
         loadSessionMessages(currentSessionId);
         break;
 
+      case 'switch:blocked':
+        showToast(data.data.reason || 'Switching is disabled while the model is working');
+        break;
+
       case 'chat:stopped':
         AudioPlayer.stop();
         if (thinkingBubble) removeThinkingBubble();
+        for (const activeAgentId of agentBubbles.keys()) {
+          agentDone(activeAgentId, 'cancelled');
+        }
         setIsWaiting(false);
         lastAssistantMessage = '';
         stopBtn.disabled = true;
@@ -1335,6 +1430,20 @@
         }
       }
 
+      const resultEl = el.querySelector('.tool-result');
+      if (resultEl && result) {
+        resultEl.classList.remove('hidden');
+        let displayResult = result.substring(0, 500);
+        if (result.length > 500) {
+          displayResult += '... (truncated)';
+        }
+        resultEl.textContent = displayResult;
+      }
+      const wrapper = el.closest('.tool-call-wrapper');
+      if (wrapper) refreshTTGroupSummary(wrapper);
+    }
+  }
+
   /** Display observer feedback as a distinct collapsible block in the chat. */
   function showObserverFeedback(feedback, sessionId) {
     if (!feedback || (!feedback.concern && !feedback.suggestion)) return;
@@ -1404,19 +1513,298 @@
     scrollToBottom();
   }
 
+  // --- Sub-agent bubbles -------------------------------------------------
+  // A spawned agent gets its own light-blue bubble. Its thinking, tool calls
+  // and final response are nested inside, so delegated work stays visually
+  // distinct from the parent agent's yellow/grey bubbles.
 
-      const resultEl = el.querySelector('.tool-result');
-      if (resultEl && result) {
-        resultEl.classList.remove('hidden');
-        let displayResult = result.substring(0, 500);
-        if (result.length > 500) {
-          displayResult += '... (truncated)';
-        }
-        resultEl.textContent = displayResult;
-      }
-      const wrapper = el.closest('.tool-call-wrapper');
-      if (wrapper) refreshTTGroupSummary(wrapper);
+  function agentStatusBadge(status) {
+    if (status === 'completed') return { text: '✓', cls: 'ml-auto text-xs font-bold shrink-0 text-success' };
+    if (status === 'error') return { text: '✗', cls: 'ml-auto text-xs font-bold shrink-0 text-danger' };
+    if (status === 'cancelled') return { text: '■', cls: 'ml-auto text-xs font-bold shrink-0 text-muted' };
+    return { text: '...', cls: 'ml-auto text-xs font-medium shrink-0 text-agentAccent animate-pulse' };
+  }
+
+  function createAgentBubble({ key, description, task, model, status = 'running', result = '' }) {
+    // Never let later parent tool bubbles get appended above this bubble.
+    sealTTGroup();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex justify-start agent-wrapper max-w-[90%] my-1';
+    if (key) wrapper.dataset.agentId = key;
+
+    const details = document.createElement('details');
+    details.className = 'bg-agentBg border border-agentBorder rounded-lg text-sm group w-full min-w-0 agent-bubble';
+    // Collapsed by default: the summary line shows status/progress, and the
+    // user expands the bubble to inspect the child's thinking, tools and report.
+    details.open = false;
+
+    const summary = document.createElement('summary');
+    summary.className = 'flex items-center gap-2 px-3 py-2 cursor-pointer text-xs rounded-lg list-none overflow-hidden hover:bg-agentInner/40';
+
+    const arrow = document.createElement('span');
+    arrow.className = 'text-agentAccent/70 transition-transform group-open:rotate-90 text-[10px] shrink-0';
+    arrow.textContent = '▶';
+
+    const icon = document.createElement('span');
+    icon.className = 'shrink-0 text-agentAccent';
+    icon.textContent = '🤖';
+
+    const label = document.createElement('span');
+    label.className = 'font-medium text-agentAccent shrink-0';
+    label.textContent = 'Agent';
+
+    const descEl = document.createElement('span');
+    descEl.className = 'text-text/90 truncate min-w-0';
+    descEl.textContent = description || 'Sub-agent';
+    descEl.title = task || description || '';
+
+    const modelEl = document.createElement('span');
+    modelEl.className = 'text-[10px] text-agentAccent/60 shrink-0 hidden sm:inline';
+    modelEl.textContent = model || '';
+
+    const badge = agentStatusBadge(status);
+    const statusBadge = document.createElement('span');
+    statusBadge.className = badge.cls;
+    statusBadge.textContent = badge.text;
+
+    summary.appendChild(arrow);
+    summary.appendChild(icon);
+    summary.appendChild(label);
+    summary.appendChild(descEl);
+    if (model) summary.appendChild(modelEl);
+    summary.appendChild(statusBadge);
+
+    const body = document.createElement('div');
+    body.className = 'px-3 pb-2 pt-1 border-t border-agentBorder/60';
+
+    const taskEl = document.createElement('div');
+    taskEl.className = 'text-[11px] text-agentAccent/80 whitespace-pre-wrap break-words mb-2 max-h-24 overflow-y-auto';
+    if (task) {
+      taskEl.textContent = `Task: ${task}`;
+    } else {
+      taskEl.classList.add('hidden');
     }
+
+    const ops = document.createElement('div');
+    ops.className = 'flex flex-col gap-2';
+
+    const response = document.createElement('div');
+    response.className = 'agent-response message-content prose prose-sm prose-invert max-w-none break-words mt-2 hidden';
+
+    body.appendChild(taskEl);
+    body.appendChild(ops);
+    body.appendChild(response);
+    details.appendChild(summary);
+    details.appendChild(body);
+    wrapper.appendChild(details);
+    messagesEl.appendChild(wrapper);
+
+    const state = { wrapper, details, body, summary, statusBadge, ops, response, thinking: null, content: '' };
+
+    if (result) {
+      state.content = result;
+      response.classList.remove('hidden');
+      response.innerHTML = renderMarkdown(result);
+      renderMath(response);
+    }
+
+    scrollToBottom();
+    return state;
+  }
+
+  function showAgentSpawn(data) {
+    if (!data || !data.agentId || agentBubbles.has(data.agentId)) return;
+    // Seal the parent's current thinking/tool history first, so tool bubbles
+    // created after the spawn aren't appended above the agent bubble.
+    sealTTGroup();
+    const state = createAgentBubble({
+      key: data.agentId,
+      description: data.description,
+      task: data.task,
+      model: data.model,
+    });
+    agentBubbles.set(data.agentId, state);
+  }
+
+  function finalizeAgentThinking(state) {
+    if (!state || !state.thinking) return;
+    state.thinking.details.open = false;
+    state.thinking.label.textContent = 'Thought';
+    state.thinking.details.className = 'bg-agentInner/50 border border-agentInnerBorder/50 rounded-lg text-xs group agent-thinking';
+    state.thinking = null;
+  }
+
+  function agentThinkingChunk(agentId, chunk) {
+    const state = agentBubbles.get(agentId);
+    if (!state || !chunk) return;
+
+    if (!state.thinking) {
+      const details = document.createElement('details');
+      details.className = 'bg-agentInner border border-agentInnerBorder rounded-lg text-xs group agent-thinking';
+      details.open = connectedConfig.expandThinking !== false;
+
+      const summary = document.createElement('summary');
+      summary.className = 'flex items-center gap-2 px-3 py-1.5 cursor-pointer text-agentAccent/70 hover:text-agentAccent rounded-lg list-none';
+
+      const arrow = document.createElement('span');
+      arrow.className = 'text-agentAccent/70 transition-transform group-open:rotate-90 text-[10px] shrink-0';
+      arrow.textContent = '▶';
+
+      const label = document.createElement('span');
+      label.className = 'font-medium text-agentAccent';
+      label.textContent = 'Thinking';
+
+      const body = document.createElement('div');
+      body.className = 'px-3 pb-2 pt-2 mt-1 text-[11px] text-agentAccent/80 font-mono border-t border-agentInnerBorder/60 whitespace-pre-wrap break-words';
+
+      summary.appendChild(arrow);
+      summary.appendChild(label);
+      details.appendChild(summary);
+      details.appendChild(body);
+      state.ops.appendChild(details);
+      state.thinking = { details, label, body };
+    }
+
+    state.thinking.body.textContent += chunk;
+    scrollToBottom();
+  }
+
+  function agentContentChunk(agentId, chunk) {
+    const state = agentBubbles.get(agentId);
+    if (!state || !chunk) return;
+    finalizeAgentThinking(state);
+    state.content += chunk;
+    state.response.classList.remove('hidden');
+    state.response.innerHTML = renderMarkdown(state.content);
+    renderMath(state.response);
+    scrollToBottom();
+  }
+
+  function agentToolCall(agentId, toolCall) {
+    const state = agentBubbles.get(agentId);
+    if (!state || !toolCall) return;
+    finalizeAgentThinking(state);
+
+    const details = document.createElement('details');
+    details.className = 'bg-agentInner border border-agentInnerBorder rounded-lg text-xs group font-mono w-full min-w-0';
+    details.id = `agent-tool-${agentId}-${toolCall.id}`;
+    details.open = connectedConfig.expandToolOutputs !== false;
+
+    const summary = document.createElement('summary');
+    summary.className = 'flex items-center gap-2 px-3 py-2 cursor-pointer text-agentAccent/70 hover:text-agentAccent hover:bg-agentInner/60 rounded-lg list-none overflow-hidden';
+
+    const arrow = document.createElement('span');
+    arrow.className = 'text-agentAccent/70 transition-transform group-open:rotate-90 text-[10px] shrink-0';
+    arrow.textContent = '▶';
+
+    const icon = document.createElement('span');
+    icon.className = 'shrink-0';
+    icon.textContent = '⚙';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'font-mono text-agentAccent font-medium shrink-0';
+    nameSpan.textContent = toolCall.name;
+
+    const paramsSpan = document.createElement('span');
+    paramsSpan.className = 'text-agentAccent/50 truncate min-w-0';
+    paramsSpan.textContent = JSON.stringify(toolCall.parameters || {});
+
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'agent-status ml-auto text-xs text-agentAccent font-medium shrink-0';
+    statusBadge.textContent = '...';
+
+    summary.appendChild(arrow);
+    summary.appendChild(icon);
+    summary.appendChild(nameSpan);
+    summary.appendChild(paramsSpan);
+    summary.appendChild(statusBadge);
+
+    const body = document.createElement('div');
+    body.className = 'px-3 pb-2';
+    const resultEl = document.createElement('div');
+    resultEl.className = 'agent-tool-result text-[11px] text-agentAccent/70 font-mono bg-bg/40 rounded p-2 max-h-32 overflow-y-auto hidden';
+    body.appendChild(resultEl);
+
+    details.appendChild(summary);
+    details.appendChild(body);
+    state.ops.appendChild(details);
+    scrollToBottom();
+  }
+
+  function agentToolResult(agentId, toolCallId, result, status) {
+    const el = document.getElementById(`agent-tool-${agentId}-${toolCallId}`);
+    if (!el) return;
+
+    const statusEl = el.querySelector('.agent-status');
+    if (statusEl) {
+      if (status === 'completed') {
+        statusEl.textContent = '✓';
+        statusEl.className = 'agent-status ml-auto text-xs text-success font-bold shrink-0';
+      } else if (status === 'error') {
+        statusEl.textContent = '✗';
+        statusEl.className = 'agent-status ml-auto text-xs text-danger font-bold shrink-0';
+      } else {
+        statusEl.textContent = '...';
+        statusEl.className = 'agent-status ml-auto text-xs text-agentAccent font-medium shrink-0';
+      }
+    }
+
+    const resultEl = el.querySelector('.agent-tool-result');
+    if (resultEl && result) {
+      resultEl.classList.remove('hidden');
+      let displayResult = String(result).substring(0, 500);
+      if (result.length > 500) displayResult += '... (truncated)';
+      resultEl.textContent = displayResult;
+    }
+  }
+
+  function agentResponse(agentId, message) {
+    const state = agentBubbles.get(agentId);
+    if (!state) return;
+    finalizeAgentThinking(state);
+    if (typeof message === 'string' && message) {
+      state.content = message;
+      state.response.classList.remove('hidden');
+      state.response.innerHTML = renderMarkdown(message);
+      renderMath(state.response);
+    }
+    scrollToBottom();
+  }
+
+  function agentDone(agentId, status, durationMs, error) {
+    const state = agentBubbles.get(agentId);
+    if (!state) return;
+    finalizeAgentThinking(state);
+
+    const badge = agentStatusBadge(status);
+    state.statusBadge.className = badge.cls;
+    state.statusBadge.textContent = badge.text;
+    if (typeof durationMs === 'number' && durationMs > 0) {
+      state.statusBadge.title = `${status} in ${(durationMs / 1000).toFixed(1)}s`;
+    }
+
+    if (error) {
+      const errEl = document.createElement('div');
+      errEl.className = 'text-[11px] text-danger whitespace-pre-wrap break-words mt-2';
+      errEl.textContent = error;
+      state.body.appendChild(errEl);
+    }
+    if (state.content) state.response.classList.remove('hidden');
+    scrollToBottom();
+  }
+
+  /** Re-render a stored spawn_agent tool call when a session is reloaded. */
+  function appendAgentHistory(toolCall) {
+    const params = toolCall.parameters || {};
+    const status = toolCall.status === 'error' ? 'error' : (toolCall.result ? 'completed' : 'running');
+    createAgentBubble({
+      key: `history-${toolCall.id}`,
+      description: params.description || 'Sub-agent',
+      task: params.task || '',
+      status,
+      result: toolCall.result || '',
+    });
   }
 
 function scrollToBottom() {
@@ -1426,7 +1814,12 @@ function scrollToBottom() {
   function setIsWaiting(waiting) {
     isWaiting = waiting;
     if (sendBtn) sendBtn.disabled = waiting;
-    if (messageInput) messageInput.disabled = waiting;
+    // Keep the input enabled while busy: submitting while the model is working
+    // sends a STEER that redirects the in-flight task (codex-style).
+    if (messageInput) {
+      messageInput.disabled = false;
+      messageInput.placeholder = waiting ? 'Steer the running task… (Enter to send)' : 'Type a message...';
+    }
     if (stopBtn) stopBtn.disabled = !waiting;
     if (optionsCompactBtn) optionsCompactBtn.disabled = waiting;
     if (compactIndicator) compactIndicator.textContent = waiting ? 'Busy' : 'Ready';
@@ -1458,6 +1851,7 @@ function scrollToBottom() {
     thinkingBubble = null;
     thinkingWasShown = false;
     ttGroup = null;
+    agentBubbles.clear();
     updateContextUsage();
   }
 
@@ -1794,6 +2188,10 @@ function scrollToBottom() {
 
   function switchSession(id) {
     if (id === currentSessionId) return;
+    if (isWaiting) {
+      showToast('Yuki is still working — wait for it to finish or press Stop first');
+      return;
+    }
     send('session:switch', { sessionId: id });
     currentSessionId = id;
     loadTree();
@@ -1848,6 +2246,10 @@ function scrollToBottom() {
             }
             if (msg.toolCalls) {
               for (const tc of msg.toolCalls) {
+                if (tc.name === 'spawn_agent') {
+                  appendAgentHistory(tc);
+                  continue;
+                }
                 showToolCall(tc);
                 updateToolCall(tc);
                 if (tc.result) {
@@ -1875,6 +2277,10 @@ function scrollToBottom() {
   }
 
   async function createSession(projectId) {
+    if (isWaiting) {
+      showToast('Yuki is still working — wait for it to finish or press Stop first');
+      return;
+    }
     try {
       const pid = String(projectId || activeProjectId || 'default');
       const res = await fetch(`/api/sessions?projectId=${encodeURIComponent(pid)}`, { method: 'POST' });
@@ -1995,6 +2401,46 @@ function scrollToBottom() {
       optionsTtsBtn.classList.remove('menu-item-active');
     }
     optionsTtsBtn.title = on ? 'Auto TTS: on (click to disable)' : 'Toggle auto TTS';
+  }
+
+  // --- Desktop Notifications ---
+  function setDesktopNotifications(on) {
+    desktopNotifications = on;
+    if (notificationsIndicator) {
+      notificationsIndicator.textContent = on ? 'On' : 'Off';
+      notificationsIndicator.className = on ? 'text-xs text-primary' : 'text-xs text-muted';
+    }
+    if (optionsNotificationsBtn) {
+      if (on) {
+        optionsNotificationsBtn.classList.add('menu-item-active');
+      } else {
+        optionsNotificationsBtn.classList.remove('menu-item-active');
+      }
+      optionsNotificationsBtn.title = on ? 'Notifications: on (click to disable)' : 'Toggle desktop notifications';
+    }
+    // If enabling and the browser permission is still undecided, ask for it.
+    if (on && 'Notification' in window && Notification.permission === 'default') {
+      try { Notification.requestPermission(); } catch (e) {}
+    }
+    send('notifications:toggle', { enabled: on });
+  }
+
+  function notifyCompletion() {
+    if (!desktopNotifications) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    // Notify whenever the app isn't the active window — covers minimized AND
+    // windows merely covered by another app (document.hidden stays false in
+    // the latter case).
+    if (document.hasFocus()) return;
+    // Debug: report which gates would have blocked, to confirm the cause.
+    console.log('[notify] gates:', JSON.stringify({ desktopNotifications, permission: ('Notification' in window) ? Notification.permission : 'unsupported', hidden: document.hidden, focused: document.hasFocus() }));
+    try {
+      const body = lastAssistantMessage ? lastAssistantMessage.slice(0, 140) : 'Yuki finished the task.';
+      const n = new Notification('Yuki — task complete', { body, tag: 'yuki-complete' });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch (e) {
+      console.warn('Desktop notification failed:', e);
+    }
   }
 
   // --- Voice Mode ---
@@ -2420,7 +2866,26 @@ function scrollToBottom() {
     e.preventDefault();
 
     const message = messageInput.value.trim();
-    if ((!message && pastedImages.length === 0 && pastedFiles.length === 0) || isWaiting || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    // Steering: while the model is working, a text-only submit is injected
+    // into the in-flight turn (codex-style). Attachments can't be steered
+    // mid-turn, so they stay queued for the next regular message.
+    if (isWaiting) {
+      if (!message) return;
+      if (pastedImages.length > 0 || pastedFiles.length > 0) {
+        showToast('Steers are text-only — attachments will go with your next message');
+        return;
+      }
+      appendMessage('user', message);
+      send('chat:message', { message });
+      AudioPlayer.stop();
+      messageInput.value = '';
+      messageInput.style.height = 'auto';
+      return;
+    }
+
+    if (!message && pastedImages.length === 0 && pastedFiles.length === 0) return;
 
     const text = message || '(attached file)';
 
@@ -2640,6 +3105,11 @@ function scrollToBottom() {
   optionsTtsBtn.addEventListener('click', () => {
     toggleOptionsMenu(false);
     setAutoTTS(!autoTTS);
+  });
+
+  optionsNotificationsBtn.addEventListener('click', () => {
+    toggleOptionsMenu(false);
+    setDesktopNotifications(!desktopNotifications);
   });
 
   optionsThinkingBtn.addEventListener('click', () => {

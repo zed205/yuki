@@ -1,4 +1,5 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+﻿import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { normalizeLineEndings, trimLineEndings } from './utils/line-endings';
 import { getConfig } from './config';
 
 export class BrowserAutomation {
@@ -75,7 +76,7 @@ export class BrowserAutomation {
 
     try {
       const content = await this.page!.content();
-      const text = await this.page!.textContent('body');
+      const text = normalizeLineEndings(await this.page!.textContent('body') || '');
       return text?.substring(0, 5000) || content.substring(0, 5000);
     } catch (err: any) {
       return `Content error: ${err.message}`;
@@ -90,7 +91,7 @@ export class BrowserAutomation {
       const result = await Promise.all(
         links.map(async (el) => {
           const href = await el.getAttribute('href');
-          const text = await el.textContent();
+          const text = normalizeLineEndings(await el.textContent() || '');
           return `${text?.trim() || '(no text)'} -> ${href}`;
         }),
       );
@@ -133,9 +134,9 @@ export class BrowserAutomation {
     const pad = '  '.repeat(indent);
     let result = '';
     const role = node.role || 'unknown';
-    const name = node.name?.value || node.name || '';
-    const value = node.value?.value ?? '';
-    const description = node.description?.value || '';
+    const name = normalizeLineEndings(node.name?.value || node.name || '');
+    const value = normalizeLineEndings(node.value?.value ?? '');
+    const description = normalizeLineEndings(node.description?.value || '');
     const children = node.childObjects || [];
 
     const parts: string[] = [];
@@ -178,7 +179,7 @@ export class BrowserAutomation {
         for (const el of Array.from(all)) {
           const rect = (el as HTMLElement).getBoundingClientRect();
           if (rect.width < 5 || rect.height < 5) continue;
-          const text = (el as HTMLElement).textContent?.trim().slice(0, 200) || '';
+          const text = normalizeLineEndings((el as HTMLElement).textContent?.trim() || '').slice(0, 200);
           const ariaLabel = el.getAttribute('aria-label') || '';
           const hasLabel = text || ariaLabel;
           if (!hasLabel) continue;
@@ -278,7 +279,7 @@ export class BrowserAutomation {
     if (!this.page) await this.initialize();
     try {
       const result = await this.page!.evaluate(script);
-      const str = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      const str = typeof result === 'string' ? normalizeLineEndings(result) : JSON.stringify(result, null, 2);
       return str.substring(0, 5000);
     } catch (err: any) {
       return `Evaluate JS error: ${err.message}`;
@@ -296,7 +297,7 @@ export class BrowserAutomation {
       const results: string[] = [];
       for (let i = 0; i < Math.min(elements.length, 50); i++) {
         const el = elements[i];
-        const text = await el.textContent() || '';
+        const text = normalizeLineEndings(await el.textContent() || '');
         const tag = await el.evaluate(e => e.tagName.toLowerCase());
         const id = await el.evaluate(e => (e as HTMLElement).id || '');
         const cls = await el.evaluate(e => (e as HTMLElement).className || '');
@@ -451,22 +452,22 @@ export class BrowserAutomation {
         
         // Extract title if present
         const titleEl = element.querySelector('h1, h2, h3, [data-testid="post-title"]');
-        const title = titleEl?.textContent?.trim() || '';
+        const title = normalizeLineEndings(titleEl?.textContent?.trim() || '');
         
         // Extract author
         const authorEl = element.querySelector('[data-testid="post-author"], [class*="author"], [class*="username"]');
-        const author = authorEl?.textContent?.trim().replace('@', '').replace('u/', '') || '';
+        const author = normalizeLineEndings(authorEl?.textContent?.trim() || '').replace('@', '').replace('u/', '');
         
         // Extract main body text
         const bodyEl = element.querySelector('[data-testid="post-body"], [class*="body"], [class*="content"], article, .post-content');
-        const body = bodyEl?.textContent?.trim().slice(0, 5000) || element.textContent?.trim().slice(0, 5000);
+        const body = normalizeLineEndings(bodyEl?.textContent?.trim().slice(0, 5000) || element.textContent?.trim().slice(0, 5000));
         
         // Extract links
         const links: Array<{ text: string; href: string }> = [];
         if (includeLinks) {
           const linkEls = element.querySelectorAll('a[href]');
           for (const link of Array.from(linkEls).slice(0, 20)) {
-            const text = link.textContent?.trim() || '';
+            const text = normalizeLineEndings(link.textContent?.trim()) || '';
             const href = link.getAttribute('href') || '';
             if (text && !text.startsWith('http')) {
               links.push({ text: text.slice(0, 200), href });
@@ -479,13 +480,13 @@ export class BrowserAutomation {
         const commentEls = element.querySelectorAll('[data-testid="comment"], [class*="comment-main"], [class*="comment-body"]');
         for (const comment of Array.from(commentEls).slice(0, maxComments)) {
           const authorEl2 = comment.querySelector('[data-testid="comment-author"], [class*="author"], [class*="username"], a[href*="/u/"]');
-          const author2 = authorEl2?.textContent?.trim().replace('@', '').replace('u/', '') || '';
+          const author2 = normalizeLineEndings(authorEl2?.textContent?.trim() || '').replace('@', '').replace('u/', '');
           
           const textEl = comment.querySelector('[class*="comment-body"], [class*="body"], p, [data-testid="comment-text"]');
-          const text = textEl?.textContent?.trim() || comment.textContent?.trim().slice(0, 1000);
+          const text = normalizeLineEndings(textEl?.textContent?.trim() || comment.textContent?.trim().slice(0, 1000));
           
           const scoreEl = comment.querySelector('[data-testid="comment-score"], [class*="score"], [class*="points"]');
-          const score = scoreEl?.textContent?.trim() || '';
+          const score = normalizeLineEndings(scoreEl?.textContent?.trim() || '');
           
           // Extract replies (nested comments)
           const replies: string[] = [];
@@ -526,7 +527,7 @@ export class BrowserAutomation {
         const links: Array<{ text: string; href: string }> = [];
         const linkEls = document.querySelectorAll('a[href]');
         for (const link of Array.from(linkEls).slice(0, 50)) {
-          const text = link.textContent?.trim() || '';
+          const text = normalizeLineEndings(link.textContent?.trim()) || '';
           const href = link.getAttribute('href') || '';
           if (text && text.length > 2) {
             links.push({ text: text.slice(0, 200), href });
@@ -537,7 +538,7 @@ export class BrowserAutomation {
         const headings: string[] = [];
         const headingEls = document.querySelectorAll('h1, h2, h3');
         for (const heading of Array.from(headingEls)) {
-          headings.push(heading.textContent?.trim() || '');
+          headings.push(normalizeLineEndings(heading.textContent?.trim()) || '');
         }
         
         // Detect if page has captcha

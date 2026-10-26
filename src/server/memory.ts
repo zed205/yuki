@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const memoryPath = path.join(os.homedir(), '.config', 'yukiweb', 'memories.json');
 
@@ -11,7 +12,7 @@ interface MemoryStore {
 function loadMemories(): MemoryStore {
   try {
     if (fs.existsSync(memoryPath)) {
-      return JSON.parse(fs.readFileSync(memoryPath, 'utf-8'));
+      return JSON.parse(normalizeLineEndings(fs.readFileSync(memoryPath, 'utf-8')));
     }
   } catch {}
   return {};

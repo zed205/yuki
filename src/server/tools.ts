@@ -8,6 +8,7 @@ import TurndownService from 'turndown';
 import { getConfig } from './config';
 import { memorySave, memoryRead, memoryList, memoryDelete } from './memory';
 import { skillList, skillLoad, skillSave, skillDelete } from './skill';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const execAsync = promisify(exec);
 const turndown = new TurndownService({
@@ -206,7 +207,7 @@ export async function toolRead(filePath: string, offset?: number, limit?: number
       return lines.join('\n');
     }
 
-    const content = fs.readFileSync(absPath, 'utf-8');
+    const content = normalizeLineEndings(fs.readFileSync(absPath, 'utf-8'));
     const lines = content.split('\n');
     const maxReadLines = getConfig().maxReadLines ?? 200;
     const maxReadChars = getConfig().maxReadChars ?? 20000;
@@ -397,7 +398,7 @@ export async function toolGrep(
           walk(entryPath);
         } else if (!includeRegex || includeRegex.test(entry.name)) {
           try {
-            const content = fs.readFileSync(entryPath, 'utf-8');
+            const content = normalizeLineEndings(fs.readFileSync(entryPath, 'utf-8'));
             const lines = content.split('\n');
             for (let i = 0; i < lines.length; i++) {
               if (regex.test(lines[i])) {
@@ -488,8 +489,8 @@ export async function toolShell(command: string, cwd?: string): Promise<string> 
       maxBuffer: 1024 * 1024,
     });
 
-    const output = stdout || '(no output)';
-    const full = stderr ? `${output}\n\nSTDERR:\n${stderr}` : output;
+    const output = normalizeLineEndings(stdout) || '(no output)';
+    const full = stderr ? `${output}\n\nSTDERR:\n${normalizeLineEndings(stderr)}` : output;
     const maxChars = getConfig().maxToolOutputChars ?? 20000;
     return truncateOutput(full, maxChars, 'shell output');
   } catch (err: any) {
@@ -716,6 +717,21 @@ export const tools = {
 export const planToolNames = ['plan_create', 'plan_update', 'plan_get', 'plan_remove'];
 
 export const toolDefinitions = [
+  {
+    type: 'function',
+    function: {
+      name: 'spawn_agent',
+      description: 'Spawn a focused sub-agent to work autonomously on a self-contained task. The sub-agent has its own isolated context and its own tool loop, and returns a concise report when finished. Use this for deep, self-contained work (researching a codebase, drafting a document, investigating a bug) or work that would otherwise flood the main context with details. The sub-agent cannot ask the user questions and cannot spawn further sub-agents. Give it everything it needs in the task description, and prefer several narrow tasks over one huge one. Independent spawn_agent calls emitted together in a single response run concurrently.',
+      parameters: {
+        type: 'object',
+        properties: {
+          description: { type: 'string', description: 'Short 3-8 word label shown in the UI (e.g. "Investigate login bug")' },
+          task: { type: 'string', description: 'Complete, self-contained instructions for the sub-agent: goal, relevant paths/context, constraints, and what the final report should contain.' },
+        },
+        required: ['description', 'task'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {

@@ -1,7 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile } from './config';
+import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig } from './config';
 import { Agent } from './agent';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -12,6 +12,7 @@ import { planGet, loadPlans } from './plan';
 import { loadProjects, getProjects, getProject, createProject, renameProject, deleteProject, reorderProjects } from './project';
 import { Session, Message, Attachment } from '../shared/types';
 import * as fs from 'fs';
+import { normalizeLineEndings } from './utils/line-endings';
 import * as os from 'os';
 
 loadEnvFile();
@@ -134,7 +135,7 @@ function loadSessions(): void {
 
     for (const file of files) {
       const filePath = path.join(sessionDataDir, file);
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const data = JSON.parse(normalizeLineEndings(fs.readFileSync(filePath, 'utf-8')));
 
       const session: Session = {
         id: data.id,
@@ -157,7 +158,7 @@ function loadSessions(): void {
 
     if (files.length > 0) {
       const lastFile = files.sort().pop()!;
-      const lastData = JSON.parse(fs.readFileSync(path.join(sessionDataDir, lastFile), 'utf-8'));
+      const lastData = JSON.parse(normalizeLineEndings(fs.readFileSync(path.join(sessionDataDir, lastFile), 'utf-8')));
       activeSessionId = lastData.id;
     }
   } catch (err) {
@@ -212,6 +213,31 @@ const agent = new Agent();
 
 agent.setServices(audioPipeline, browserAutomation, desktopAutomation, mcpManager);
 agent.initToolDefaults();
+
+{
+  const subCfg = getSubAgentConfig();
+  const rawSlots = Math.floor(subCfg.maxAgentSlots || 0);
+  const maxSlots = Math.max(1, rawSlots);
+  const childModel = subCfg.model && subCfg.model !== 'Default' ? subCfg.model : getActiveModelName();
+  const declared = getAgentModel(childModel).contextWindow || 64000;
+  const slotTokens = typeof subCfg.perSlotContextTokens === 'number' && subCfg.perSlotContextTokens > 0
+    ? Math.floor(subCfg.perSlotContextTokens)
+    : Math.floor(declared / (1 + maxSlots));
+  console.log(
+    `[tools] spawn_agent ${subCfg.enabled ? 'ENABLED' : 'disabled'} ` +
+    `(model=${subCfg.model || 'active'}, maxAgentSlots=${rawSlots}, perSlotContext=${slotTokens} tokens)`,
+  );
+  if (subCfg.enabled) {
+    if (rawSlots < 1) {
+      console.log('[tools] maxAgentSlots=0 → sub-agents run one at a time (no parallel capacity beyond the main agent)');
+    }
+    console.log(
+      `[tools] server sizing: keep llama.cpp --parallel at maxAgentSlots + 1 (= ${1 + maxSlots}) ` +
+      `and -c at least ${(1 + maxSlots) * slotTokens} (${1 + maxSlots} slots x ${slotTokens} tokens)` +
+      (subCfg.perSlotContextTokens ? '' : '; set subAgents.perSlotContextTokens if your per-slot window differs'),
+    );
+  }
+}
 
 // --- Session API ---
 app.get('/api/sessions', (req, res) => {
@@ -562,11 +588,13 @@ function sendPlanUpdate(ws: WebSocket, sessionId: string): void {
 }
 
 function getEnabledToolsForSession(session: Session): Array<{ name: string; enabled: boolean }> {
-  const configDisabled = new Set(loadConfig().disabledTools || []);
+  const cfg = loadConfig();
+  const configDisabled = new Set(cfg.disabledTools || []);
   const sessionDisabled = new Set(session.disabledTools || []);
+  const subAgentsEnabled = getSubAgentConfig().enabled === true;
   return toolNames.map(name => ({
     name,
-    enabled: !configDisabled.has(name) && !sessionDisabled.has(name),
+    enabled: (name !== 'spawn_agent' || subAgentsEnabled) && !configDisabled.has(name) && !sessionDisabled.has(name),
   }));
 }
 
@@ -611,6 +639,7 @@ wss.on('connection', (ws) => {
         expandThinking: loadConfig().ui.expandThinking,
         expandToolOutputs: loadConfig().ui.expandToolOutputs,
         collapseThinkingTools: loadConfig().ui.collapseThinkingTools,
+        desktopNotifications: loadConfig().ui.desktopNotifications !== false,
         model: agentCfg.model,
         endpoint: agentCfg.endpoint,
         contextWindow: agentCfg.contextWindow,
@@ -635,13 +664,34 @@ wss.on('connection', (ws) => {
 
   ws.on('message', async (data) => {
     try {
-      const message = JSON.parse(data.toString());
+      const message = JSON.parse(normalizeLineEndings(data.toString()));
       const session = getSession();
 
       if (message.type === 'chat:message') {
         const userMsg = message.data.message;
         const images: string[] = message.data.images || [];
         const files: Array<{ name: string; type: string; dataUrl: string }> = message.data.files || [];
+
+        // Steering: a message sent while the model is already working is
+        // queued onto the in-flight turn instead of starting a new one.
+        // Steers are text-only — images/files are dropped in steer mode.
+        if (agent.isRunning) {
+          const steerMsgId = `${session.id}-${Date.now()}`;
+          if (images.length > 0 || files.length > 0) {
+            console.log(`[index] steer received with ${images.length} image(s)/${files.length} file(s) — attachments dropped in steer mode`);
+          }
+          agent.steer(userMsg);
+          ws.send(JSON.stringify({
+            type: 'chat:message',
+            data: {
+              message: userMsg,
+              messageId: steerMsgId,
+              sessionId: session.id,
+              steer: true,
+            },
+          }));
+          return;
+        }
 
         const msgId = `${session.id}-${Date.now()}`;
         const userMessage: Message = {
@@ -727,6 +777,15 @@ wss.on('connection', (ws) => {
       }
 
       if (message.type === 'session:switch') {
+        // Safety net: the client blocks switching while the model is working,
+        // but refuse here too so a stray request can't orphan the active turn.
+        if (agent.isRunning) {
+          ws.send(JSON.stringify({
+            type: 'switch:blocked',
+            data: { reason: 'The model is still working — wait for it to finish or stop it first.' },
+          }));
+          return;
+        }
         const id = message.data.sessionId;
         if (id && sessions.has(id)) {
           activeSessionId = id;
@@ -741,6 +800,14 @@ wss.on('connection', (ws) => {
       }
 
       if (message.type === 'project:switch') {
+        // Same safety net as session:switch — never swap projects mid-turn.
+        if (agent.isRunning) {
+          ws.send(JSON.stringify({
+            type: 'switch:blocked',
+            data: { reason: 'The model is still working — wait for it to finish or stop it first.' },
+          }));
+          return;
+        }
         const projectId = message.data.projectId;
         if (projectId && getProject(projectId)) {
           // Switch to first session in this project, or create one
@@ -789,6 +856,16 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({
           type: 'thinking:toggled',
           data: { enabled, sessionId: session.id },
+        }));
+      }
+
+      if (message.type === 'notifications:toggle') {
+        const enabled = !!message.data.enabled;
+        const cfg = getConfig();
+        saveConfig({ ...cfg, ui: { ...cfg.ui, desktopNotifications: enabled } });
+        ws.send(JSON.stringify({
+          type: 'notifications:toggled',
+          data: { enabled },
         }));
       }
 

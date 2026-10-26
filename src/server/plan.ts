@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { Plan, PlanStep } from '../shared/types';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const plansDir = path.join(os.homedir(), '.config', 'yukiweb', 'plans');
 const plans = new Map<string, Plan>();
@@ -50,7 +51,7 @@ export function loadPlans(): void {
   const files = fs.readdirSync(plansDir).filter(f => f.endsWith('.json'));
   for (const file of files) {
     try {
-      const data = JSON.parse(fs.readFileSync(path.join(plansDir, file), 'utf-8'));
+      const data = JSON.parse(normalizeLineEndings(fs.readFileSync(path.join(plansDir, file), 'utf-8')));
       const plan = deserialize(data);
       const sessionId = file.replace(/\.json$/, '');
       plans.set(sessionId, plan);

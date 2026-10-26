@@ -1,4 +1,4 @@
-import * as os from 'os';
+﻿import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import OpenAI from 'openai';
@@ -7,7 +7,7 @@ import { getConfig } from './config';
 import { tools, toolDefinitions, planToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
-import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking } from './config';
+import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getConfigPath } from './config';
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -26,6 +26,7 @@ import {
   resolveCharsPerToken,
   textTokens,
 } from './context-budget';
+import { normalizeLineEndings, trimLineEndings } from './utils/line-endings';
 
 export const SUMMARY_PREFIX = 'Summary of previous conversation:';
 
@@ -77,11 +78,40 @@ Do not mention the summary process or that context was compacted.`;
 
 const CREATE_ANCHOR = 'Create a new anchored summary from the conversation history above.';
 
-/** Tools whose results are binary payloads — truncating them destroys the data. */
+/** Tools whose results are binary payloads â€” truncating them destroys the data. */
 const IMAGE_RESULT_TOOLS = new Set([
   'desktop_screenshot', 'desktop_snapshot_region', 'desktop_viewport',
   'browser_screenshot', 'view_image',
 ]);
+
+/**
+ * Tools a sub-agent may not use. Spawning is excluded so agents cannot recurse,
+ * plan/attachment tools are excluded because they operate on the parent's
+ * session state rather than the sub-agent's own task.
+ */
+const SUBAGENT_TOOL_EXCLUSIONS = [
+  'spawn_agent',
+  'plan_create', 'plan_update', 'plan_get', 'plan_remove',
+  'attachment_list', 'save_attached_file',
+];
+
+/** Process-wide count of running sub-agents, bounded by subAgents.maxAgentSlots. */
+let activeSubAgentSlots = 0;
+
+/**
+ * Serializes work against a single stateful service (one browser page, one
+ * desktop). Without it, concurrent sub-agents interleave navigate/click
+ * sequences and end up acting on each other's page state.
+ */
+class Mutex {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(fn, fn);
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+}
 
 function buildAnchor(prevSummary?: string): string {
   if (!prevSummary) return CREATE_ANCHOR;
@@ -154,6 +184,8 @@ export class Agent {
   private desktop: DesktopAutomation | null = null;
   private mcp: MCPManager | null = null;
   private cancelled = false;
+  private running = false;
+  private pendingSteers: string[] = [];
   private abortController: AbortController | null = null;
   private disabledTools: Set<string> = new Set();
   private observer: Observer | null = null;
@@ -163,6 +195,10 @@ export class Agent {
   private openai: OpenAI | null = null;
   private lastRequestChars = 0;
   private toolDefsChars: number | null = null;
+  private currentWs: WebSocket | null = null;
+  // Shared stateful services: serialize them across concurrent sub-agents.
+  private readonly browserMutex = new Mutex();
+  private readonly desktopMutex = new Mutex();
 
   setToolEnabled(name: string, enabled: boolean) {
     if (enabled) {
@@ -181,6 +217,22 @@ export class Agent {
     this.cancelled = true;
     this.abortController?.abort();
   }
+  /** True while a chat turn (including steered continuations) is in flight. */
+  get isRunning(): boolean {
+    return this.running;
+  }
+
+  /**
+   * Queue a steering message for the in-flight turn (codex-style). The steer
+   * is drained before the next LLM call in the current turn, so the model can
+   * interrupt/redirect mid-task. Only call this while isRunning is true;
+   * otherwise route to chat() as a normal new turn.
+   */
+  steer(text: string): void {
+    this.pendingSteers.push(text);
+    console.log(`[agent] steer queued (${text.length} chars): ${text.slice(0, 80)}`);
+  }
+
   /** Evaluate observer feedback and inject it if significant enough. Returns true if feedback was injected. */
   private async getObserverFeedback(
     messages: Array<Record<string, any>>,
@@ -298,7 +350,10 @@ export class Agent {
     attachments: Attachment[] = [],
   ): Promise<void> {
     this.cancelled = false;
+    this.running = true;
+    this.pendingSteers = [];
     this.currentAttachments = attachments || [];
+    this.currentWs = ws;
     this.abortController = new AbortController();
     const config = { ...getConfig() };
     let systemPrompt = session.messages.find(m => m.role === 'system' && !this.isSummaryMessage(m))?.content || '';
@@ -320,28 +375,57 @@ export class Agent {
     let iterations = 0;
     let hasToolCalls = true;
     let midTurnCompactions = 0;
+    // The "current" user message for request rebuilds (compaction). Normally
+    // the original user message, but a steer replaces it so post-compaction
+    // rebuilds replay the steer, not the stale original.
+    let turnUserMessage = userMessage;
+    let turnImages = images;
     const cfgIter = getConfig().maxToolIterations;
     const maxIterations = cfgIter === -1 ? Infinity : (cfgIter || 10);
 
     while (hasToolCalls && iterations < maxIterations) {
       if (this.cancelled) {
         console.log('[agent] cancelled before iter, returning');
+        this.running = false;
+        this.pendingSteers = [];
         this.cancelled = false;
         return;
+      }
+
+      // Drain steering messages queued while the model was working. The steer
+      // becomes the new tail user message so the next LLM call redirects the
+      // in-flight task (codex-style).
+      if (this.pendingSteers.length > 0) {
+        const steerText = this.pendingSteers.join('\n\n');
+        this.pendingSteers = [];
+        const steerMsg: Message = {
+          id: this.generateId(),
+          role: 'user',
+          content: steerText,
+          timestamp: new Date(),
+          sessionId: session.id,
+        };
+        session.messages.push(steerMsg);
+        messages.push({ role: 'user', content: `## Current Plan\n${getPlanSummary(session.id)}\n\n${steerText}` });
+        turnUserMessage = steerText;
+        turnImages = [];
+        console.log(`[agent] steer injected into turn (${steerText.length} chars)`);
       }
 
       // Context is re-checked every iteration, not just once per user turn: a
       // single long tool loop can otherwise grow the prompt past the window.
       const guard = midTurnCompactions < 2
-        ? await this.enforceContextBudget(messages, session, config, ws, userMessage, images, systemPrompt)
+        ? await this.enforceContextBudget(messages, session, config, ws, turnUserMessage, turnImages, systemPrompt)
         : 'ok';
       if (guard === 'halt') {
         session.updatedAt = new Date();
+        this.running = false;
+        this.pendingSteers = [];
         return;
       }
       if (guard === 'compacted') {
         midTurnCompactions++;
-        messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
+        messages = this.buildRequestMessages(session, config, turnUserMessage, turnImages, systemPrompt);
         continue;
       }
 
@@ -388,6 +472,8 @@ export class Agent {
 
       if (this.cancelled) {
         console.log('[agent] cancelled after callLLM, returning');
+        this.running = false;
+        this.pendingSteers = [];
         this.cancelled = false;
         return;
       }
@@ -415,24 +501,15 @@ export class Agent {
           sessionId: session.id,
         });
 
-        for (const toolCall of toolCalls) {
-          toolCall.status = 'running';
-          this.sendToClient(ws, 'tool:call', { toolCall });
+        // Execute first, record second: a spawn-only batch runs concurrently,
+        // but the transcript is still built in the model's original tool order
+        // so every tool message keeps a valid tool_call_id pairing.
+        const results = await this.runToolBatch(toolCalls, ws, session.id);
 
-          try {
-            const result = await this.executeTool(toolCall, session.id);
-            toolCall.result = result;
-            toolCall.status = 'completed';
-          } catch (err: any) {
-            toolCall.result = `Error: ${err.message}`;
-            toolCall.status = 'error';
-          }
-
-          this.sendToClient(ws, 'tool:result', {
-            toolCallId: toolCall.id,
-            result: toolCall.result,
-            status: toolCall.status,
-          });
+        for (let ti = 0; ti < toolCalls.length; ti++) {
+          const toolCall = toolCalls[ti];
+          toolCall.result = results[ti].result;
+          toolCall.status = results[ti].status;
 
           if (planToolNames.includes(toolCall.name)) {
             const plan = planGet(session.id);
@@ -487,27 +564,33 @@ export class Agent {
 
         if (this.cancelled) {
           console.log('[agent] cancelled after tool execution, returning');
+          this.running = false;
+          this.pendingSteers = [];
           this.cancelled = false;
           return;
         }
       } else {
         const content = response.content || '';
         const reasoning = response.reasoningContent || '';
+        // If the user steered while we were composing this final answer, flag
+        // the response so the client knows the turn is NOT over.
+        const steerPending = this.pendingSteers.length > 0;
 
         // If model generated only reasoning with no visible content, surface it
         if (!content && !reasoning) {
-          // Completely empty response — send fallback instead of breaking silently
+          // Completely empty response â€” send fallback instead of breaking silently
           this.sendToClient(ws, 'chat:response', {
             message: '[The model returned an empty response. This may indicate the thinking budget exhausted available tokens before generating visible output.]',
             reasoningContent: '',
             toolCalls: undefined,
             messageId: streamMsgId,
             sessionId: session.id,
+            continuing: steerPending,
           });
           session.messages.push({
             id: streamMsgId,
             role: 'assistant',
-            content: '[Empty response — likely ran out of token budget during thinking.]',
+            content: '[Empty response â€” likely ran out of token budget during thinking.]',
             timestamp: new Date(),
             sessionId: session.id,
           });
@@ -519,6 +602,7 @@ export class Agent {
             toolCalls: undefined,
             messageId: streamMsgId,
             sessionId: session.id,
+            continuing: steerPending,
           });
           session.messages.push({
             id: streamMsgId,
@@ -545,10 +629,39 @@ export class Agent {
             toolCalls: undefined,
             messageId: streamMsgId,
             sessionId: session.id,
+            continuing: steerPending,
           });
 
           session.messages.push(assistantMsg);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+        }
+        // Steering: if the user sent a message while we were composing this
+        // final answer, don't end the turn - hand the answer + steer back to
+        // the model so it can redirect (codex-style). The answer payload
+        // above already carried continuing:true, so the client kept waiting.
+        if (steerPending) {
+          const steerText = this.pendingSteers.join('\n\n');
+          this.pendingSteers = [];
+
+          messages.push({ role: 'assistant', content: content || reasoning || '[empty response]' });
+          const steerMsg: Message = {
+            id: this.generateId(),
+            role: 'user',
+            content: steerText,
+            timestamp: new Date(),
+            sessionId: session.id,
+          };
+          session.messages.push(steerMsg);
+          messages.push({ role: 'user', content: `## Current Plan\n${getPlanSummary(session.id)}\n\n${steerText}` });
+          turnUserMessage = steerText;
+          turnImages = [];
+
+          this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
+
+          iterations = 0;
+          midTurnCompactions = 0;
+          hasToolCalls = true;
+          continue;
         }
         break;
       }
@@ -565,6 +678,8 @@ export class Agent {
     }
 
     session.updatedAt = new Date();
+    this.running = false;
+    this.pendingSteers = [];
   }
 
   resetClient(): void {
@@ -572,7 +687,7 @@ export class Agent {
   }
 
   private getOpenAI(modelName?: string): OpenAI {
-    const target = modelName || this.currentModelName || getActiveModelName();
+    const target = modelName || getActiveModelName() || this.currentModelName;
     const agentCfg = getAgentModel(target);
     if (!this.openai || this.currentModelName !== target) {
       this.currentModelName = target;
@@ -594,11 +709,13 @@ export class Agent {
     modelName?: string,
     sessionId?: string,
     sessionDisabledTools?: string[],
+    extraToolExclusions?: string[],
+    maxOutputTokens?: number,
   ): Promise<{ content: string; toolCalls?: ToolCall[]; reasoningContent?: string; usage?: { promptTokens: number } }> {
     const startTime = Date.now();
     const requestBody: Record<string, any> = { messages };
 
-    const targetModel = modelName || this.currentModelName || getActiveModelName();
+    const targetModel = modelName || getActiveModelName() || this.currentModelName;
     const openai = this.getOpenAI(targetModel);
 
     const agentCfg = getAgentModel(targetModel);
@@ -610,7 +727,7 @@ export class Agent {
     const createParams: Record<string, any> = {
       model: agentCfg.model,
       messages: messages as any,
-      max_tokens: agentCfg.maxTokens === -1 ? undefined : (agentCfg.maxTokens || 8000),
+      max_tokens: maxOutputTokens ?? (agentCfg.maxTokens === -1 ? undefined : (agentCfg.maxTokens || 8000)),
       ...(agentCfg.temperature !== undefined ? { temperature: agentCfg.temperature } : {}),
       stream: true,
     };
@@ -618,8 +735,26 @@ export class Agent {
     if (toolDefinitions.length > 0) {
       // Combine agent-level disabled tools (from config) with session-level disabled tools
       const sessionDisabled = new Set(sessionDisabledTools || []);
-      const combinedDisabled = new Set([...this.disabledTools, ...sessionDisabled]);
-      let enabledTools = toolDefinitions.filter(t => !combinedDisabled.has(t.function.name));
+      const combinedDisabled = new Set([...this.disabledTools, ...sessionDisabled, ...(extraToolExclusions || [])]);
+      const subCfg = getSubAgentConfig();
+      const subAgentsEnabled = subCfg.enabled === true;
+      const maxSubAgents = Math.max(1, Math.floor(subCfg.maxAgentSlots || 1));
+      let enabledTools = toolDefinitions.filter(t => {
+        const name = t.function.name;
+        if (combinedDisabled.has(name)) return false;
+        // spawn_agent is only offered while sub-agents are enabled in config.
+        if (name === 'spawn_agent' && !subAgentsEnabled) return false;
+        return true;
+      }).map(t => {
+        if (t.function.name !== 'spawn_agent') return t;
+        return {
+          ...t,
+          function: {
+            ...t.function,
+            description: `${t.function.description} Up to ${maxSubAgents} sub-agent(s) may run at the same time. Independent spawn_agent calls emitted in the SAME response run in parallel; calls beyond ${maxSubAgents} in one response are rejected, so batch at most ${maxSubAgents} per response.`,
+          },
+        };
+      });
       const mcpDefs = this.mcp?.getToolDefinitions() || [];
       if (mcpDefs.length > 0) {
         enabledTools = enabledTools.concat(mcpDefs);
@@ -751,7 +886,78 @@ export class Agent {
     return truncateOutput(content, maxChars, label);
   }
 
+  /**
+   * Execute one assistant turn's tool calls.
+   *
+   * A batch made up entirely of spawn_agent calls is dispatched concurrently so
+   * several sub-agents can work at once (bounded by subAgents.maxAgentSlots).
+   * Every other batch stays sequential â€” writeâ†’edit or navigateâ†’click depend on
+   * the previous call having finished, and running them at once would change
+   * their meaning.
+   *
+   * Announcements go out up front (so every pending bubble appears at once),
+   * and results are returned in the model's original order.
+   */
+  private async runToolBatch(
+    toolCalls: ToolCall[],
+    ws: WebSocket,
+    sessionId?: string,
+  ): Promise<Array<{ result: string; status: 'completed' | 'error' }>> {
+    for (const toolCall of toolCalls) {
+      toolCall.status = 'running';
+      this.sendToClient(ws, 'tool:call', { toolCall });
+    }
+
+    const executeOne = async (toolCall: ToolCall) => {
+      let result: string;
+      let status: 'completed' | 'error';
+      try {
+        result = await this.executeTool(toolCall, sessionId);
+        status = 'completed';
+      } catch (err: any) {
+        result = `Error: ${err.message}`;
+        status = 'error';
+      }
+      toolCall.result = result;
+      toolCall.status = status;
+      // Emit as each call finishes so sequential batches still update
+      // progressively instead of all at once at the end.
+      this.sendToClient(ws, 'tool:result', {
+        toolCallId: toolCall.id,
+        result,
+        status,
+      });
+      return { result, status };
+    };
+
+    const parallelizable = toolCalls.length > 1
+      && toolCalls.every(tc => tc.name === 'spawn_agent');
+    if (!parallelizable) {
+      const sequential: Array<{ result: string; status: 'completed' | 'error' }> = [];
+      for (const toolCall of toolCalls) {
+        sequential.push(await executeOne(toolCall));
+      }
+      return sequential;
+    }
+    return Promise.all(toolCalls.map(executeOne));
+  }
+
+  /**
+   * Route calls that drive a single shared service through its mutex so
+   * concurrent sub-agents cannot interleave browser/desktop actions.
+   */
   private async executeTool(toolCall: ToolCall, sessionId?: string): Promise<string> {
+    const name = toolCall.name.toLowerCase();
+    if (name.startsWith('browser_')) {
+      return this.browserMutex.run(() => this.executeToolInner(toolCall, sessionId));
+    }
+    if (name.startsWith('desktop_')) {
+      return this.desktopMutex.run(() => this.executeToolInner(toolCall, sessionId));
+    }
+    return this.executeToolInner(toolCall, sessionId);
+  }
+
+  private async executeToolInner(toolCall: ToolCall, sessionId?: string): Promise<string> {
     const toolName = toolCall.name.toLowerCase();
     const params = toolCall.parameters;
 
@@ -914,8 +1120,299 @@ export class Agent {
         return this.listAttachments();
       case 'save_attached_file':
         return await this.saveAttachedFile(params.index, params.filename);
+      case 'view_image':
+        return await tools.view_image(params.filePath, this.currentProjectPath || undefined);
+      case 'spawn_agent':
+        return await this.spawnSubAgent(params, sessionId);
       default:
         return `Unknown tool: ${toolCall.name}`;
+    }
+  }
+
+  private sendAgentEvent(ws: WebSocket | null, type: string, data: any): void {
+    if (!ws) return;
+    this.sendToClient(ws, type, data);
+  }
+
+  /**
+   * Run the `spawn_agent` tool. Enforces the configured slot limit and reports
+   * the whole lifecycle to the client so it can render a dedicated agent bubble.
+   */
+  private async spawnSubAgent(params: Record<string, any>, sessionId?: string): Promise<string> {
+    const cfg = getSubAgentConfig();
+    if (!cfg.enabled) {
+      return 'Error: sub-agents are not enabled for this session.';
+    }
+    if (!sessionId) {
+      // The only caller without a session is a sub-agent itself.
+      return 'Error: sub-agents are not allowed to spawn other sub-agents.';
+    }
+
+    const maxSlots = Math.max(1, Math.floor(cfg.maxAgentSlots || 1));
+    if (activeSubAgentSlots >= maxSlots) {
+      // Model-facing text stays purely behavioral: the model cannot change
+      // server flags or edit config.json. Operator sizing guidance is logged
+      // to the console instead, where the human reads it.
+      console.warn(
+        `[subagent] refused spawn: ${activeSubAgentSlots}/${maxSlots} slot(s) in use ` +
+        `(subAgents.maxAgentSlots=${maxSlots} in ${getConfigPath()}). ` +
+        `Server sizing: --parallel must be maxAgentSlots + 1 (currently ${maxSlots + 1}).`,
+      );
+      return [
+        `Error: cannot spawn a sub-agent â€” ${activeSubAgentSlots} of ${maxSlots} sub-agent slot(s) are already in use.`,
+        `If you emitted several spawn_agent calls in one response, emit at most ${maxSlots} per response;`,
+        `otherwise wait for a running sub-agent to finish.`,
+      ].join(' ');
+    }
+
+    const task = typeof params.task === 'string' ? params.task.trim() : '';
+    if (!task) {
+      return 'Error: spawn_agent requires a non-empty "task" describing what the sub-agent should do.';
+    }
+    const description = (typeof params.description === 'string' && params.description.trim())
+      ? params.description.trim()
+      : task.slice(0, 80).replace(/\s+/g, ' ');
+
+    const modelName = cfg.model?.trim() || getActiveModelName();
+    const agentId = `agent_${this.generateId()}`;
+    const ws = this.currentWs;
+    const startedAt = Date.now();
+
+    activeSubAgentSlots++;
+    this.sendAgentEvent(ws, 'subagent:spawn', {
+      agentId,
+      sessionId,
+      description,
+      task,
+      model: modelName,
+      slotsInUse: activeSubAgentSlots,
+      maxSlots,
+    });
+
+    try {
+      const report = await this.runSubAgentLoop(agentId, task, description, modelName, ws);
+      const durationMs = Date.now() - startedAt;
+      if (this.cancelled) {
+        this.sendAgentEvent(ws, 'subagent:done', { agentId, sessionId, status: 'cancelled', durationMs });
+        return 'Sub-agent cancelled.';
+      }
+      this.sendAgentEvent(ws, 'subagent:done', { agentId, sessionId, status: 'completed', durationMs });
+      return `Sub-agent "${description}" completed in ${(durationMs / 1000).toFixed(1)}s.\n\n${report}`;
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      this.sendAgentEvent(ws, 'subagent:done', {
+        agentId,
+        sessionId,
+        status: this.cancelled ? 'cancelled' : 'error',
+        durationMs: Date.now() - startedAt,
+        error: message,
+      });
+      return this.cancelled
+        ? 'Sub-agent cancelled.'
+        : `Sub-agent "${description}" failed: ${message}`;
+    } finally {
+      activeSubAgentSlots = Math.max(0, activeSubAgentSlots - 1);
+      // The child may have used a different model. Force the parent's next
+      // request to resolve back through the active model/client.
+      this.currentModelName = getActiveModelName();
+      this.openai = null;
+    }
+  }
+
+  /**
+   * Token budget available to ONE child request.
+   *
+   * Sub-agents save the PARENT's context, but they do not create context at the
+   * inference server: llama.cpp splits its total -c across --parallel slots, so
+   * each concurrent request sees roughly 1/N of it. subAgents.perSlotContextTokens
+   * states that real per-slot size; when it is unset we budget conservatively as
+   * contextWindow / (1 + maxAgentSlots).
+   */
+  private subAgentContextBudget(modelName: string): {
+    tokens: number;
+    declared: number;
+    maxSlots: number;
+    explicit: boolean;
+  } {
+    const cfg = getSubAgentConfig();
+    const declared = getAgentModel(modelName).contextWindow || 64000;
+    const maxSlots = Math.max(1, Math.floor(cfg.maxAgentSlots || 1));
+    const explicit = typeof cfg.perSlotContextTokens === 'number' && cfg.perSlotContextTokens > 0;
+    const tokens = explicit
+      ? Math.floor(cfg.perSlotContextTokens as number)
+      : Math.floor(declared / (1 + maxSlots));
+    return { tokens: Math.max(1024, tokens), declared, maxSlots, explicit };
+  }
+
+  /**
+   * The child agent's own tool loop. It shares the parent's tool executor,
+   * browser/desktop services and abort signal, but has an isolated transcript
+   * and its own model selection.
+   */
+  private async runSubAgentLoop(
+    agentId: string,
+    task: string,
+    description: string,
+    modelName: string,
+    ws: WebSocket | null,
+  ): Promise<string> {
+    const config = { ...getConfig() };
+    const cwd = this.currentProjectPath || process.cwd();
+
+    // Budget against the context this request can actually use (see
+    // subAgentContextBudget), and shrink the per-result cap to match: a single
+    // 16k-char grep would otherwise consume most of a small parallel slot.
+    const budget = this.subAgentContextBudget(modelName);
+    const cm = config.contextManagement;
+    const charsPerToken = cm?.charsPerToken && cm.charsPerToken > 0 ? cm.charsPerToken : 3;
+    const childToolResultChars = Math.max(2000, Math.min(
+      this.storedResultLimit(config),
+      Math.floor(budget.tokens * charsPerToken * 0.25),
+    ));
+    // Completion tokens occupy the same slot as the prompt, so a child cannot
+    // be allowed to emit an unbounded report into a narrow parallel window.
+    const childMaxOutput = Math.max(1024, Math.min(8192, Math.floor(budget.tokens * 0.4)));
+    const childConfig: any = {
+      ...config,
+      contextManagement: { ...(cm || {}), toolResultMaxChars: childToolResultChars },
+    };
+    console.log(
+      `[subagent] ${agentId} budget=${budget.tokens} tokens ` +
+      (budget.explicit
+        ? '(subAgents.perSlotContextTokens)'
+        : `(derived: ${budget.declared}/${1 + budget.maxSlots} slots)`) +
+      ` toolResults=${childToolResultChars} chars maxOutput=${childMaxOutput} tokens`,
+    );
+    const systemPrompt = [
+      'You are a focused sub-agent spawned by Yuki, the primary assistant.',
+      'Work autonomously on the task below. You cannot ask the user questions, and you cannot spawn further sub-agents.',
+      'Use the available tools to inspect files, run commands, search the web, or operate the browser as needed.',
+      `Your working directory is ${cwd}. Prefer relative paths inside it; never touch unrelated files.`,
+      'When you are done, reply with a concise report for the parent agent: what you found or changed, exact paths/commands, and anything the parent still needs to do. Do not repeat raw tool output verbatim.',
+      '',
+      '## Environment Context',
+      getSystemInfo(cwd),
+    ].join('\n');
+
+    const messages: Array<Record<string, any>> = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `## Task\n${description ? description + '\n\n' : ''}${task}` },
+    ];
+
+    const configuredIterations = config.maxToolIterations;
+    const maxIterations = configuredIterations === -1
+      ? 40
+      : Math.max(1, configuredIterations || 10);
+    let finalContent = '';
+    let iterations = 0;
+
+    while (iterations < maxIterations) {
+      if (this.cancelled) return '[Sub-agent cancelled by user.]';
+      iterations++;
+
+      this.trimSubAgentMessages(messages, budget.tokens);
+
+      const response = await this.callLLM(
+        messages,
+        childConfig,
+        this.abortController?.signal,
+        (chunk) => this.sendAgentEvent(ws, 'subagent:thinking', { agentId, chunk }),
+        (chunk) => this.sendAgentEvent(ws, 'subagent:chunk', { agentId, chunk }),
+        modelName,
+        undefined,
+        undefined,
+        SUBAGENT_TOOL_EXCLUSIONS,
+        childMaxOutput,
+      );
+
+      if (this.cancelled) return '[Sub-agent cancelled by user.]';
+
+      if (!response.toolCalls || response.toolCalls.length === 0) {
+        finalContent = response.content || response.reasoningContent || '';
+        break;
+      }
+
+      const assistantEntry: Record<string, any> = {
+        role: 'assistant',
+        content: response.content || '',
+        tool_calls: response.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.parameters) },
+        })),
+      };
+      if (response.reasoningContent) {
+        assistantEntry.reasoning_content = response.reasoningContent;
+      }
+      messages.push(assistantEntry);
+
+      for (const toolCall of response.toolCalls) {
+        if (this.cancelled) return '[Sub-agent cancelled by user.]';
+        toolCall.status = 'running';
+        this.sendAgentEvent(ws, 'subagent:tool_call', { agentId, toolCall });
+
+        try {
+          const result = await this.executeTool(toolCall, undefined);
+          toolCall.result = result;
+          toolCall.status = 'completed';
+        } catch (err: any) {
+          toolCall.result = `Error: ${err.message}`;
+          toolCall.status = 'error';
+        }
+
+        this.sendAgentEvent(ws, 'subagent:tool_result', {
+          agentId,
+          toolCallId: toolCall.id,
+          result: toolCall.result,
+          status: toolCall.status,
+        });
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: this.contextToolResult(toolCall, childConfig),
+        });
+      }
+    }
+
+    if (!finalContent) {
+      finalContent = `[Sub-agent stopped after reaching the tool-iteration limit (${maxIterations}).]`;
+    }
+
+    this.sendAgentEvent(ws, 'subagent:response', { agentId, message: finalContent });
+    return finalContent;
+  }
+
+  /**
+   * Keep a long-running sub-agent's isolated transcript inside its available
+   * token budget (the per-slot window, not the model's advertised window) by
+   * replacing the oldest tool payloads with a short marker. Structure is
+   * preserved (assistant tool_calls still have matching tool messages), only
+   * the bulky content is dropped.
+   */
+  private trimSubAgentMessages(messages: Array<Record<string, any>>, tokenBudget: number): void {
+    const cm = getConfig().contextManagement;
+    const cpt = cm?.charsPerToken && cm.charsPerToken > 0 ? cm.charsPerToken : 3;
+    const budget = tokenBudget * cpt * 0.72;
+    let total = 0;
+    for (const m of messages) {
+      total += typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length;
+      if (m.tool_calls) total += JSON.stringify(m.tool_calls).length;
+    }
+    if (total <= budget) return;
+
+    const placeholder = '[Tool result omitted to keep the sub-agent within its context window.]';
+    for (let i = 1; i < messages.length - 6 && total > budget; i++) {
+      const m = messages[i];
+      if (
+        m.role === 'tool'
+        && typeof m.content === 'string'
+        && m.content !== placeholder
+        && !m.content.startsWith('data:image')
+      ) {
+        total -= m.content.length;
+        m.content = placeholder;
+        total += placeholder.length;
+      }
     }
   }
 
@@ -992,13 +1489,18 @@ export class Agent {
       // shared prompt prefix stays cacheable (prefix caching reuses from the
       // head; changing the head invalidates the whole cached prefix). The live
       // plan state is instead folded into the current user message at the tail
-      // (the recency zone) — where a changing element only invalidates a short
+      // (the recency zone) â€” where a changing element only invalidates a short
       // suffix, and where it avoids Qwen's "system message must be at the
       // beginning" template constraint.
       const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.`;
-      const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only — the user sees your reasoning through a separate UI toggle, not as raw text.';
-      const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement — the content literally isn\'t in the response.';
-      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + reasoningNote + toolOutputNote });
+      const subCfg = getSubAgentConfig();
+      const maxSubAgents = Math.max(1, Math.floor(subCfg.maxAgentSlots || 1));
+      const subAgentBlock = subCfg.enabled
+        ? `\n\n## Sub-Agents\nspawn_agent is ENABLED and is present in your tool list for this session. Call it to delegate a self-contained task to a focused sub-agent with its own isolated context and tool loop. Up to ${maxSubAgents} sub-agent(s) can run at the same time. To use that, emit independent spawn_agent calls together in ONE response â€” they are dispatched concurrently, and calls beyond ${maxSubAgents} in the same response are rejected. Spawns in separate responses are sequential. Use sub-agents for deep, narrow work that would otherwise flood this conversation with detail (codebase research, bug investigation, drafting a long document), or for genuinely independent subtasks. The sub-agent cannot ask the user questions, so include every path, constraint, and expected deliverable in its task. Its final report is returned to you as the tool result â€” verify it and summarize it for the user.`
+        : '';
+      const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only â€” the user sees your reasoning through a separate UI toggle, not as raw text.';
+      const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement â€” the content literally isn\'t in the response.';
+      messages.push({ role: 'system', content: systemPrompt + envBlock + planBlock + subAgentBlock + reasoningNote + toolOutputNote });
     }
 
     // The anchored summary is a system-role message, so the history filter below
@@ -1040,7 +1542,7 @@ export class Agent {
       }
     }
 
-    // Live, mutable planning state rides along on the CURRENT user message —
+    // Live, mutable planning state rides along on the CURRENT user message â€”
     // kept at the tail (the recency zone) so the prompt head and all prior
     // history stay byte-identical and cacheable; when the plan changes only this
     // final message (which changes every turn anyway) differs.
@@ -1049,7 +1551,15 @@ export class Agent {
     // placed mid-conversation, so the volatile plan state is folded into the
     // user turn (user role is valid anywhere) instead.
     const currentUserContent = buildUserContent(userMessage, images, this.currentAttachments);
-    const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n`;
+    // Keep a short delegation reminder in the recency zone as well as in the
+    // system prompt: long sessions can otherwise anchor on earlier turns where
+    // the tool did not exist yet and wrongly claim it is unavailable.
+    const subCfgForNote = getSubAgentConfig();
+    const subAgentsForNote = Math.max(1, Math.floor(subCfgForNote.maxAgentSlots || 1));
+    const delegationNote = subCfgForNote.enabled
+      ? `## Delegation\nspawn_agent is enabled and listed in your tools this session (max ${subAgentsForNote} concurrent sub-agent(s)). Do not claim it is unavailable; if delegation would help, call it. To run sub-agents in parallel, emit their spawn_agent calls together in one response (at most ${subAgentsForNote}).\n\n`
+      : '';
+    const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`;
     if (typeof currentUserContent === 'string') {
       messages.push({ role: 'user', content: planNote + currentUserContent });
     } else {
@@ -1097,8 +1607,8 @@ export class Agent {
 
   /**
    * What gets written to the session file. Tool results are capped here so the
-   * UI still renders the full output for this turn while every later turn — and
-   * every restart — replays a bounded copy.
+   * UI still renders the full output for this turn while every later turn â€” and
+   * every restart â€” replays a bounded copy.
    */
   private forStorage(msg: Message, config: any): Message {
     if (!msg.toolCalls?.length) return msg;
@@ -1135,9 +1645,9 @@ export class Agent {
 
   /**
    * Per-iteration budget guard. Returns:
-   *   'ok'        — safe to call the model
-   *   'compacted' — session was compacted; caller must rebuild its message array
-   *   'halt'      — at the wall with nothing left to compact; turn is over
+   *   'ok'        â€” safe to call the model
+   *   'compacted' â€” session was compacted; caller must rebuild its message array
+   *   'halt'      â€” at the wall with nothing left to compact; turn is over
    */
   private async enforceContextBudget(
     messages: Array<Record<string, any>>,
@@ -1168,13 +1678,13 @@ export class Agent {
     const compacted = await this.compactConversation(session, config, ws);
     if (compacted) return 'compacted';
 
-    // Nothing could be reclaimed — either the turn is tiny or compaction failed.
+    // Nothing could be reclaimed â€” either the turn is tiny or compaction failed.
     if (atWall) {
       console.warn('[agent] halting turn: context window exhausted and nothing left to compact');
       this.sendToClient(ws, 'chat:response', {
         message:
           'I stopped because this session ran out of context window and there was nothing left to compact. ' +
-          'Start a new session, or ask me to work in smaller pieces — the earlier findings are summarized in the anchored summary.',
+          'Start a new session, or ask me to work in smaller pieces â€” the earlier findings are summarized in the anchored summary.',
         reasoningContent: '',
         messageId: '',
         sessionId: session.id,
@@ -1229,7 +1739,7 @@ export class Agent {
     if (toSummarize.length < 1) return 'There is nothing to compact yet.';
 
     const prevSummary = summaryMsg && (summaryMsg.content || '').startsWith(SUMMARY_PREFIX)
-      ? summaryMsg.content.slice(SUMMARY_PREFIX.length).replace(/^\n/, '')
+      ? trimLineEndings(normalizeLineEndings(summaryMsg.content || '')).slice(SUMMARY_PREFIX.length + 1)
       : undefined;
 
     const beforeTokens = this.estimateSessionTokens(session, config);
@@ -1248,7 +1758,7 @@ export class Agent {
       }
 
       // Drop any prior summary and insert the refreshed running anchor at the
-      // compaction boundary — right before the message currently being answered
+      // compaction boundary â€” right before the message currently being answered
       // (the pinned message). This way the transcript reads naturally:
       //   [compacted turns (dimmed)] -> [Summary] -> [recent conversation]
       // instead of the summary being yanked to the very top.
@@ -1283,7 +1793,7 @@ export class Agent {
 
   /**
    * Summarize into the anchor, staging the work when the history alone would
-   * not fit in one request — otherwise the summarizer 400s and nothing compacts.
+   * not fit in one request â€” otherwise the summarizer 400s and nothing compacts.
    */
   private async summarizeForAnchor(
     messages: Message[],
@@ -1468,7 +1978,7 @@ function buildUserContent(text: string, images: string[], attachments: Attachmen
 
   if (text) textChunks.push(text);
 
-  // Pasted images — always sent as vision parts
+  // Pasted images â€” always sent as vision parts
   for (const img of images) {
     visionUrls.add(img);
     content.push({ type: 'image_url', image_url: { url: img } });
@@ -1496,7 +2006,7 @@ function buildUserContent(text: string, images: string[], attachments: Attachmen
     if (textFile) {
       textChunks.push(`\n\n[Attachment ${i}: ${att.name} (${att.type}, ${att.size} bytes)]\n\`\`\`\n${textFile}\n\`\`\``);
     } else {
-      textChunks.push(`\n\n[Attachment ${i}: ${att.name} (${att.type}, ${att.size} bytes). The full file is available on disk — use attachment_list and save_attached_file to read or save it.]`);
+      textChunks.push(`\n\n[Attachment ${i}: ${att.name} (${att.type}, ${att.size} bytes). The full file is available on disk â€” use attachment_list and save_attached_file to read or save it.]`);
     }
   }
 

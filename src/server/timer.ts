@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { normalizeLineEndings } from './utils/line-endings';
 
 // Timer service: time-based wakes for the agent. Timers persist across server
 // restarts (unlike jobs). Kinds:
@@ -174,7 +175,7 @@ function loadTimers(): void {
   seq = 1;
   try {
     if (!fs.existsSync(timersPath)) return;
-    const data = JSON.parse(fs.readFileSync(timersPath, 'utf-8'));
+    const data = JSON.parse(normalizeLineEndings(fs.readFileSync(timersPath, 'utf-8')));
     const now = Date.now();
     for (const t of data.timers || []) {
       const timer: Timer = { ...t, jobIds: t.jobIds || [] };

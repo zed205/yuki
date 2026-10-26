@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { getConfig } from './config';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const LOG_DIR = path.join(os.homedir(), '.config', 'yukiweb', 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'llm-raw.log');
@@ -45,7 +46,7 @@ function rollIfNeeded(): void {
     const max = maxBytes();
     const stat = fs.statSync(LOG_FILE);
     if (stat.size <= max) return;
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
+    const content = normalizeLineEndings(fs.readFileSync(LOG_FILE, 'utf-8'));
     const bytes = Buffer.byteLength(content, 'utf-8');
     if (bytes <= max) return;
     const keepBytes = Math.floor(max * 0.45);

@@ -11,6 +11,7 @@ import OpenAI from 'openai';
 import { Message, ToolCall } from '../shared/types';
 import { getObserverModelConfig, getObserverTimeoutMs } from './config';
 import { planGet } from './plan';
+import { normalizeLineEndings } from './utils/line-endings';
 
 /** Structured feedback from the observer. */
 export interface ObserverFeedback {
@@ -75,12 +76,12 @@ function buildSnapshot(
         toolCalls: msg.toolCalls.map(tc => ({
           name: tc.name,
           args: JSON.stringify(tc.parameters),
-          result: toolResults.get(tc.id) || '',
+          result: normalizeLineEndings(toolResults.get(tc.id) || ''),
         })),
       };
       for (const tc of msg.toolCalls) {
         turn.tool = tc.name;
-        const result = toolResults.get(tc.id) || '';
+        const result = normalizeLineEndings(toolResults.get(tc.id) || '');
         turn.resultSummary = result.length > 200 ? result.substring(0, 200) + '...' : result;
         turn.toolCalls = [{
           name: tc.name,

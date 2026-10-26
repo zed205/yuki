@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { getConfig, getAgentModel } from './config';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const pythonDir = path.join(__dirname, '..', '..', 'python');
 
@@ -42,11 +43,11 @@ export class AudioPipeline {
 
       let output = '';
       proc.stdout.on('data', (data) => {
-        output += data.toString();
+        output += normalizeLineEndings(data.toString());
       });
 
       proc.stderr.on('data', (data) => {
-        console.error('STT stderr:', data.toString());
+        console.error('STT stderr:', normalizeLineEndings(data.toString()));
       });
 
       proc.on('close', (code) => {
@@ -123,11 +124,11 @@ export class AudioPipeline {
 
       let output = '';
       proc.stdout.on('data', (data) => {
-        output += data.toString();
+        output += normalizeLineEndings(data.toString());
       });
 
       proc.stderr.on('data', (data) => {
-        console.error('TTS stderr:', data.toString());
+        console.error('TTS stderr:', normalizeLineEndings(data.toString()));
       });
 
       proc.on('close', (code) => {

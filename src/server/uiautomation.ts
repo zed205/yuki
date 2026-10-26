@@ -1,6 +1,7 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as path from 'path';
 import { getConfig } from './config';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const pythonDir = path.join(__dirname, '..', '..', 'python');
 
@@ -71,12 +72,12 @@ export class UiaAutomation {
       });
 
       proc.stderr.on('data', (data) => {
-        const text = data.toString().trim();
+        const text = normalizeLineEndings(data.toString()).trim();
         if (text) console.error('[uiad]', text);
       });
 
       proc.stdout.on('data', (data) => {
-        this.buffer += data.toString();
+        this.buffer += normalizeLineEndings(data.toString());
         let idx: number;
         while ((idx = this.buffer.indexOf('\n')) >= 0) {
           const line = this.buffer.slice(0, idx).trim();

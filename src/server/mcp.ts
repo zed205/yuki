@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { MCPServerConfig } from '../shared/types';
+import { normalizeLineEndings } from './utils/line-endings';
 
 interface MCPToolInfo {
   fullName: string;
@@ -33,19 +34,19 @@ function resultToString(result: any): string {
   if (result.content && Array.isArray(result.content)) {
     const parts: string[] = [];
     for (const c of result.content) {
-      if (c && c.type === 'text' && c.text) parts.push(c.text);
+      if (c && c.type === 'text' && c.text) parts.push(normalizeLineEndings(c.text));
       else if (c && c.type === 'resource' && c.resource) {
-        parts.push(`[resource ${c.resource.uri}${c.resource.text ? ': ' + c.resource.text : ''}]`);
-      } else if (c && typeof c.text === 'string') parts.push(c.text);
+        parts.push(`[resource ${c.resource.uri}${c.resource.text ? ': ' + normalizeLineEndings(c.resource.text) : ''}]`);
+      } else if (c && typeof c.text === 'string') parts.push(normalizeLineEndings(c.text));
     }
     if (result.isError) return `[MCP error]\n${parts.join('\n')}`;
     return parts.join('\n');
   }
-  if (typeof result === 'string') return result;
+  if (typeof result === 'string') return normalizeLineEndings(result);
   try {
     return JSON.stringify(result, null, 2);
   } catch {
-    return String(result);
+    return normalizeLineEndings(String(result));
   }
 }
 

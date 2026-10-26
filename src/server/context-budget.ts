@@ -1,4 +1,5 @@
 import { ContextManagementConfig, Message, Session } from '../shared/types';
+import { splitLines } from './utils/line-endings';
 
 /**
  * Context budget accounting.
@@ -218,7 +219,7 @@ function capReadResult(
 ): string {
   const showing = READ_SHOWING_RE.exec(result);
   const total = showing ? Number(showing[3]) : null;
-  const lines = result.split('\n');
+  const lines = splitLines(result);
   const kept: string[] = [];
   let length = 0;
   let numberedKept = 0;

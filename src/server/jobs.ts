@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { getConfig } from './config';
+import { splitLines } from './utils/line-endings';
 
 // Strip ANSI escape sequences (PowerShell adds color codes).
 function stripAnsi(str: string): string {
@@ -131,15 +132,19 @@ export function startJob(command: string, opts: { sessionId?: string; wakeOnExit
   procs.set(id, proc);
 
   let pending = '';
+  let offset = 0;
   const onChunk = (data: Buffer) => {
     pending += stripAnsi(data.toString('utf-8'));
-    let idx: number;
-    while ((idx = pending.search(/\r?\n/)) !== -1) {
-      const line = pending.slice(0, idx).replace(/\r/g, '');
-      pending = pending.slice(idx).replace(/^\r?\n/, '');
-      job.tail.push(line);
-      if (job.tail.length > MAX_TAIL_LINES) job.tail.splice(0, job.tail.length - MAX_TAIL_LINES);
-      try { fs.appendFileSync(logPath, line + '\n'); } catch { /* disk errors are non-fatal */ }
+    // splitLines returns all segments; the last one may be an incomplete line
+    // with no trailing newline, so keep it in `pending` for the next chunk.
+    const lines = splitLines(pending);
+    if (lines.length > 1) {
+      pending = lines.pop()!; // keep potentially incomplete last segment
+      for (const line of lines) {
+        job.tail.push(line);
+        if (job.tail.length > MAX_TAIL_LINES) job.tail.splice(0, job.tail.length - MAX_TAIL_LINES);
+        try { fs.appendFileSync(logPath, line + '\n'); } catch { /* disk errors are non-fatal */ }
+      }
     }
   };
   proc.stdout?.on('data', onChunk);

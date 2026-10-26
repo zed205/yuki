@@ -124,9 +124,17 @@ export interface DesktopConfig {
 
 export interface SubAgentConfig {
   enabled: boolean;
+  // Number of sub-agents that may run CONCURRENTLY. The main agent is not
+  // counted, so a llama.cpp server should be started with
+  // --parallel (1 + maxAgentSlots).
   maxAgentSlots: number;
   // Name of the model to use for sub-agents (reference into models[] array)
   model?: string;
+  // Context window (in tokens) actually available to ONE sub-agent request.
+  // llama.cpp splits its total -c context across --parallel slots, so this is
+  // usually `-c / (1 + maxAgentSlots)`. When omitted, YukiWeb budgets
+  // conservatively as model.contextWindow / (1 + maxAgentSlots).
+  perSlotContextTokens?: number;
 }
 
 export interface ObserverConfig {

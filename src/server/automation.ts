@@ -1,8 +1,9 @@
-import { spawn } from 'child_process';
+﻿import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { getConfig } from './config';
+import { normalizeLineEndings } from './utils/line-endings';
 
 const pythonDir = path.join(__dirname, '..', '..', 'python');
 
@@ -31,11 +32,11 @@ export class DesktopAutomation {
 
       let output = '';
       proc.stdout.on('data', (data) => {
-        output += data.toString();
+        output += normalizeLineEndings(data.toString());
       });
 
       proc.stderr.on('data', (data) => {
-        console.error('Desktop stderr:', data.toString());
+        console.error('Desktop stderr:', normalizeLineEndings(data.toString()));
       });
 
       proc.on('close', (code) => {
@@ -75,8 +76,8 @@ export class DesktopAutomation {
       const proc = spawn('python', [desktopPath, 'viewport']);
 
       let output = '';
-      proc.stdout.on('data', (data) => { output += data.toString(); });
-      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', data.toString()); });
+      proc.stdout.on('data', (data) => { output += normalizeLineEndings(data.toString()); });
+      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', normalizeLineEndings(data.toString())); });
 
       proc.on('close', (code) => {
         if (code !== 0) { reject(new Error(`Viewport failed with code ${code}`)); return; }
@@ -100,8 +101,8 @@ export class DesktopAutomation {
       const proc = spawn('python', [desktopPath, 'screenshot_region', outputPath, String(left), String(top), String(width), String(height)]);
 
       let output = '';
-      proc.stdout.on('data', (data) => { output += data.toString(); });
-      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', data.toString()); });
+      proc.stdout.on('data', (data) => { output += normalizeLineEndings(data.toString()); });
+      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', normalizeLineEndings(data.toString())); });
 
       proc.on('close', (code) => {
         if (code !== 0) { reject(new Error(`Region screenshot failed with code ${code}`)); return; }
@@ -125,11 +126,11 @@ export class DesktopAutomation {
 
       let output = '';
       proc.stdout.on('data', (data) => {
-        output += data.toString();
+        output += normalizeLineEndings(data.toString());
       });
 
       proc.stderr.on('data', (data) => {
-        console.error('Desktop stderr:', data.toString());
+        console.error('Desktop stderr:', normalizeLineEndings(data.toString()));
       });
 
       proc.on('close', (code) => {
@@ -161,8 +162,8 @@ export class DesktopAutomation {
       const proc = spawn('python', [desktopPath, 'move', String(x), String(y)]);
 
       let output = '';
-      proc.stdout.on('data', (data) => { output += data.toString(); });
-      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', data.toString()); });
+      proc.stdout.on('data', (data) => { output += normalizeLineEndings(data.toString()); });
+      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', normalizeLineEndings(data.toString())); });
 
       proc.on('close', (code) => {
         if (code !== 0) { reject(new Error(`Mouse move failed with code ${code}`)); return; }
@@ -183,8 +184,8 @@ export class DesktopAutomation {
       const proc = spawn('python', [desktopPath, 'drag', String(x), String(y), button]);
 
       let output = '';
-      proc.stdout.on('data', (data) => { output += data.toString(); });
-      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', data.toString()); });
+      proc.stdout.on('data', (data) => { output += normalizeLineEndings(data.toString()); });
+      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', normalizeLineEndings(data.toString())); });
 
       proc.on('close', (code) => {
         if (code !== 0) { reject(new Error(`Mouse drag failed with code ${code}`)); return; }
@@ -205,8 +206,8 @@ export class DesktopAutomation {
       const proc = spawn('python', [desktopPath, 'scroll', String(clicks)]);
 
       let output = '';
-      proc.stdout.on('data', (data) => { output += data.toString(); });
-      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', data.toString()); });
+      proc.stdout.on('data', (data) => { output += normalizeLineEndings(data.toString()); });
+      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', normalizeLineEndings(data.toString())); });
 
       proc.on('close', (code) => {
         if (code !== 0) { reject(new Error(`Scroll failed with code ${code}`)); return; }
@@ -230,11 +231,11 @@ export class DesktopAutomation {
 
       let output = '';
       proc.stdout.on('data', (data) => {
-        output += data.toString();
+        output += normalizeLineEndings(data.toString());
       });
 
       proc.stderr.on('data', (data) => {
-        console.error('Desktop stderr:', data.toString());
+        console.error('Desktop stderr:', normalizeLineEndings(data.toString()));
       });
 
       proc.on('close', (code) => {
@@ -266,8 +267,8 @@ export class DesktopAutomation {
       const proc = spawn('python', [desktopPath, 'press', key]);
 
       let output = '';
-      proc.stdout.on('data', (data) => { output += data.toString(); });
-      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', data.toString()); });
+      proc.stdout.on('data', (data) => { output += normalizeLineEndings(data.toString()); });
+      proc.stderr.on('data', (data) => { console.error('Desktop stderr:', normalizeLineEndings(data.toString())); });
 
       proc.on('close', (code) => {
         if (code !== 0) { reject(new Error(`Key press failed with code ${code}`)); return; }
