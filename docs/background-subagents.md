@@ -35,10 +35,8 @@ expected to review and validate the work rather than trust the report:
    viewing it) after a 2 s debounce, so several agents finishing together produce
    **one** wake turn instead of one per agent. The prompt is a notice; the reports
    themselves still arrive through the normal injection queue.
-3. **`wakeOnComplete: false`:** optional fallback — the report stays pending and is
-   injected at the start of the user's next turn; the sidebar shows a `new` badge.
-4. **No client watching:** the report stays pending and is injected at the start of
-   the next turn (nothing is lost).
+3. **No client watching:** the report stays pending and is injected at the start of
+   the next turn (nothing is lost); the sidebar shows a `new` badge.
 
 A **failed** child (`error`) also triggers a review turn: a crashed agent may have
 left the tree in a broken state. A user-initiated cancellation (`agent_kill`,
@@ -84,7 +82,6 @@ per-child window does not cost a large prompt every turn. Override
   "enabled": true,
   "maxAgentSlots": 3,
   "background": true,
-  "wakeOnComplete": true,
   "maxQueued": 8,
   "maxRuntimeMs": 0,
   "perSlotContextTokens": 128000

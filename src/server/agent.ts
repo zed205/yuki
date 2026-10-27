@@ -1280,7 +1280,9 @@ export class Agent {
     // a user-initiated cancellation does not.
     const needsReview = job.status === 'completed' || job.status === 'error';
     if (needsReview && !this.running) {
-      if (getSubAgentConfig().wakeOnComplete !== false && this.subAgentWakeHandler) {
+      // Without a handler (e.g. a standalone Agent) the report stays pending and
+      // reaches the parent at its next turn; the UI badge covers that state.
+      if (this.subAgentWakeHandler) {
         try {
           this.subAgentWakeHandler(job);
         } catch (err: any) {

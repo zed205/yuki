@@ -142,13 +142,6 @@ export interface SubAgentConfig {
    * blocking spawns (the call waits for the report).
    */
   background?: boolean;
-  /**
-   * When true (default), a finished background sub-agent always alerts the main
-   * agent: mid-turn it is injected at the next iteration, and while idle it
-   * starts a review turn (coalesced across agents that finish together).
-   * Set false to leave reports pending until the next user message.
-   */
-  wakeOnComplete?: boolean;
   /** Maximum number of sub-agents allowed to wait for a free slot (default 8). */
   maxQueued?: number;
   /** Hard wall-clock limit per sub-agent in ms (0 = unlimited, default 0). */

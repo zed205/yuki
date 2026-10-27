@@ -268,7 +268,6 @@ function startSubAgentWakeTurn(sessionId: string): void {
 }
 
 function scheduleSubAgentWake(sessionId: string): void {
-  if (!getSubAgentConfig().wakeOnComplete) return;
   const existing = wakeTimers.get(sessionId);
   if (existing) clearTimeout(existing);
   wakeTimers.set(sessionId, setTimeout(() => {
@@ -299,7 +298,7 @@ agent.setSubAgentWakeHandler((job) => {
     const background = subCfg.background !== false;
     console.log(
       `[tools] sub-agent mode: ${background ? 'background (spawn returns immediately; reports auto-delivered)' : 'blocking'} ` +
-      `wakeOnComplete=${subCfg.wakeOnComplete !== false} maxQueued=${subCfg.maxQueued ?? 8}`,
+      `maxQueued=${subCfg.maxQueued ?? 8}`,
     );
     if (rawSlots < 1) {
       console.log('[tools] maxAgentSlots=0 → sub-agents run one at a time (no parallel capacity beyond the main agent)');
