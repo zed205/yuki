@@ -24,7 +24,7 @@ const defaultSubAgentConfig: SubAgentConfig = {
   enabled: false,
   maxAgentSlots: 4,
   background: true,
-  wakeOnComplete: false,
+  wakeOnComplete: true,
   maxQueued: 8,
   maxRuntimeMs: 0,
 };

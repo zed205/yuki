@@ -323,6 +323,13 @@ export function hasUndeliveredResults(sessionId?: string): boolean {
   return false;
 }
 
+/** Finished-but-unseen results for a session without consuming them. */
+export function listUndeliveredResults(sessionId: string): SubAgentJob[] {
+  return Array.from(jobs.values())
+    .filter(j => j.sessionId === sessionId && isTerminal(j) && !j.delivered)
+    .sort((a, b) => (a.endedAt || 0) - (b.endedAt || 0));
+}
+
 /** Cancel one job. Returns false when it is unknown or already finished. */
 export function cancelSubAgent(id: string, reason = 'cancelled by the parent agent'): boolean {
   const job = jobs.get(id);
@@ -383,7 +390,8 @@ export function formatSubAgentResults(jobs: SubAgentJob[]): string {
   });
   return [
     '## Background Sub-Agent Results',
-    'These sub-agents finished while you were working. Their reports follow. Verify claims that matter before relying on them; use agent_result with an id if you need the report again.',
+    'These sub-agents finished while you were working. Their reports follow.',
+    'Treat each report as a claim, not as fact: before relying on it or telling the user it is done, validate the parts that matter — read the files it changed, inspect the diff, re-run the command or test it cites. State clearly what you verified and what you did not. Use agent_result with an id if you need the report again.',
     '',
     sections.join('\n\n'),
   ].join('\n');

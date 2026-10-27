@@ -23,14 +23,26 @@ parent next iteration ◄── inject report ◄─────┘  (or wake if
 
 ## Result delivery
 
-1. **Mid-turn (running):** at the top of every iteration, finished reports are
-   injected as a `user`-role context block (`Background Sub-Agent Results`), then
-   marked delivered. No polling is required.
-2. **Idle, `wakeOnComplete: false` (default):** the report stays pending; it is
-   injected at the start of the user's next turn. The sidebar shows a `new` badge.
-3. **Idle, `wakeOnComplete: true`:** the server starts a turn in the session
-   (only if a client is viewing it) so the model can report immediately. Reports
-   are still injected by the normal queue, not duplicated into the prompt.
+A finished sub-agent **always alerts the main agent**, and the main agent is
+expected to review and validate the work rather than trust the report:
+
+1. **Mid-turn (parent running):** at the top of every iteration, finished reports
+   are injected as a `user`-role context block (`Background Sub-Agent Results`),
+   then marked delivered. The block instructs the parent to check the claims
+   (open the files, inspect the diff, re-run the command/test) before reporting
+   success. No polling is required.
+2. **Idle:** the server starts a review turn in the session (only if a client is
+   viewing it) after a 2 s debounce, so several agents finishing together produce
+   **one** wake turn instead of one per agent. The prompt is a notice; the reports
+   themselves still arrive through the normal injection queue.
+3. **`wakeOnComplete: false`:** optional fallback — the report stays pending and is
+   injected at the start of the user's next turn; the sidebar shows a `new` badge.
+4. **No client watching:** the report stays pending and is injected at the start of
+   the next turn (nothing is lost).
+
+A **failed** child (`error`) also triggers a review turn: a crashed agent may have
+left the tree in a broken state. A user-initiated cancellation (`agent_kill`,
+`chat:stop`) does not.
 
 The model can also pull explicitly:
 
@@ -57,20 +69,25 @@ Shared stateful services are still serialised by mutexes: `browser_*` and
 
 ## Server sizing
 
-`--parallel` must equal `maxAgentSlots + 1` (main + children). llama.cpp splits
-`-c` across slots, so each child gets roughly `contextWindow / (1 + maxAgentSlots)`
-unless `subAgents.perSlotContextTokens` is set. Example for `--parallel 4`
-(main + 3 children, `-c 256000` → 64000 tokens per slot):
+Each child is budgeted **half of the main model's declared context window**
+(`contextWindow / 2`). Prompt caching means the shared prefix — system prompt and
+tool definitions — is computed once and reused across concurrent slots, so a large
+per-child window does not cost a large prompt every turn. Override
+`subAgents.perSlotContextTokens` if the server's real per-slot window is smaller
+(for example when `-c` is split across `--parallel` slots).
+
+`--parallel` should still cover `maxAgentSlots + 1` (main + children). Example for
+`--parallel 4` with a 256k model, giving each child 128k:
 
 ```json
 "subAgents": {
   "enabled": true,
   "maxAgentSlots": 3,
   "background": true,
-  "wakeOnComplete": false,
+  "wakeOnComplete": true,
   "maxQueued": 8,
   "maxRuntimeMs": 0,
-  "perSlotContextTokens": 64000
+  "perSlotContextTokens": 128000
 }
 ```
 

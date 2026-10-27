@@ -53,8 +53,13 @@ YukiWeb is a personal AI agent application with a web-based interface, designed 
   keeps working while sub-agents run and can spawn more as slots free up
 - Up to `subAgents.maxAgentSlots` sub-agents run concurrently (main agent excluded);
   additional spawns queue FIFO up to `subAgents.maxQueued`
-- Finished reports are injected into the parent's context automatically; optional
-  `wakeOnComplete` starts a turn when the parent is idle
+- Finished reports always alert the main agent: injected at the next iteration of a
+  running turn, or (when idle) a debounced review turn is started so the report is
+  read immediately; `wakeOnComplete: false` disables the idle turn
+- The main agent is expected to validate a sub-agent's claims independently (read the
+  changed files, inspect the diff, re-run the command/test) before relying on them
+- Each child is budgeted half of the main model's declared context window; the shared
+  prompt prefix is cached, so concurrency stays cheap (`perSlotContextTokens` overrides)
 - `agent_result(agentId, wait_ms)` — collect a report explicitly (bounded wait)
 - `agent_list()` — status, elapsed time, queue position, free slots
 - `agent_kill(agentId)` — cancel one agent (also available from the UI panel)
@@ -137,11 +142,11 @@ YukiWeb is a personal AI agent application with a web-based interface, designed 
     "enabled": true,
     "maxAgentSlots": 3,
     "background": true,
-    "wakeOnComplete": false,
+    "wakeOnComplete": true,
     "maxQueued": 8,
     "maxRuntimeMs": 0,
     "model": "",
-    "perSlotContextTokens": 64000
+    "perSlotContextTokens": 128000
   }
 }
 ```

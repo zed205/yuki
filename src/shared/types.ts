@@ -131,9 +131,10 @@ export interface SubAgentConfig {
   // Name of the model to use for sub-agents (reference into models[] array)
   model?: string;
   // Context window (in tokens) actually available to ONE sub-agent request.
-  // llama.cpp splits its total -c context across --parallel slots, so this is
-  // usually `-c / (1 + maxAgentSlots)`. When omitted, YukiWeb budgets
-  // conservatively as model.contextWindow / (1 + maxAgentSlots).
+  // When omitted, each sub-agent is given half of the model's declared
+  // contextWindow (prompt caching keeps the shared prefix warm, so children can
+  // work in a large window). Set this when the inference server splits a smaller
+  // `-c` across --parallel slots.
   perSlotContextTokens?: number;
   /**
    * When true (default), spawn_agent returns immediately with an agent id and
@@ -142,9 +143,10 @@ export interface SubAgentConfig {
    */
   background?: boolean;
   /**
-   * When true, a finished background sub-agent starts a new turn in its session
-   * while the parent is idle, so the model can report the result unprompted.
-   * Off by default to avoid unexpected token spend.
+   * When true (default), a finished background sub-agent always alerts the main
+   * agent: mid-turn it is injected at the next iteration, and while idle it
+   * starts a review turn (coalesced across agents that finish together).
+   * Set false to leave reports pending until the next user message.
    */
   wakeOnComplete?: boolean;
   /** Maximum number of sub-agents allowed to wait for a free slot (default 8). */

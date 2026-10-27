@@ -40,6 +40,7 @@ import {
   hasUndeliveredResults,
   isTerminal,
   listSubAgents,
+  listUndeliveredResults,
   markSubAgentDelivered,
   maxSubAgentSlots,
   queuedSubAgentCount,
@@ -117,6 +118,13 @@ const SUBAGENT_TOOL_EXCLUSIONS = [
   'plan_create', 'plan_update', 'plan_get', 'plan_remove',
   'attachment_list', 'save_attached_file',
 ];
+
+/**
+ * Fraction of the main model's context window a sub-agent may use. Prompt
+ * caching makes the shared prefix cheap, so children get a generous working
+ * window rather than a 1/(1+slots) slice.
+ */
+const SUBAGENT_CONTEXT_SHARE = 0.5;
 
 /** Process-wide count of running sub-agents is owned by subagents.ts. */
 
@@ -1266,11 +1274,13 @@ export class Agent {
       reportPreview: job.report ? job.report.slice(0, 500) : undefined,
     });
 
-    // A finished report is normally injected at the parent's next iteration.
-    // If the parent is idle, either wake it (opt-in) or tell the UI it is
-    // pending, so the user knows the next turn will include it.
-    if (job.status === 'completed' && !this.running) {
-      if (getSubAgentConfig().wakeOnComplete && this.subAgentWakeHandler) {
+    // A finished report is injected at the parent's next iteration. If the
+    // parent is idle, always alert it: wake a turn so it can review the work.
+    // A failed child also needs reviewing (did it leave the tree broken?), but
+    // a user-initiated cancellation does not.
+    const needsReview = job.status === 'completed' || job.status === 'error';
+    if (needsReview && !this.running) {
+      if (getSubAgentConfig().wakeOnComplete !== false && this.subAgentWakeHandler) {
         try {
           this.subAgentWakeHandler(job);
         } catch (err: any) {
@@ -1284,7 +1294,7 @@ export class Agent {
           pending: hasUndeliveredResults(job.sessionId),
         });
       }
-    } else if (job.status === 'completed' && this.running) {
+    } else if (needsReview && this.running) {
       this.sendAgentEvent(ws, 'subagent:results-pending', {
         agentId: job.id,
         sessionId: job.sessionId,
@@ -1444,6 +1454,11 @@ export class Agent {
     return hasUndeliveredResults(sessionId);
   }
 
+  /** Finished-but-unconsumed reports for a session (does not mark them delivered). */
+  pendingSubAgentResults(sessionId: string): SubAgentJob[] {
+    return listUndeliveredResults(sessionId);
+  }
+
   /** UI-initiated cancel from the agent panel. */
   cancelSubAgentById(agentId: string): boolean {
     return cancelSubAgent(agentId, 'cancelled by user');
@@ -1483,11 +1498,11 @@ export class Agent {
   /**
    * Token budget available to ONE child request.
    *
-   * Sub-agents save the PARENT's context, but they do not create context at the
-   * inference server: llama.cpp splits its total -c across --parallel slots, so
-   * each concurrent request sees roughly 1/N of it. subAgents.perSlotContextTokens
-   * states that real per-slot size; when it is unset we budget conservatively as
-   * contextWindow / (1 + maxAgentSlots).
+   * Each sub-agent is given half of the model's declared context window. Prompt
+   * caching keeps the shared prefix (system prompt, tool definitions) warm
+   * across concurrent slots, so children can afford a large working window
+   * without re-paying for it every turn. subAgents.perSlotContextTokens overrides
+   * this, e.g. when the inference server splits a smaller `-c` across slots.
    */
   private subAgentContextBudget(modelName: string): {
     tokens: number;
@@ -1501,7 +1516,7 @@ export class Agent {
     const explicit = typeof cfg.perSlotContextTokens === 'number' && cfg.perSlotContextTokens > 0;
     const tokens = explicit
       ? Math.floor(cfg.perSlotContextTokens as number)
-      : Math.floor(declared / (1 + maxSlots));
+      : Math.floor(declared * SUBAGENT_CONTEXT_SHARE);
     return { tokens: Math.max(1024, tokens), declared, maxSlots, explicit };
   }
 
@@ -1541,7 +1556,7 @@ export class Agent {
       `[subagent] ${agentId} budget=${budget.tokens} tokens ` +
       (budget.explicit
         ? '(subAgents.perSlotContextTokens)'
-        : `(derived: ${budget.declared}/${1 + budget.maxSlots} slots)`) +
+        : `(derived: ${Math.round(SUBAGENT_CONTEXT_SHARE * 100)}% of ${budget.declared})`) +
       ` toolResults=${childToolResultChars} chars maxOutput=${childMaxOutput} tokens`,
     );
     const systemPrompt = [
@@ -1760,7 +1775,7 @@ export class Agent {
       const subAgentBlock = subCfg.enabled
         ? `\n\n## Sub-Agents\nspawn_agent is ENABLED and is present in your tool list for this session. Call it to delegate a self-contained task to a focused sub-agent with its own isolated context and tool loop. ${background
             ? `It runs in the BACKGROUND by default: the call returns an agent id immediately and you keep working. Up to ${maxSubAgents} sub-agent(s) run at once; extra spawns queue and start automatically when a slot frees. Reports arrive automatically as context when they finish — do NOT poll or wait for them. Use agent_result to collect one explicitly, agent_list to see capacity, and agent_kill to cancel.`
-            : `The call blocks until the report is ready. Up to ${maxSubAgents} sub-agent(s) may run concurrently.`} Use sub-agents for deep, narrow work that would otherwise flood this conversation with detail (codebase research, bug investigation, drafting a long document), or for genuinely independent subtasks. The sub-agent cannot ask the user questions and cannot spawn further sub-agents, so include every path, constraint, and expected deliverable in its task. Verify its report before relying on it, then summarize it for the user.`
+            : `The call blocks until the report is ready. Up to ${maxSubAgents} sub-agent(s) may run concurrently.`} Use sub-agents for deep, narrow work that would otherwise flood this conversation with detail (codebase research, bug investigation, drafting a long document), or for genuinely independent subtasks. The sub-agent cannot ask the user questions and cannot spawn further sub-agents, so include every path, constraint, and expected deliverable in its task. A finished sub-agent ALWAYS notifies you: treat its report as a claim to be checked, not as fact. Independently validate what matters — open the files it touched, re-run the command or test, inspect the diff — before you accept the work, and say plainly what you verified and what you did not.`
         : '';
       const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only â€” the user sees your reasoning through a separate UI toggle, not as raw text.';
       const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement â€” the content literally isn\'t in the response.';
@@ -1823,7 +1838,7 @@ export class Agent {
     const backgroundForNote = subCfgForNote.background !== false;
     const delegationNote = subCfgForNote.enabled
       ? `## Delegation\nspawn_agent is enabled and listed in your tools this session (max ${subAgentsForNote} concurrent sub-agent(s)${backgroundForNote ? ', background mode' : ''}). Do not claim it is unavailable; if delegation would help, call it. ${backgroundForNote
-          ? 'It returns an agent id immediately and its report is delivered automatically when it finishes — continue working instead of polling. Use agent_result to collect one explicitly or agent_list to check capacity.'
+          ? 'It returns an agent id immediately and its report is delivered automatically when it finishes — continue working instead of polling. Use agent_result to collect one explicitly or agent_list to check capacity. Every finished agent alerts you, so review and validate its work (check the files, rerun the command/test) before relying on or reporting it.'
           : `To run sub-agents in parallel, emit their spawn_agent calls together in one response (at most ${subAgentsForNote}).`}\n\n`
       : '';
     const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`;

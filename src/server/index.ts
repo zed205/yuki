@@ -218,41 +218,68 @@ agent.initToolDefaults();
 const sessionSockets = new Map<WebSocket, string>();
 
 /**
- * Optional wake-on-complete: when a background sub-agent finishes while the
- * main agent is idle and its session is visible, start a turn so the model can
- * report the result. Reports themselves are injected by Agent.chat() via the
- * undelivered-results queue, not by this prompt.
+ * Background agents always alert the main agent.
+ *
+ * If a turn is running, the reports are injected at its next iteration. If the
+ * agent is idle, a wake turn starts so the model can review them straight away.
+ * Completions are debounced briefly, so a burst of parallel agents produces one
+ * wake turn instead of one per agent. Reports are injected by Agent.chat() from
+ * the undelivered-results queue; the wake prompt is only a notice.
  */
-agent.setSubAgentWakeHandler((job) => {
-  if (agent.isRunning || !getSubAgentConfig().wakeOnComplete) return;
-  // The report may already have been collected with agent_result; don't wake
-  // for a turn with nothing new to say.
-  if (!agent.hasPendingSubAgentResults(job.sessionId)) return;
-  const session = sessions.get(job.sessionId);
+const WAKE_DEBOUNCE_MS = 2000;
+const wakeTimers = new Map<string, NodeJS.Timeout>();
+
+function startSubAgentWakeTurn(sessionId: string): void {
+  // Mid-turn: the running loop injects the reports at its next iteration.
+  if (agent.isRunning) return;
+  const pending = agent.pendingSubAgentResults(sessionId);
+  // Nothing new: a turn already consumed them, or they were collected with
+  // agent_result. Never wake the model with nothing to review.
+  if (pending.length === 0) return;
+
+  const session = sessions.get(sessionId);
   if (!session) return;
-  const entry = Array.from(sessionSockets.entries()).find(([, sid]) => sid === job.sessionId);
-  const ws = entry?.[0];
-  if (!ws || ws.readyState !== 1) return; // no visible client — report waits for the next turn
+  const ws = Array.from(sessionSockets.entries()).find(([, sid]) => sid === sessionId)?.[0];
+  if (!ws || ws.readyState !== 1) return; // no viewer — the report waits for the next turn
 
+  for (const job of pending) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'subagent:wake',
+        data: { sessionId, agentId: job.id, description: job.description, status: job.status },
+      }));
+    } catch { /* client may be gone */ }
+  }
+
+  const list = pending.map(j => `- "${j.description}" (${j.status})${j.error ? `: ${j.error}` : ''}`).join('\n');
   const prompt = [
-    `[System notice] The background sub-agent "${job.description}" just finished (${job.status}).`,
-    job.status === 'completed'
-      ? 'Its report is attached to this turn as context. Review it, verify anything important, and give the user a concise update.'
-      : `It ended with status ${job.status}${job.error ? ` (${job.error})` : ''}. Tell the user what happened and whether anything needs retrying.`,
+    `[System notice] ${pending.length} background sub-agent(s) just finished:`,
+    list,
+    'Their reports are attached to this turn as context.',
+    'Treat each report as a claim: read the files that were changed, inspect the diff, or re-run the command/test it cites before you accept the work.',
+    'Then give the user a short update covering what the sub-agent did, what you verified yourself, and anything that still needs attention.',
     'Do not spawn an identical sub-agent again.',
-  ].join(' ');
+  ].join('\n');
 
-  try {
-    ws.send(JSON.stringify({
-      type: 'subagent:wake',
-      data: { sessionId: job.sessionId, agentId: job.id, description: job.description, status: job.status },
-    }));
-  } catch { /* client may be gone */ }
-
-  console.log(`[subagent] waking session ${job.sessionId} for finished agent ${job.id}`);
+  console.log(`[subagent] waking session ${sessionId} for ${pending.length} finished agent(s)`);
   agent.chat(prompt, session, ws)
     .then(() => saveSession(session))
     .catch(err => console.error('[subagent] wake turn failed:', err));
+}
+
+function scheduleSubAgentWake(sessionId: string): void {
+  if (!getSubAgentConfig().wakeOnComplete) return;
+  const existing = wakeTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  wakeTimers.set(sessionId, setTimeout(() => {
+    wakeTimers.delete(sessionId);
+    startSubAgentWakeTurn(sessionId);
+  }, WAKE_DEBOUNCE_MS));
+}
+
+agent.setSubAgentWakeHandler((job) => {
+  if (!agent.hasPendingSubAgentResults(job.sessionId)) return;
+  scheduleSubAgentWake(job.sessionId);
 });
 
 {
@@ -263,7 +290,7 @@ agent.setSubAgentWakeHandler((job) => {
   const declared = getAgentModel(childModel).contextWindow || 64000;
   const slotTokens = typeof subCfg.perSlotContextTokens === 'number' && subCfg.perSlotContextTokens > 0
     ? Math.floor(subCfg.perSlotContextTokens)
-    : Math.floor(declared / (1 + maxSlots));
+    : Math.floor(declared * 0.5);
   console.log(
     `[tools] spawn_agent ${subCfg.enabled ? 'ENABLED' : 'disabled'} ` +
     `(model=${subCfg.model || 'active'}, maxAgentSlots=${rawSlots}, perSlotContext=${slotTokens} tokens)`,
@@ -272,15 +299,14 @@ agent.setSubAgentWakeHandler((job) => {
     const background = subCfg.background !== false;
     console.log(
       `[tools] sub-agent mode: ${background ? 'background (spawn returns immediately; reports auto-delivered)' : 'blocking'} ` +
-      `wakeOnComplete=${subCfg.wakeOnComplete === true} maxQueued=${subCfg.maxQueued ?? 8}`,
+      `wakeOnComplete=${subCfg.wakeOnComplete !== false} maxQueued=${subCfg.maxQueued ?? 8}`,
     );
     if (rawSlots < 1) {
       console.log('[tools] maxAgentSlots=0 → sub-agents run one at a time (no parallel capacity beyond the main agent)');
     }
     console.log(
-      `[tools] server sizing: keep llama.cpp --parallel at maxAgentSlots + 1 (= ${1 + maxSlots}) ` +
-      `and -c at least ${(1 + maxSlots) * slotTokens} (${1 + maxSlots} slots x ${slotTokens} tokens)` +
-      (subCfg.perSlotContextTokens ? '' : '; set subAgents.perSlotContextTokens if your per-slot window differs'),
+      `[tools] server sizing: llama.cpp --parallel should cover main + maxAgentSlots (= ${1 + maxSlots}); ` +
+      `each child may use ${slotTokens} tokens, so worst-case KV is ${maxSlots} x ${slotTokens} = ${maxSlots * slotTokens}`,
     );
   }
 }
@@ -366,6 +392,11 @@ function deleteSessionById(id: string): void {
   // Background sub-agents belong to the session that spawned them.
   const cancelled = agent.cancelSessionSubAgents(id);
   if (cancelled > 0) console.log(`[subagent] cancelled ${cancelled} agent(s) for deleted session ${id}`);
+  const timer = wakeTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    wakeTimers.delete(id);
+  }
   sessions.delete(id);
   try {
     const filePath = path.join(sessionDataDir, `${id}.json`);
