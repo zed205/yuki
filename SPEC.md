@@ -143,7 +143,6 @@ YukiWeb is a personal AI agent application with a web-based interface, designed 
     "maxAgentSlots": 3,
     "background": true,
     "maxQueued": 8,
-    "maxRuntimeMs": 0,
     "model": "",
     "perSlotContextTokens": 128000
   }

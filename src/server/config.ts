@@ -25,7 +25,6 @@ const defaultSubAgentConfig: SubAgentConfig = {
   maxAgentSlots: 4,
   background: true,
   maxQueued: 8,
-  maxRuntimeMs: 0,
 };
 
 const defaultObserverConfig: ObserverConfig = {

@@ -144,8 +144,6 @@ export interface SubAgentConfig {
   background?: boolean;
   /** Maximum number of sub-agents allowed to wait for a free slot (default 8). */
   maxQueued?: number;
-  /** Hard wall-clock limit per sub-agent in ms (0 = unlimited, default 0). */
-  maxRuntimeMs?: number;
 }
 
 export interface ObserverConfig {

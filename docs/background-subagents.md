@@ -83,7 +83,6 @@ per-child window does not cost a large prompt every turn. Override
   "maxAgentSlots": 3,
   "background": true,
   "maxQueued": 8,
-  "maxRuntimeMs": 0,
   "perSlotContextTokens": 128000
 }
 ```

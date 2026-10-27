@@ -38,8 +38,6 @@ export interface SubAgentJob {
   abort: AbortController;
   /** Completion callbacks (internal). */
   waiters: Array<() => void>;
-  timedOut: boolean;
-  runtimeTimer?: NodeJS.Timeout;
 }
 
 /** Emitted so the agent can push UI events without the registry knowing about sockets. */
@@ -147,7 +145,6 @@ export function createSubAgent(
     delivered: false,
     abort: new AbortController(),
     waiters: [],
-    timedOut: false,
   };
 
   jobs.set(id, job);
@@ -173,21 +170,9 @@ function launch(job: SubAgentJob): void {
   running++;
   notify('started', job);
 
-  const cfg = getSubAgentConfig();
-  const maxRuntimeMs = Math.max(0, Math.floor(Number(cfg.maxRuntimeMs) || 0));
-  if (maxRuntimeMs > 0) {
-    job.runtimeTimer = setTimeout(() => {
-      if (isTerminal(job)) return;
-      job.timedOut = true;
-      job.abort.abort();
-    }, maxRuntimeMs);
-  }
-
   starter(job).then(
     (report) => {
-      if (job.timedOut) {
-        finish(job, 'error', undefined, `timed out after ${maxRuntimeMs}ms`);
-      } else if (job.abort.signal.aborted) {
+      if (job.abort.signal.aborted) {
         finish(job, 'cancelled', undefined, 'cancelled');
       } else {
         finish(job, 'completed', report);
@@ -195,9 +180,7 @@ function launch(job: SubAgentJob): void {
     },
     (err) => {
       const message = err?.message || String(err);
-      if (job.timedOut) {
-        finish(job, 'error', undefined, `timed out after ${maxRuntimeMs}ms`);
-      } else if (job.abort.signal.aborted) {
+      if (job.abort.signal.aborted) {
         finish(job, 'cancelled', undefined, 'cancelled');
       } else {
         finish(job, 'error', undefined, message);
@@ -222,10 +205,6 @@ function finish(
   job.endedAt = Date.now();
   job.report = report;
   job.error = error;
-  if (job.runtimeTimer) {
-    clearTimeout(job.runtimeTimer);
-    job.runtimeTimer = undefined;
-  }
   starters.delete(job.id);
   if (wasRunning) running = Math.max(0, running - 1);
 
