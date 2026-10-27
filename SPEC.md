@@ -46,6 +46,23 @@ YukiWeb is a personal AI agent application with a web-based interface, designed 
   - `skill_save(name, description, instructions)` — create/update a skill
   - `skill_delete(name)` — remove a skill
 
+### 8. Background Sub-Agents
+- `spawn_agent(description, task, wait?)` — delegate a self-contained task to a focused
+  sub-agent with its own isolated context and tool loop
+- **Non-blocking by default**: the call returns an agent id immediately; the main agent
+  keeps working while sub-agents run and can spawn more as slots free up
+- Up to `subAgents.maxAgentSlots` sub-agents run concurrently (main agent excluded);
+  additional spawns queue FIFO up to `subAgents.maxQueued`
+- Finished reports are injected into the parent's context automatically; optional
+  `wakeOnComplete` starts a turn when the parent is idle
+- `agent_result(agentId, wait_ms)` — collect a report explicitly (bounded wait)
+- `agent_list()` — status, elapsed time, queue position, free slots
+- `agent_kill(agentId)` — cancel one agent (also available from the UI panel)
+- Sub-agents cannot spawn or manage other sub-agents (one level deep)
+- Each agent has its own abort controller, model client, project-path snapshot, and
+  durable shell cwd; browser/desktop actions are serialized by mutexes
+- See `docs/background-subagents.md` for architecture and sizing details
+
 ## Architecture
 
 ### Backend (Node.js)
@@ -115,6 +132,16 @@ YukiWeb is a personal AI agent application with a web-based interface, designed 
     "minTurns": 3,
     "toolOutputPruning": false,
     "pruningSummary": "[Tool output pruned for context optimization]"
+  },
+  "subAgents": {
+    "enabled": true,
+    "maxAgentSlots": 3,
+    "background": true,
+    "wakeOnComplete": false,
+    "maxQueued": 8,
+    "maxRuntimeMs": 0,
+    "model": "",
+    "perSlotContextTokens": 64000
   }
 }
 ```
@@ -138,7 +165,8 @@ YukiWeb/
 │   │   ├── index.ts        # Server entry point, Express + WebSocket
 │   │   ├── config.ts       # Configuration management with deep-merge
 │   │   ├── agent.ts        # Agent orchestration + context management
-│   │   ├── tools.ts        # 27 tool implementations + LLM tool definitions
+│   │   ├── subagents.ts    # Background sub-agent registry (slots, queue, results)
+│   │   ├── tools.ts        # Tool implementations + LLM tool definitions
 │   │   ├── memory.ts       # Persistent key-value memory store
 │   │   ├── skill.ts        # Skill file management
 │   │   ├── audio.ts        # Audio pipeline (STT/TTS)
@@ -188,6 +216,7 @@ All real-time communication uses a JSON message protocol over a single WebSocket
 | `chat:message` | `{message, images?}` | Send user message (text + optional base64 images) |
 | `chat:stop` | `{}` | Cancel current agent execution |
 | `session:switch` | `{sessionId}` | Switch to a different session |
+| `subagent:kill` | `{agentId}` | Cancel a running or queued sub-agent |
 
 ### Server → Client
 | Type | Data | Description |
@@ -199,6 +228,17 @@ All real-time communication uses a JSON message protocol over a single WebSocket
 | `chat:stopped` | `{}` | Agent execution was cancelled |
 | `tool:call` | `{toolCall}` | A tool has started execution |
 | `tool:result` | `{toolCallId, result, status}` | Tool execution result |
+| `subagent:spawn` | `{agentId, description, task, model, status, slotsInUse, maxSlots, queuePosition?}` | Sub-agent created (immediately, or queued) |
+| `subagent:status` | `{agentId, status, slotsInUse, maxSlots, queued}` | Queued agent started running |
+| `subagent:thinking` / `subagent:chunk` | `{agentId, chunk}` | Child reasoning/content stream |
+| `subagent:tool_call` / `subagent:tool_result` | `{agentId, toolCall…}` | Child tool activity |
+| `subagent:response` | `{agentId, message}` | Child's final report text |
+| `subagent:done` | `{agentId, status, durationMs, report?, error?}` | Child reached a terminal state |
+| `subagent:list` | `{slots, running, queued, agents[]}` | Snapshot sent on connect/session switch |
+| `subagent:results-pending` | `{agentId, pending, willInject?}` | Report waiting for injection/wake |
+| `subagent:results-delivered` | `{agentIds[]}` | Reports injected into the parent's context |
+| `subagent:wake` | `{agentId, description, status}` | A finished agent started an idle turn |
+| `subagent:kill-result` | `{agentId, ok}` | Result of a UI-initiated cancel |
 | `session:switched` | `{sessionId}` | Session switch confirmed |
 | `session:cleared` | `{}` | Current session cleared |
 

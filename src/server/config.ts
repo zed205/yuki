@@ -23,6 +23,10 @@ const defaultModelConfig: ModelConfig = {
 const defaultSubAgentConfig: SubAgentConfig = {
   enabled: false,
   maxAgentSlots: 4,
+  background: true,
+  wakeOnComplete: false,
+  maxQueued: 8,
+  maxRuntimeMs: 0,
 };
 
 const defaultObserverConfig: ObserverConfig = {

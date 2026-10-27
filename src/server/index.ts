@@ -7,7 +7,7 @@ import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
 import { DesktopAutomation } from './automation';
 import { MCPManager } from './mcp';
-import { toolNames } from './tools';
+import { toolNames, subAgentToolNames } from './tools';
 import { planGet, loadPlans } from './plan';
 import { loadProjects, getProjects, getProject, createProject, renameProject, deleteProject, reorderProjects } from './project';
 import { Session, Message, Attachment } from '../shared/types';
@@ -214,6 +214,47 @@ const agent = new Agent();
 agent.setServices(audioPipeline, browserAutomation, desktopAutomation, mcpManager);
 agent.initToolDefaults();
 
+/** Latest session per socket, used to route background agent events + wakes. */
+const sessionSockets = new Map<WebSocket, string>();
+
+/**
+ * Optional wake-on-complete: when a background sub-agent finishes while the
+ * main agent is idle and its session is visible, start a turn so the model can
+ * report the result. Reports themselves are injected by Agent.chat() via the
+ * undelivered-results queue, not by this prompt.
+ */
+agent.setSubAgentWakeHandler((job) => {
+  if (agent.isRunning || !getSubAgentConfig().wakeOnComplete) return;
+  // The report may already have been collected with agent_result; don't wake
+  // for a turn with nothing new to say.
+  if (!agent.hasPendingSubAgentResults(job.sessionId)) return;
+  const session = sessions.get(job.sessionId);
+  if (!session) return;
+  const entry = Array.from(sessionSockets.entries()).find(([, sid]) => sid === job.sessionId);
+  const ws = entry?.[0];
+  if (!ws || ws.readyState !== 1) return; // no visible client — report waits for the next turn
+
+  const prompt = [
+    `[System notice] The background sub-agent "${job.description}" just finished (${job.status}).`,
+    job.status === 'completed'
+      ? 'Its report is attached to this turn as context. Review it, verify anything important, and give the user a concise update.'
+      : `It ended with status ${job.status}${job.error ? ` (${job.error})` : ''}. Tell the user what happened and whether anything needs retrying.`,
+    'Do not spawn an identical sub-agent again.',
+  ].join(' ');
+
+  try {
+    ws.send(JSON.stringify({
+      type: 'subagent:wake',
+      data: { sessionId: job.sessionId, agentId: job.id, description: job.description, status: job.status },
+    }));
+  } catch { /* client may be gone */ }
+
+  console.log(`[subagent] waking session ${job.sessionId} for finished agent ${job.id}`);
+  agent.chat(prompt, session, ws)
+    .then(() => saveSession(session))
+    .catch(err => console.error('[subagent] wake turn failed:', err));
+});
+
 {
   const subCfg = getSubAgentConfig();
   const rawSlots = Math.floor(subCfg.maxAgentSlots || 0);
@@ -228,6 +269,11 @@ agent.initToolDefaults();
     `(model=${subCfg.model || 'active'}, maxAgentSlots=${rawSlots}, perSlotContext=${slotTokens} tokens)`,
   );
   if (subCfg.enabled) {
+    const background = subCfg.background !== false;
+    console.log(
+      `[tools] sub-agent mode: ${background ? 'background (spawn returns immediately; reports auto-delivered)' : 'blocking'} ` +
+      `wakeOnComplete=${subCfg.wakeOnComplete === true} maxQueued=${subCfg.maxQueued ?? 8}`,
+    );
     if (rawSlots < 1) {
       console.log('[tools] maxAgentSlots=0 → sub-agents run one at a time (no parallel capacity beyond the main agent)');
     }
@@ -317,6 +363,9 @@ app.post('/api/sessions', (req, res) => {
 
 function deleteSessionById(id: string): void {
   if (!sessions.has(id)) return;
+  // Background sub-agents belong to the session that spawned them.
+  const cancelled = agent.cancelSessionSubAgents(id);
+  if (cancelled > 0) console.log(`[subagent] cancelled ${cancelled} agent(s) for deleted session ${id}`);
   sessions.delete(id);
   try {
     const filePath = path.join(sessionDataDir, `${id}.json`);
@@ -594,7 +643,7 @@ function getEnabledToolsForSession(session: Session): Array<{ name: string; enab
   const subAgentsEnabled = getSubAgentConfig().enabled === true;
   return toolNames.map(name => ({
     name,
-    enabled: (name !== 'spawn_agent' || subAgentsEnabled) && !configDisabled.has(name) && !sessionDisabled.has(name),
+    enabled: (!subAgentToolNames.includes(name) || subAgentsEnabled) && !configDisabled.has(name) && !sessionDisabled.has(name),
   }));
 }
 
@@ -647,6 +696,13 @@ wss.on('connection', (ws) => {
       models: allModels,
       activeModel: getActiveModelName(),
     },
+  }));
+
+  sessionSockets.set(ws, session.id);
+  agent.bindClient(session.id, ws);
+  ws.send(JSON.stringify({
+    type: 'subagent:list',
+    data: { ...agent.getSubAgentSnapshot(session.id), sessionId: session.id },
   }));
 
   ws.send(JSON.stringify({
@@ -790,9 +846,15 @@ wss.on('connection', (ws) => {
         if (id && sessions.has(id)) {
           activeSessionId = id;
           const switchedSession = sessions.get(id)!;
+          sessionSockets.set(ws, id);
+          agent.bindClient(id, ws);
           ws.send(JSON.stringify({
             type: 'session:switched',
             data: { sessionId: id, projectId: switchedSession.projectId, thinkingEnabled: getEffectiveThinking(), voiceMode: switchedSession.voiceMode === true },
+          }));
+          ws.send(JSON.stringify({
+            type: 'subagent:list',
+            data: { ...agent.getSubAgentSnapshot(id), sessionId: id },
           }));
           sendPlanUpdate(ws, id);
           sendContextUpdate(ws, switchedSession);
@@ -847,6 +909,16 @@ wss.on('connection', (ws) => {
           type: 'chat:stopped',
           data: { sessionId: session.id },
         }));
+      }
+
+      if (message.type === 'subagent:kill') {
+        const agentId = String(message.data?.agentId || '');
+        const ok = agent.cancelSubAgentById(agentId);
+        ws.send(JSON.stringify({
+          type: 'subagent:kill-result',
+          data: { agentId, ok, sessionId: session.id },
+        }));
+        return;
       }
 
       if (message.type === 'thinking:toggle') {
@@ -1022,6 +1094,11 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('Client disconnected');
+    // Drop only the session mapping still pointing at this socket; background
+    // agents keep running and their reports wait for the next client/turn.
+    for (const [socket, sessionId] of sessionSockets.entries()) {
+      if (socket === ws) sessionSockets.delete(socket);
+    }
   });
 });
 

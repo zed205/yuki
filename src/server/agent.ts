@@ -4,10 +4,10 @@ import * as path from 'path';
 import OpenAI from 'openai';
 import { WebSocket } from 'ws';
 import { getConfig } from './config';
-import { tools, toolDefinitions, planToolNames, truncateOutput } from './tools';
+import { tools, toolDefinitions, planToolNames, subAgentToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
-import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getConfigPath } from './config';
+import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig } from './config';
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -27,6 +27,28 @@ import {
   textTokens,
 } from './context-budget';
 import { normalizeLineEndings, trimLineEndings } from './utils/line-endings';
+import {
+  SubAgentJob,
+  cancelAllSubAgents,
+  cancelSubAgent,
+  cancelSubAgentsForSession,
+  createSubAgent,
+  describeSubAgent,
+  elapsedMs,
+  formatSubAgentResults,
+  getSubAgent,
+  hasUndeliveredResults,
+  isTerminal,
+  listSubAgents,
+  markSubAgentDelivered,
+  maxSubAgentSlots,
+  queuedSubAgentCount,
+  runningSubAgentCount,
+  setSubAgentListener,
+  subAgentQueuePosition,
+  takeUndeliveredResults,
+  waitForSubAgent,
+} from './subagents';
 
 export const SUMMARY_PREFIX = 'Summary of previous conversation:';
 
@@ -85,18 +107,18 @@ const IMAGE_RESULT_TOOLS = new Set([
 ]);
 
 /**
- * Tools a sub-agent may not use. Spawning is excluded so agents cannot recurse,
- * plan/attachment tools are excluded because they operate on the parent's
- * session state rather than the sub-agent's own task.
+ * Tools a sub-agent may not use. Spawning/agent-management is excluded so
+ * agents cannot recurse or manage their siblings, plan/attachment tools are
+ * excluded because they operate on the parent's session state rather than the
+ * sub-agent's own task.
  */
 const SUBAGENT_TOOL_EXCLUSIONS = [
-  'spawn_agent',
+  ...subAgentToolNames,
   'plan_create', 'plan_update', 'plan_get', 'plan_remove',
   'attachment_list', 'save_attached_file',
 ];
 
-/** Process-wide count of running sub-agents, bounded by subAgents.maxAgentSlots. */
-let activeSubAgentSlots = 0;
+/** Process-wide count of running sub-agents is owned by subagents.ts. */
 
 /**
  * Serializes work against a single stateful service (one browser page, one
@@ -192,13 +214,23 @@ export class Agent {
   private observerTurnCount = 0;
   currentProjectPath: string = '';
   currentModelName: string = '';
-  private openai: OpenAI | null = null;
+  /** One client per model, so concurrent agents never thrash a shared client. */
+  private clients: Map<string, OpenAI> = new Map();
   private lastRequestChars = 0;
   private toolDefsChars: number | null = null;
   private currentWs: WebSocket | null = null;
+  private currentSessionId: string | null = null;
+  /** Live socket per session, so background agents survive reconnects/switches. */
+  private wsBySession: Map<string, WebSocket> = new Map();
+  /** Optional hook used by index.ts to start a turn when a background agent finishes. */
+  private subAgentWakeHandler: ((job: SubAgentJob) => void) | null = null;
   // Shared stateful services: serialize them across concurrent sub-agents.
   private readonly browserMutex = new Mutex();
   private readonly desktopMutex = new Mutex();
+
+  constructor() {
+    setSubAgentListener((change, job) => this.handleSubAgentChange(change, job));
+  }
 
   setToolEnabled(name: string, enabled: boolean) {
     if (enabled) {
@@ -216,6 +248,9 @@ export class Agent {
   stop() {
     this.cancelled = true;
     this.abortController?.abort();
+    // A user-visible "stop" means stop everything, including delegated work.
+    const cancelled = cancelAllSubAgents('cancelled by user');
+    if (cancelled > 0) console.log(`[subagent] cancelled ${cancelled} running/queued sub-agent(s)`);
   }
   /** True while a chat turn (including steered continuations) is in flight. */
   get isRunning(): boolean {
@@ -354,6 +389,8 @@ export class Agent {
     this.pendingSteers = [];
     this.currentAttachments = attachments || [];
     this.currentWs = ws;
+    this.currentSessionId = session.id;
+    this.bindClient(session.id, ws);
     this.abortController = new AbortController();
     const config = { ...getConfig() };
     let systemPrompt = session.messages.find(m => m.role === 'system' && !this.isSummaryMessage(m))?.content || '';
@@ -380,6 +417,10 @@ export class Agent {
     // rebuilds replay the steer, not the stale original.
     let turnUserMessage = userMessage;
     let turnImages = images;
+    // Background reports consumed during this turn. Held outside the loop so a
+    // mid-turn compaction (which rebuilds `messages`) does not drop them.
+    let reportBlock = '';
+    let reportBlockPending = false;
     const cfgIter = getConfig().maxToolIterations;
     const maxIterations = cfgIter === -1 ? Infinity : (cfgIter || 10);
 
@@ -390,6 +431,25 @@ export class Agent {
         this.pendingSteers = [];
         this.cancelled = false;
         return;
+      }
+
+      // Deliver finished background sub-agent reports as context. This is the
+      // push half of the background model: the parent never has to poll, and a
+      // report is consumed exactly once.
+      const finished = takeUndeliveredResults(session.id);
+      if (finished.length > 0) {
+        console.log(`[subagent] injecting ${finished.length} finished report(s) into session ${session.id}`);
+        this.sendToClient(ws, 'subagent:results-delivered', {
+          agentIds: finished.map(j => j.id),
+          sessionId: session.id,
+        });
+        const block = formatSubAgentResults(finished);
+        reportBlock = reportBlock ? `${reportBlock}\n\n${block}` : block;
+        reportBlockPending = true;
+      }
+      if (reportBlock && reportBlockPending) {
+        messages.push({ role: 'user', content: reportBlock });
+        reportBlockPending = false;
       }
 
       // Drain steering messages queued while the model was working. The steer
@@ -426,6 +486,8 @@ export class Agent {
       if (guard === 'compacted') {
         midTurnCompactions++;
         messages = this.buildRequestMessages(session, config, turnUserMessage, turnImages, systemPrompt);
+        // The rebuild drops the injected report block; re-attach it next pass.
+        reportBlockPending = reportBlock.length > 0;
         continue;
       }
 
@@ -446,7 +508,6 @@ export class Agent {
         if (backupName && backupName !== getActiveModelName()) {
           console.log(`[agent] primary model failed, falling back to backup: ${backupName}`);
           setActiveModelName(backupName);
-          this.openai = null;
           response = await this.callLLM(messages, config, this.abortController?.signal,
             (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
             (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
@@ -683,20 +744,22 @@ export class Agent {
   }
 
   resetClient(): void {
-    this.openai = null;
+    this.clients.clear();
   }
 
   private getOpenAI(modelName?: string): OpenAI {
     const target = modelName || getActiveModelName() || this.currentModelName;
-    const agentCfg = getAgentModel(target);
-    if (!this.openai || this.currentModelName !== target) {
-      this.currentModelName = target;
-      this.openai = new OpenAI({
+    let client = this.clients.get(target);
+    if (!client) {
+      const agentCfg = getAgentModel(target);
+      client = new OpenAI({
         baseURL: agentCfg.endpoint,
         apiKey: agentCfg.apiKey || '',
       });
+      this.clients.set(target, client);
     }
-    return this.openai;
+    this.currentModelName = target;
+    return client;
   }
 
 
@@ -742,16 +805,19 @@ export class Agent {
       let enabledTools = toolDefinitions.filter(t => {
         const name = t.function.name;
         if (combinedDisabled.has(name)) return false;
-        // spawn_agent is only offered while sub-agents are enabled in config.
-        if (name === 'spawn_agent' && !subAgentsEnabled) return false;
+        // Sub-agent tooling is only offered while sub-agents are enabled.
+        if (subAgentToolNames.includes(name) && !subAgentsEnabled) return false;
         return true;
       }).map(t => {
         if (t.function.name !== 'spawn_agent') return t;
+        const mode = getSubAgentConfig().background !== false
+          ? `It returns an agent id immediately; up to ${maxSubAgents} run at once and extra spawns are queued. Reports are delivered automatically when they finish — do not poll.`
+          : `The call blocks until the report is ready; up to ${maxSubAgents} sub-agent(s) may run at the same time.`;
         return {
           ...t,
           function: {
             ...t.function,
-            description: `${t.function.description} Up to ${maxSubAgents} sub-agent(s) may run at the same time. Independent spawn_agent calls emitted in the SAME response run in parallel; calls beyond ${maxSubAgents} in one response are rejected, so batch at most ${maxSubAgents} per response.`,
+            description: `${t.function.description} ${mode}`,
           },
         };
       });
@@ -912,7 +978,7 @@ export class Agent {
       let result: string;
       let status: 'completed' | 'error';
       try {
-        result = await this.executeTool(toolCall, sessionId);
+        result = await this.executeTool(toolCall, sessionId, this.currentProjectPath, sessionId || 'main');
         status = 'completed';
       } catch (err: any) {
         result = `Error: ${err.message}`;
@@ -946,20 +1012,26 @@ export class Agent {
    * Route calls that drive a single shared service through its mutex so
    * concurrent sub-agents cannot interleave browser/desktop actions.
    */
-  private async executeTool(toolCall: ToolCall, sessionId?: string): Promise<string> {
+  private async executeTool(toolCall: ToolCall, sessionId?: string, projectPath?: string, cwdScope?: string): Promise<string> {
     const name = toolCall.name.toLowerCase();
     if (name.startsWith('browser_')) {
-      return this.browserMutex.run(() => this.executeToolInner(toolCall, sessionId));
+      return this.browserMutex.run(() => this.executeToolInner(toolCall, sessionId, projectPath, cwdScope));
     }
     if (name.startsWith('desktop_')) {
-      return this.desktopMutex.run(() => this.executeToolInner(toolCall, sessionId));
+      return this.desktopMutex.run(() => this.executeToolInner(toolCall, sessionId, projectPath, cwdScope));
     }
-    return this.executeToolInner(toolCall, sessionId);
+    return this.executeToolInner(toolCall, sessionId, projectPath, cwdScope);
   }
 
-  private async executeToolInner(toolCall: ToolCall, sessionId?: string): Promise<string> {
+  private async executeToolInner(toolCall: ToolCall, sessionId?: string, projectPath?: string, cwdScope?: string): Promise<string> {
     const toolName = toolCall.name.toLowerCase();
     const params = toolCall.parameters;
+
+    // Hard guard: no session means this call came from a sub-agent. Child agents
+    // must not inspect or cancel their siblings even if they hallucinate a call.
+    if (!sessionId && (toolName === 'agent_result' || toolName === 'agent_list' || toolName === 'agent_kill')) {
+      return 'Error: sub-agents cannot manage other sub-agents.';
+    }
 
     if (this.mcp && this.mcp.isMCPTool(toolCall.name)) {
       const result = await this.mcp.callTool(toolCall.name, params);
@@ -1001,7 +1073,12 @@ export class Agent {
         }
       case 'shell':
         {
-          const result = await tools.shell(params.command, params.cwd || this.currentProjectPath || undefined);
+          const result = await tools.shell(
+            params.command,
+            params.cwd,
+            cwdScope,
+            projectPath || this.currentProjectPath || undefined,
+          );
           const maxChars = getConfig().maxToolOutputChars ?? 20000;
           return this._truncateOrReturn(result, maxChars, `shell: ${params.command}`);
         }
@@ -1121,9 +1198,15 @@ export class Agent {
       case 'save_attached_file':
         return await this.saveAttachedFile(params.index, params.filename);
       case 'view_image':
-        return await tools.view_image(params.filePath, this.currentProjectPath || undefined);
+        return await tools.view_image(params.filePath, projectPath || this.currentProjectPath || undefined);
       case 'spawn_agent':
         return await this.spawnSubAgent(params, sessionId);
+      case 'agent_result':
+        return await this.toolAgentResult(params);
+      case 'agent_list':
+        return this.toolAgentList(sessionId);
+      case 'agent_kill':
+        return this.toolAgentKill(params);
       default:
         return `Unknown tool: ${toolCall.name}`;
     }
@@ -1134,9 +1217,90 @@ export class Agent {
     this.sendToClient(ws, type, data);
   }
 
+  /** Push registry lifecycle changes to the session's live socket. */
+  private handleSubAgentChange(change: 'queued' | 'started' | 'done', job: SubAgentJob): void {
+    const ws = this.wsForSession(job.sessionId);
+    const base = {
+      agentId: job.id,
+      sessionId: job.sessionId,
+      description: job.description,
+      task: job.task,
+      model: job.model,
+      slotsInUse: runningSubAgentCount(),
+      maxSlots: maxSubAgentSlots(),
+      queued: queuedSubAgentCount(),
+    };
+
+    if (change === 'queued') {
+      this.sendAgentEvent(ws, 'subagent:spawn', {
+        ...base,
+        status: 'queued',
+        queuePosition: subAgentQueuePosition(job.id),
+      });
+      return;
+    }
+
+    if (change === 'started') {
+      this.sendAgentEvent(ws, 'subagent:status', {
+        agentId: job.id,
+        sessionId: job.sessionId,
+        description: job.description,
+        task: job.task,
+        model: job.model,
+        status: 'running',
+        startedAt: job.startedAt,
+        slotsInUse: base.slotsInUse,
+        maxSlots: base.maxSlots,
+        queued: base.queued,
+      });
+      return;
+    }
+
+    const durationMs = elapsedMs(job);
+    this.sendAgentEvent(ws, 'subagent:done', {
+      ...base,
+      status: job.status,
+      durationMs,
+      error: job.error,
+      report: job.report,
+      reportPreview: job.report ? job.report.slice(0, 500) : undefined,
+    });
+
+    // A finished report is normally injected at the parent's next iteration.
+    // If the parent is idle, either wake it (opt-in) or tell the UI it is
+    // pending, so the user knows the next turn will include it.
+    if (job.status === 'completed' && !this.running) {
+      if (getSubAgentConfig().wakeOnComplete && this.subAgentWakeHandler) {
+        try {
+          this.subAgentWakeHandler(job);
+        } catch (err: any) {
+          console.error('[subagent] wake handler failed:', err?.message || err);
+        }
+      } else {
+        this.sendAgentEvent(ws, 'subagent:results-pending', {
+          agentId: job.id,
+          sessionId: job.sessionId,
+          description: job.description,
+          pending: hasUndeliveredResults(job.sessionId),
+        });
+      }
+    } else if (job.status === 'completed' && this.running) {
+      this.sendAgentEvent(ws, 'subagent:results-pending', {
+        agentId: job.id,
+        sessionId: job.sessionId,
+        description: job.description,
+        pending: true,
+        willInject: true,
+      });
+    }
+  }
+
   /**
-   * Run the `spawn_agent` tool. Enforces the configured slot limit and reports
-   * the whole lifecycle to the client so it can render a dedicated agent bubble.
+   * Run the `spawn_agent` tool.
+   *
+   * Background mode (default) registers the job and returns immediately, so the
+   * parent keeps its own turn running while the child works. `wait: true`
+   * restores the old blocking behaviour and returns the report inline.
    */
   private async spawnSubAgent(params: Record<string, any>, sessionId?: string): Promise<string> {
     const cfg = getSubAgentConfig();
@@ -1148,23 +1312,6 @@ export class Agent {
       return 'Error: sub-agents are not allowed to spawn other sub-agents.';
     }
 
-    const maxSlots = Math.max(1, Math.floor(cfg.maxAgentSlots || 1));
-    if (activeSubAgentSlots >= maxSlots) {
-      // Model-facing text stays purely behavioral: the model cannot change
-      // server flags or edit config.json. Operator sizing guidance is logged
-      // to the console instead, where the human reads it.
-      console.warn(
-        `[subagent] refused spawn: ${activeSubAgentSlots}/${maxSlots} slot(s) in use ` +
-        `(subAgents.maxAgentSlots=${maxSlots} in ${getConfigPath()}). ` +
-        `Server sizing: --parallel must be maxAgentSlots + 1 (currently ${maxSlots + 1}).`,
-      );
-      return [
-        `Error: cannot spawn a sub-agent â€” ${activeSubAgentSlots} of ${maxSlots} sub-agent slot(s) are already in use.`,
-        `If you emitted several spawn_agent calls in one response, emit at most ${maxSlots} per response;`,
-        `otherwise wait for a running sub-agent to finish.`,
-      ].join(' ');
-    }
-
     const task = typeof params.task === 'string' ? params.task.trim() : '';
     if (!task) {
       return 'Error: spawn_agent requires a non-empty "task" describing what the sub-agent should do.';
@@ -1174,49 +1321,163 @@ export class Agent {
       : task.slice(0, 80).replace(/\s+/g, ' ');
 
     const modelName = cfg.model?.trim() || getActiveModelName();
-    const agentId = `agent_${this.generateId()}`;
-    const ws = this.currentWs;
-    const startedAt = Date.now();
+    const background = cfg.background !== false;
+    const explicitWait = params.wait === true || params.wait === 'true'
+      ? true
+      : (params.wait === false || params.wait === 'false' ? false : undefined);
+    const wait = explicitWait === undefined ? !background : explicitWait;
 
-    activeSubAgentSlots++;
-    this.sendAgentEvent(ws, 'subagent:spawn', {
-      agentId,
-      sessionId,
-      description,
-      task,
-      model: modelName,
-      slotsInUse: activeSubAgentSlots,
-      maxSlots,
-    });
-
+    let job: SubAgentJob;
     try {
-      const report = await this.runSubAgentLoop(agentId, task, description, modelName, ws);
-      const durationMs = Date.now() - startedAt;
-      if (this.cancelled) {
-        this.sendAgentEvent(ws, 'subagent:done', { agentId, sessionId, status: 'cancelled', durationMs });
-        return 'Sub-agent cancelled.';
-      }
-      this.sendAgentEvent(ws, 'subagent:done', { agentId, sessionId, status: 'completed', durationMs });
-      return `Sub-agent "${description}" completed in ${(durationMs / 1000).toFixed(1)}s.\n\n${report}`;
+      job = createSubAgent(
+        {
+          sessionId,
+          description,
+          task,
+          model: modelName,
+          // Snapshot the project now: the parent may switch projects while the
+          // child is still running.
+          projectPath: this.currentProjectPath,
+        },
+        (created) => this.runSubAgentLoop(created),
+      );
     } catch (err: any) {
-      const message = err?.message || String(err);
-      this.sendAgentEvent(ws, 'subagent:done', {
-        agentId,
-        sessionId,
-        status: this.cancelled ? 'cancelled' : 'error',
-        durationMs: Date.now() - startedAt,
-        error: message,
-      });
-      return this.cancelled
-        ? 'Sub-agent cancelled.'
-        : `Sub-agent "${description}" failed: ${message}`;
-    } finally {
-      activeSubAgentSlots = Math.max(0, activeSubAgentSlots - 1);
-      // The child may have used a different model. Force the parent's next
-      // request to resolve back through the active model/client.
-      this.currentModelName = getActiveModelName();
-      this.openai = null;
+      return `Error: ${err?.message || String(err)}`;
     }
+
+    if (!wait) {
+      const state = job.status === 'queued'
+        ? `queued behind ${runningSubAgentCount()} running sub-agent(s)`
+        : 'running in the background';
+      return [
+        `Sub-agent "${description}" is ${state} (id: ${job.id}).`,
+        `Do not poll or wait: continue your own work, and its report will be delivered to you automatically when it finishes.`,
+        `Use agent_result(agentId="${job.id}") to collect it now, agent_list to see capacity, or agent_kill to cancel it.`,
+      ].join(' ');
+    }
+
+    const finished = await waitForSubAgent(job.id, 0);
+    if (!finished) return `Error: sub-agent ${job.id} disappeared before it finished.`;
+    markSubAgentDelivered(job.id);
+    const duration = (elapsedMs(finished) / 1000).toFixed(1);
+
+    if (finished.status === 'completed') {
+      return `Sub-agent "${description}" completed in ${duration}s.\n\n${finished.report || '[no report]'}`;
+    }
+    if (finished.status === 'cancelled') {
+      return `Sub-agent "${description}" was cancelled${finished.error ? `: ${finished.error}` : '.'}`;
+    }
+    if (finished.status === 'queued' || finished.status === 'running') {
+      return `Sub-agent "${description}" is still ${finished.status} (id: ${job.id}). Its report will arrive automatically.`;
+    }
+    return `Sub-agent "${description}" failed after ${duration}s: ${finished.error || 'unknown error'}`;
+  }
+
+  /** Model-facing `agent_result`: collect (or briefly wait for) a report. */
+  private async toolAgentResult(params: Record<string, any>): Promise<string> {
+    const id = String(params.agentId ?? '').trim();
+    if (!id) return 'Error: agent_result requires "agentId". Call agent_list to see known agent ids.';
+
+    let job = getSubAgent(id);
+    if (!job) return `Error: no sub-agent with id "${id}". Call agent_list to see known agents.`;
+
+    const waitMs = Math.max(0, Math.min(Number(params.wait_ms) || 0, 600000));
+    if (!isTerminal(job) && waitMs > 0) {
+      job = (await waitForSubAgent(id, waitMs)) || job;
+    }
+
+    if (!isTerminal(job)) {
+      const where = job.status === 'queued'
+        ? `queued (position ${subAgentQueuePosition(id)})`
+        : 'still running';
+      return `Sub-agent "${job.description}" (${id}) is ${where} after ${Math.round(elapsedMs(job) / 1000)}s. ` +
+        'Its report will be delivered automatically when it finishes; no need to poll.';
+    }
+
+    markSubAgentDelivered(id);
+    const secs = (elapsedMs(job) / 1000).toFixed(1);
+    if (job.status === 'completed') {
+      return `Sub-agent "${job.description}" completed in ${secs}s.\n\n${job.report || '[no report]'}`;
+    }
+    if (job.status === 'cancelled') {
+      return `Sub-agent "${job.description}" was cancelled${job.error ? `: ${job.error}` : '.'}`;
+    }
+    return `Sub-agent "${job.description}" failed after ${secs}s: ${job.error || 'unknown error'}`;
+  }
+
+  /** Model-facing `agent_list`: status + slot capacity for this session. */
+  private toolAgentList(sessionId?: string): string {
+    const jobs = listSubAgents(sessionId);
+    const payload = {
+      slots: maxSubAgentSlots(),
+      running: runningSubAgentCount(),
+      queued: queuedSubAgentCount(),
+      freeSlots: Math.max(0, maxSubAgentSlots() - runningSubAgentCount()),
+      backgroundMode: getSubAgentConfig().background !== false,
+      agents: jobs.map(describeSubAgent),
+    };
+    return JSON.stringify(payload, null, 2);
+  }
+
+  /** Model-facing `agent_kill`: cancel one running or queued sub-agent. */
+  private toolAgentKill(params: Record<string, any>): string {
+    const id = String(params.agentId ?? '').trim();
+    if (!id) return 'Error: agent_kill requires "agentId". Call agent_list to see known agent ids.';
+    const job = getSubAgent(id);
+    if (!job) return `Error: no sub-agent with id "${id}".`;
+    if (isTerminal(job)) {
+      return `Sub-agent "${job.description}" (${id}) already finished with status ${job.status}.`;
+    }
+    cancelSubAgent(id, 'cancelled by the parent agent');
+    return `Cancelling sub-agent "${job.description}" (${id}).`;
+  }
+
+  /** Register a socket for a session so background events follow switches/reconnects. */
+  bindClient(sessionId: string, ws: WebSocket): void {
+    this.wsBySession.set(sessionId, ws);
+    this.currentSessionId = sessionId;
+    this.currentWs = ws;
+  }
+
+  /** True when this session has finished reports the parent has not seen yet. */
+  hasPendingSubAgentResults(sessionId: string): boolean {
+    return hasUndeliveredResults(sessionId);
+  }
+
+  /** UI-initiated cancel from the agent panel. */
+  cancelSubAgentById(agentId: string): boolean {
+    return cancelSubAgent(agentId, 'cancelled by user');
+  }
+
+  /** index.ts hook: auto-start a turn when a background agent finishes while idle. */
+  setSubAgentWakeHandler(fn: (job: SubAgentJob) => void): void {
+    this.subAgentWakeHandler = fn;
+  }
+
+  /** Snapshot used to hydrate the client's agent panel on connect/switch. */
+  getSubAgentSnapshot(sessionId?: string): Record<string, any> {
+    return {
+      slots: maxSubAgentSlots(),
+      running: runningSubAgentCount(),
+      queued: queuedSubAgentCount(),
+      agents: listSubAgents(sessionId).map(describeSubAgent),
+    };
+  }
+
+  /** Cancel every sub-agent owned by a session (session/project deletion). */
+  cancelSessionSubAgents(sessionId: string): number {
+    return cancelSubAgentsForSession(sessionId, 'session closed');
+  }
+
+  private wsForSession(sessionId?: string): WebSocket | null {
+    // Never leak another session's stream into the visible conversation: the
+    // panel rehydrates from subagent:list when the user switches back.
+    if (sessionId && this.currentSessionId && this.currentSessionId !== sessionId) return null;
+    if (sessionId) {
+      const ws = this.wsBySession.get(sessionId);
+      if (ws && ws.readyState === 1) return ws;
+    }
+    return this.currentWs;
   }
 
   /**
@@ -1249,15 +1510,15 @@ export class Agent {
    * browser/desktop services and abort signal, but has an isolated transcript
    * and its own model selection.
    */
-  private async runSubAgentLoop(
-    agentId: string,
-    task: string,
-    description: string,
-    modelName: string,
-    ws: WebSocket | null,
-  ): Promise<string> {
+  private async runSubAgentLoop(job: SubAgentJob): Promise<string> {
+    const { task, description, model: modelName } = job;
+    const agentId = job.id;
+    // Re-resolve the socket per event so a reconnect mid-run does not lose the
+    // child's stream.
+    const emit = (type: string, data: any) =>
+      this.sendAgentEvent(this.wsForSession(job.sessionId), type, data);
     const config = { ...getConfig() };
-    const cwd = this.currentProjectPath || process.cwd();
+    const cwd = job.projectPath || process.cwd();
 
     // Budget against the context this request can actually use (see
     // subAgentContextBudget), and shrink the per-result cap to match: a single
@@ -1307,7 +1568,7 @@ export class Agent {
     let iterations = 0;
 
     while (iterations < maxIterations) {
-      if (this.cancelled) return '[Sub-agent cancelled by user.]';
+      if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
       iterations++;
 
       this.trimSubAgentMessages(messages, budget.tokens);
@@ -1315,9 +1576,9 @@ export class Agent {
       const response = await this.callLLM(
         messages,
         childConfig,
-        this.abortController?.signal,
-        (chunk) => this.sendAgentEvent(ws, 'subagent:thinking', { agentId, chunk }),
-        (chunk) => this.sendAgentEvent(ws, 'subagent:chunk', { agentId, chunk }),
+        job.abort.signal,
+        (chunk) => emit('subagent:thinking', { agentId, chunk }),
+        (chunk) => emit('subagent:chunk', { agentId, chunk }),
         modelName,
         undefined,
         undefined,
@@ -1325,7 +1586,7 @@ export class Agent {
         childMaxOutput,
       );
 
-      if (this.cancelled) return '[Sub-agent cancelled by user.]';
+      if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
         finalContent = response.content || response.reasoningContent || '';
@@ -1347,12 +1608,12 @@ export class Agent {
       messages.push(assistantEntry);
 
       for (const toolCall of response.toolCalls) {
-        if (this.cancelled) return '[Sub-agent cancelled by user.]';
+        if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
         toolCall.status = 'running';
-        this.sendAgentEvent(ws, 'subagent:tool_call', { agentId, toolCall });
+        this.sendAgentEvent(this.wsForSession(job.sessionId), 'subagent:tool_call', { agentId, toolCall });
 
         try {
-          const result = await this.executeTool(toolCall, undefined);
+          const result = await this.executeTool(toolCall, undefined, job.projectPath, job.id);
           toolCall.result = result;
           toolCall.status = 'completed';
         } catch (err: any) {
@@ -1360,7 +1621,7 @@ export class Agent {
           toolCall.status = 'error';
         }
 
-        this.sendAgentEvent(ws, 'subagent:tool_result', {
+        this.sendAgentEvent(this.wsForSession(job.sessionId), 'subagent:tool_result', {
           agentId,
           toolCallId: toolCall.id,
           result: toolCall.result,
@@ -1378,7 +1639,7 @@ export class Agent {
       finalContent = `[Sub-agent stopped after reaching the tool-iteration limit (${maxIterations}).]`;
     }
 
-    this.sendAgentEvent(ws, 'subagent:response', { agentId, message: finalContent });
+    emit('subagent:response', { agentId, message: finalContent });
     return finalContent;
   }
 
@@ -1495,8 +1756,11 @@ export class Agent {
       const planBlock = `\n\n## Planning\nFor tasks requiring 3 or more sequential steps of moderate or higher complexity, you MUST create a plan before proceeding. Use plan_create to define steps, plan_update to mark steps complete, and plan_remove when all work is finished. When all steps are marked as completed or cancelled, you MUST call plan_remove to clear the plan. Do not leave stale plans behind.`;
       const subCfg = getSubAgentConfig();
       const maxSubAgents = Math.max(1, Math.floor(subCfg.maxAgentSlots || 1));
+      const background = subCfg.background !== false;
       const subAgentBlock = subCfg.enabled
-        ? `\n\n## Sub-Agents\nspawn_agent is ENABLED and is present in your tool list for this session. Call it to delegate a self-contained task to a focused sub-agent with its own isolated context and tool loop. Up to ${maxSubAgents} sub-agent(s) can run at the same time. To use that, emit independent spawn_agent calls together in ONE response â€” they are dispatched concurrently, and calls beyond ${maxSubAgents} in the same response are rejected. Spawns in separate responses are sequential. Use sub-agents for deep, narrow work that would otherwise flood this conversation with detail (codebase research, bug investigation, drafting a long document), or for genuinely independent subtasks. The sub-agent cannot ask the user questions, so include every path, constraint, and expected deliverable in its task. Its final report is returned to you as the tool result â€” verify it and summarize it for the user.`
+        ? `\n\n## Sub-Agents\nspawn_agent is ENABLED and is present in your tool list for this session. Call it to delegate a self-contained task to a focused sub-agent with its own isolated context and tool loop. ${background
+            ? `It runs in the BACKGROUND by default: the call returns an agent id immediately and you keep working. Up to ${maxSubAgents} sub-agent(s) run at once; extra spawns queue and start automatically when a slot frees. Reports arrive automatically as context when they finish — do NOT poll or wait for them. Use agent_result to collect one explicitly, agent_list to see capacity, and agent_kill to cancel.`
+            : `The call blocks until the report is ready. Up to ${maxSubAgents} sub-agent(s) may run concurrently.`} Use sub-agents for deep, narrow work that would otherwise flood this conversation with detail (codebase research, bug investigation, drafting a long document), or for genuinely independent subtasks. The sub-agent cannot ask the user questions and cannot spawn further sub-agents, so include every path, constraint, and expected deliverable in its task. Verify its report before relying on it, then summarize it for the user.`
         : '';
       const reasoningNote = '\n\n## Reasoning\nYour previous reasoning is included in the context window inside <think> blocks as part of your assistant messages. You can reference it to maintain continuity. The thinking tag formatting is for your context only â€” the user sees your reasoning through a separate UI toggle, not as raw text.';
       const toolOutputNote = '\n\n## Tool Output Limits\nWhen a tool response says "Output truncated at N lines. Full output saved to: path", you MUST use read(filePath, offset=0, limit=N) to page through results. Never request more output than fits in the limit. This is a hard requirement â€” the content literally isn\'t in the response.';
@@ -1556,8 +1820,11 @@ export class Agent {
     // the tool did not exist yet and wrongly claim it is unavailable.
     const subCfgForNote = getSubAgentConfig();
     const subAgentsForNote = Math.max(1, Math.floor(subCfgForNote.maxAgentSlots || 1));
+    const backgroundForNote = subCfgForNote.background !== false;
     const delegationNote = subCfgForNote.enabled
-      ? `## Delegation\nspawn_agent is enabled and listed in your tools this session (max ${subAgentsForNote} concurrent sub-agent(s)). Do not claim it is unavailable; if delegation would help, call it. To run sub-agents in parallel, emit their spawn_agent calls together in one response (at most ${subAgentsForNote}).\n\n`
+      ? `## Delegation\nspawn_agent is enabled and listed in your tools this session (max ${subAgentsForNote} concurrent sub-agent(s)${backgroundForNote ? ', background mode' : ''}). Do not claim it is unavailable; if delegation would help, call it. ${backgroundForNote
+          ? 'It returns an agent id immediately and its report is delivered automatically when it finishes — continue working instead of polling. Use agent_result to collect one explicitly or agent_list to check capacity.'
+          : `To run sub-agents in parallel, emit their spawn_agent calls together in one response (at most ${subAgentsForNote}).`}\n\n`
       : '';
     const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`;
     if (typeof currentUserContent === 'string') {

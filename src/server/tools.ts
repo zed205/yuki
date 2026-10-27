@@ -10,8 +10,9 @@ import { skillList, skillLoad, skillSave, skillDelete } from './skill';
 import { runShellCommand } from './shell';
 import { normalizeLineEndings } from './utils/line-endings';
 
-// Durable cwd: persists across calls so `cd foo` carries forward.
-let _shellCwd = '';
+// Durable cwds: keyed by session/agent so `cd foo` carries forward per agent
+// without leaking across concurrent sub-agents.
+const shellCwds = new Map<string, string>();
 
 const turndown = new TurndownService({
   headingStyle: 'atx',
@@ -483,15 +484,18 @@ export async function toolViewImage(filePath: string, projectPath?: string): Pro
   }
 }
 
-export async function toolShell(command: string, cwd?: string): Promise<string> {
-  // Resolve durable cwd: explicit param > persisted from previous call > process.cwd()
-  const resolvedCwd = cwd || _shellCwd || process.cwd();
+export async function toolShell(command: string, cwd?: string, scope?: string, defaultCwd?: string): Promise<string> {
+  // Durable cwd is scoped per agent/session: two agents running `cd` at the same
+  // time must not change each other's working directory. Explicit `cwd` wins;
+  // otherwise the agent's persisted cwd, then its project directory.
+  const key = scope || 'default';
+  const resolvedCwd = cwd || shellCwds.get(key) || defaultCwd || process.cwd();
 
   try {
     const result = await runShellCommand(command, resolvedCwd, 30000);
 
     // Persist the directory we ended up in, so `cd` carries across calls.
-    _shellCwd = result.cwd;
+    shellCwds.set(key, result.cwd);
 
     const output = result.stdout || '(no output)';
     const full = result.stderr ? `${output}\n\nSTDERR:\n${result.stderr}` : output;
@@ -722,19 +726,63 @@ export const tools = {
 
 export const planToolNames = ['plan_create', 'plan_update', 'plan_get', 'plan_remove'];
 
+/** Tools that only make sense when sub-agents are enabled (gated in config/UI). */
+export const subAgentToolNames = ['spawn_agent', 'agent_result', 'agent_list', 'agent_kill'];
+
 export const toolDefinitions = [
   {
     type: 'function',
     function: {
       name: 'spawn_agent',
-      description: 'Spawn a focused sub-agent to work autonomously on a self-contained task. The sub-agent has its own isolated context and its own tool loop, and returns a concise report when finished. Use this for deep, self-contained work (researching a codebase, drafting a document, investigating a bug) or work that would otherwise flood the main context with details. The sub-agent cannot ask the user questions and cannot spawn further sub-agents. Give it everything it needs in the task description, and prefer several narrow tasks over one huge one. Independent spawn_agent calls emitted together in a single response run concurrently.',
+      description: 'Spawn a focused sub-agent to work autonomously on a self-contained task. By default the sub-agent runs in the BACKGROUND: the call returns immediately with an agent id, and you keep working while it runs. Its report is delivered to you automatically when it finishes, or you can collect it with agent_result. Use this for deep, self-contained work (researching a codebase, drafting a document, investigating a bug) or work that would otherwise flood the main context with details. The sub-agent cannot ask the user questions and cannot spawn further sub-agents. Give it everything it needs in the task description, and prefer several narrow tasks over one huge one. Independent spawn_agent calls emitted together in a single response start concurrently. Set wait=true only when you cannot make progress until the report arrives.',
       parameters: {
         type: 'object',
         properties: {
           description: { type: 'string', description: 'Short 3-8 word label shown in the UI (e.g. "Investigate login bug")' },
           task: { type: 'string', description: 'Complete, self-contained instructions for the sub-agent: goal, relevant paths/context, constraints, and what the final report should contain.' },
+          wait: { type: 'boolean', description: 'Block this call until the sub-agent finishes and return its report directly. Default false (background).' },
         },
         required: ['description', 'task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'agent_result',
+      description: 'Collect the report of a sub-agent started with spawn_agent. If the agent is still running, pass wait_ms to wait for it (bounded); with wait_ms=0 the call returns its current status immediately. Prefer doing other work and letting reports arrive automatically; use this when you need a specific report now.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'The agent id returned by spawn_agent (e.g. agent_m2x9_ab12cd).' },
+          wait_ms: { type: 'number', description: 'Maximum milliseconds to wait for completion (default 0 = do not wait, max 600000).' },
+        },
+        required: ['agentId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'agent_list',
+      description: 'List sub-agents for the current session with their status, elapsed time, queue position, and free slot capacity. Use this to see what is still running before spawning more work.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'agent_kill',
+      description: 'Cancel a running or queued sub-agent. Use when its task is no longer needed or it is stuck. Its partial work is discarded.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'The agent id returned by spawn_agent.' },
+        },
+        required: ['agentId'],
       },
     },
   },

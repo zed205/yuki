@@ -135,6 +135,22 @@ export interface SubAgentConfig {
   // usually `-c / (1 + maxAgentSlots)`. When omitted, YukiWeb budgets
   // conservatively as model.contextWindow / (1 + maxAgentSlots).
   perSlotContextTokens?: number;
+  /**
+   * When true (default), spawn_agent returns immediately with an agent id and
+   * the sub-agent runs independently of the parent's turn. Set false to restore
+   * blocking spawns (the call waits for the report).
+   */
+  background?: boolean;
+  /**
+   * When true, a finished background sub-agent starts a new turn in its session
+   * while the parent is idle, so the model can report the result unprompted.
+   * Off by default to avoid unexpected token spend.
+   */
+  wakeOnComplete?: boolean;
+  /** Maximum number of sub-agents allowed to wait for a free slot (default 8). */
+  maxQueued?: number;
+  /** Hard wall-clock limit per sub-agent in ms (0 = unlimited, default 0). */
+  maxRuntimeMs?: number;
 }
 
 export interface ObserverConfig {

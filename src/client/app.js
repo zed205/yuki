@@ -85,6 +85,10 @@
   let ttGroup = null;
   // Active sub-agent bubbles, keyed by server-side agentId.
   const agentBubbles = new Map();
+  // Background sub-agent panel state (server snapshot + local tick base).
+  let subAgentSnapshot = { slots: 0, running: 0, queued: 0, agents: [] };
+  // Last snapshot per session, replayed after an async message reload wipes the feed.
+  const subAgentSnapshots = new Map();
   let enableImagePaste = false;
   let connectedConfig = {};
   // Desktop notifications (completion alerts) — default on, synced from server config
@@ -681,6 +685,40 @@
 
       case 'subagent:spawn':
         showAgentSpawn(data.data);
+        upsertSnapshotAgent(data.data);
+        renderAgentPanel();
+        break;
+
+      case 'subagent:status':
+        agentStatusChanged(data.data);
+        upsertSnapshotAgent(data.data);
+        renderAgentPanel();
+        break;
+
+      case 'subagent:list':
+        applySubAgentList(data.data);
+        break;
+
+      case 'subagent:results-pending':
+        markAgentResultsPending(data.data);
+        break;
+
+      case 'subagent:results-delivered':
+        clearAgentResultsPending(data.data);
+        break;
+
+      case 'subagent:kill-result':
+        if (data.data && data.data.ok) {
+          const killed = (subAgentSnapshot.agents || []).find(a => a.agentId === data.data.agentId);
+          if (killed) {
+            killed.status = 'cancelled';
+            renderAgentPanel();
+          }
+        }
+        break;
+
+      case 'subagent:wake':
+        appendAgentWakeNote(data.data);
         break;
 
       case 'subagent:thinking':
@@ -705,6 +743,8 @@
 
       case 'subagent:done':
         agentDone(data.data.agentId, data.data.status, data.data.durationMs, data.data.error);
+        upsertSnapshotAgent({ ...data.data, elapsedSeconds: Math.round((data.data.durationMs || 0) / 1000) });
+        renderAgentPanel();
         break;
 
       case 'context:update':
@@ -1794,10 +1834,196 @@
     scrollToBottom();
   }
 
-  /** Re-render a stored spawn_agent tool call when a session is reloaded. */
-  function appendAgentHistory(toolCall) {
+  // --- Background sub-agent panel ----------------------------------------
+  // The message-feed bubbles show what a child is doing; this sidebar panel is
+  // the durable view: it survives session switches and shows capacity/pending
+  // reports for agents whose bubbles were cleared.
+
+  function formatAgentElapsed(agent) {
+    const base = Number(agent.elapsedSeconds) || 0;
+    const at = agent._baseAt || Date.now();
+    const live = (agent.status === 'running' || agent.status === 'queued')
+      ? (Date.now() - at) / 1000
+      : 0;
+    return Math.max(0, Math.round(base + live));
+  }
+
+  function upsertSnapshotAgent(data) {
+    if (!data || !data.agentId) return;
+    const agents = subAgentSnapshot.agents || (subAgentSnapshot.agents = []);
+    let entry = agents.find(a => a.agentId === data.agentId);
+    if (!entry) {
+      entry = { agentId: data.agentId };
+      agents.push(entry);
+    }
+    Object.assign(entry, {
+      description: data.description || entry.description || 'Sub-agent',
+      model: data.model || entry.model,
+      status: data.status || entry.status || 'running',
+      elapsedSeconds: typeof data.elapsedSeconds === 'number' ? data.elapsedSeconds : (entry.elapsedSeconds || 0),
+      queuePosition: data.queuePosition !== undefined ? data.queuePosition : entry.queuePosition,
+      reportReady: data.reportReady !== undefined ? data.reportReady : entry.reportReady,
+      error: data.error !== undefined ? data.error : entry.error,
+    });
+    entry._baseAt = Date.now();
+    if (typeof data.slotsInUse === 'number') subAgentSnapshot.running = data.slotsInUse;
+    if (typeof data.maxSlots === 'number') subAgentSnapshot.slots = data.maxSlots;
+    if (typeof data.queued === 'number') subAgentSnapshot.queued = data.queued;
+  }
+
+  function applySubAgentList(data) {
+    if (!data) return;
+    if (data.sessionId) subAgentSnapshots.set(data.sessionId, data);
+    subAgentSnapshot = {
+      slots: data.slots || 0,
+      running: data.running || 0,
+      queued: data.queued || 0,
+      agents: (data.agents || []).map(a => ({ ...a, _baseAt: Date.now() })),
+    };
+    // Recreate feed bubbles for agents that are still alive. After a session
+    // switch the old bubbles are gone, so their stream would otherwise be lost.
+    for (const a of subAgentSnapshot.agents) {
+      if ((a.status === 'running' || a.status === 'queued') && !agentBubbles.has(a.agentId)) {
+        const state = createAgentBubble({
+          key: a.agentId,
+          description: a.description,
+          task: '',
+          model: a.model,
+          status: a.status,
+        });
+        agentBubbles.set(a.agentId, state);
+      }
+    }
+    renderAgentPanel();
+  }
+
+  function renderAgentPanel() {
+    const panel = document.getElementById('agent-activity');
+    const list = document.getElementById('agent-activity-list');
+    const countEl = document.getElementById('agent-activity-count');
+    if (!panel || !list || !countEl) return;
+
+    const agents = subAgentSnapshot.agents || [];
+    if (agents.length === 0) {
+      panel.classList.add('hidden');
+      list.innerHTML = '';
+      return;
+    }
+    panel.classList.remove('hidden');
+
+    const pending = agents.filter(a => a.reportReady).length;
+    const bits = [`${subAgentSnapshot.running}/${subAgentSnapshot.slots || 0} running`];
+    if (subAgentSnapshot.queued > 0) bits.push(`${subAgentSnapshot.queued} queued`);
+    if (pending > 0) bits.push(`${pending} new`);
+    countEl.textContent = bits.join(' · ');
+
+    list.innerHTML = '';
+    for (const a of agents.slice(-8).reverse()) {
+      const running = a.status === 'running';
+      const queued = a.status === 'queued';
+
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-2 text-[11px]';
+
+      const dot = document.createElement('span');
+      dot.className = 'shrink-0 ' + (running
+        ? 'text-agentAccent animate-pulse'
+        : queued
+          ? 'text-muted'
+          : a.status === 'completed'
+            ? 'text-success'
+            : a.status === 'error' ? 'text-danger' : 'text-muted');
+      dot.textContent = running ? '●' : queued ? '○' : a.status === 'completed' ? '✓' : a.status === 'error' ? '✗' : '■';
+
+      const name = document.createElement('span');
+      name.className = 'truncate min-w-0 flex-1 ' + (running || queued ? 'text-text' : 'text-muted');
+      name.textContent = a.description || a.agentId;
+      if (a.error) name.title = a.error;
+      else if (a.reportReady) name.title = 'Report pending — it will be included in the next turn.';
+
+      const meta = document.createElement('span');
+      meta.className = 'shrink-0 text-muted';
+      if (running) meta.textContent = `${formatAgentElapsed(a)}s`;
+      else if (queued) meta.textContent = a.queuePosition ? `q#${a.queuePosition}` : 'queued';
+      else if (a.status === 'completed') meta.textContent = 'done';
+      else meta.textContent = a.status;
+
+      row.appendChild(dot);
+      row.appendChild(name);
+      row.appendChild(meta);
+
+      if (running || queued) {
+        const kill = document.createElement('button');
+        kill.className = 'shrink-0 text-muted hover:text-danger leading-none px-0.5';
+        kill.title = 'Cancel this sub-agent';
+        kill.textContent = '×';
+        kill.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          send('subagent:kill', { agentId: a.agentId });
+        });
+        row.appendChild(kill);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  function agentStatusChanged(data) {
+    if (!data || !data.agentId) return;
+    let state = agentBubbles.get(data.agentId);
+    if (!state) {
+      state = createAgentBubble({
+        key: data.agentId,
+        description: data.description || 'Sub-agent',
+        task: data.task || '',
+        model: data.model,
+        status: data.status || 'running',
+      });
+      agentBubbles.set(data.agentId, state);
+      return;
+    }
+    const badge = agentStatusBadge(data.status || 'running');
+    state.statusBadge.className = badge.cls;
+    state.statusBadge.textContent = badge.text;
+  }
+
+  function markAgentResultsPending(data) {
+    if (!data || !data.agentId) return;
+    const entry = (subAgentSnapshot.agents || []).find(a => a.agentId === data.agentId);
+    if (!entry) return;
+    entry.reportReady = true;
+    renderAgentPanel();
+  }
+
+  function clearAgentResultsPending(data) {
+    const ids = new Set((data && data.agentIds) || []);
+    if (ids.size === 0) return;
+    for (const a of subAgentSnapshot.agents || []) {
+      if (ids.has(a.agentId)) a.reportReady = false;
+    }
+    renderAgentPanel();
+  }
+
+  /** Divider shown when a finished agent wakes the model while the UI was idle. */
+  function appendAgentWakeNote(data) {
+    if (!data) return;
+    const row = document.createElement('div');
+    row.className = 'flex justify-center my-2';
+    const pill = document.createElement('div');
+    pill.className = 'text-[10px] uppercase tracking-wide text-agentAccent/70 bg-agentBg/50 border border-agentBorder/40 rounded-full px-3 py-1';
+    pill.textContent = `Background agent finished: ${data.description || data.agentId}`;
+    row.appendChild(pill);
+    messagesEl.appendChild(row);
+    scrollToBottom();
+  }
+
+  /** Re-render a stored spawn_agent tool call when a session is reloaded. */  function appendAgentHistory(toolCall) {
+    const result = toolCall.result || '';
+    // Background spawns return an id, not a report. Their lifecycle belongs to
+    // the live bubble/panel; a history bubble would show a stale "completed".
+    if (/in the background|queued behind/.test(result)) return;
     const params = toolCall.parameters || {};
-    const status = toolCall.status === 'error' ? 'error' : (toolCall.result ? 'completed' : 'running');
+    const status = toolCall.status === 'error' ? 'error' : (result ? 'completed' : 'running');
     createAgentBubble({
       key: `history-${toolCall.id}`,
       description: params.description || 'Sub-agent',
@@ -2269,6 +2495,10 @@ function scrollToBottom() {
       if (thinkingBubble) {
         finalizeThinkingBubble();
       }
+      // The feed was just rebuilt; restore the live bubbles for this session's
+      // running background agents (the snapshot may have arrived during fetch).
+      const snap = subAgentSnapshots.get(id);
+      applySubAgentList(snap || { slots: 0, running: 0, queued: 0, agents: [], sessionId: id });
       updateContextUsage();
       scrollToBottom();
     } catch (err) {
@@ -3524,6 +3754,7 @@ function scrollToBottom() {
   });
 
   // Start
+  setInterval(renderAgentPanel, 1000);
   initTree();
   connect();
   setIsWaiting(false);

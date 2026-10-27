@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { getConfig, getSubAgentConfig } from './config';
 import { MCPManager } from './mcp';
-import { getBuiltinToolNames } from './tools';
+import { getBuiltinToolNames, subAgentToolNames } from './tools';
 import { toolDefinitions } from './tools';
 
 /**
@@ -40,11 +40,12 @@ export class ToolsAPI {
     const subAgentsEnabled = getSubAgentConfig().enabled === true;
     for (const t of toolDefinitions) {
       const name = t.function.name;
+      const gated = subAgentToolNames.includes(name);
       availableTools.push({
         name,
         description: t.function.description || '',
         category: 'builtin',
-        enabledByDefault: !disabledSet.has(name) && (name !== 'spawn_agent' || subAgentsEnabled),
+        enabledByDefault: !disabledSet.has(name) && (!gated || subAgentsEnabled),
       });
     }
 
