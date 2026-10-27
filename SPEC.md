@@ -60,6 +60,9 @@ YukiWeb is a personal AI agent application with a web-based interface, designed 
   changed files, inspect the diff, re-run the command/test) before relying on them
 - Each child is budgeted half of the main model's declared context window; the shared
   prompt prefix is cached, so concurrency stays cheap (`perSlotContextTokens` overrides)
+- Children self-compact: at 72% of their window the middle of the transcript is
+  summarized by the same model with tools disabled (max 3 times), falling back to
+  tool-payload eviction; structure and tool-call pairing are preserved
 - `agent_result(agentId, wait_ms)` — collect a report explicitly (bounded wait)
 - `agent_list()` — status, elapsed time, queue position, free slots
 - `agent_kill(agentId)` — cancel one agent (also available from the UI panel)

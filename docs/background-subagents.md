@@ -50,6 +50,29 @@ The model can also pull explicitly:
 | `agent_list()` | Status, elapsed time, queue position, free slots |
 | `agent_kill(agentId)` | Cancel a running/queued agent (also available in the UI panel) |
 
+## Context management
+
+A child has no `Session`, so the parent's anchored-summary machinery does not apply.
+Instead its transcript is kept inside the per-slot window by two layers, checked at
+the top of **every** iteration:
+
+1. **Compaction (primary).** Once the transcript passes 72% of the budget, the head
+   (system prompt + task) and the newest turns are kept verbatim and everything
+   between is replaced by one summary written by the same model with **all tools
+   disabled**. The summary keeps the goal, what was tried, paths/identifiers,
+   commands that worked or failed, and unfinished steps — and is injected as a
+   `user` message (never a mid-conversation `system` message, which Qwen rejects).
+   At most **3** compactions per child; the summarizer's own prompt is capped at 50%
+   of the budget so the rescue call cannot itself overflow.
+2. **Mechanical trim (fallback).** Old `tool` payloads are replaced with a marker.
+   Runs after compaction as a safety net, and alone once the compaction cap is hit.
+
+Structure is always preserved: an assistant `tool_calls` message and its `tool`
+results are kept or dropped together, and the split never leaves an orphan. If the
+summarization call fails (endpoint error, cancellation), the child keeps working and
+falls back to trimming. If a child still overruns, the request fails, the agent is
+marked `error`, and the main agent is alerted to retry with a narrower task.
+
 ## Isolation guarantees
 
 Each job owns:

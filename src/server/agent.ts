@@ -4,7 +4,7 @@ import * as path from 'path';
 import OpenAI from 'openai';
 import { WebSocket } from 'ws';
 import { getConfig } from './config';
-import { tools, toolDefinitions, planToolNames, subAgentToolNames, truncateOutput } from './tools';
+import { tools, toolDefinitions, toolNames, planToolNames, subAgentToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
 import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig } from './config';
@@ -125,6 +125,13 @@ const SUBAGENT_TOOL_EXCLUSIONS = [
  * window rather than a 1/(1+slots) slice.
  */
 const SUBAGENT_CONTEXT_SHARE = 0.5;
+
+/**
+ * How many times one sub-agent may summarize its own transcript. Compaction is
+ * an extra LLM call, so it is capped; beyond that the mechanical trimmer keeps
+ * the request under the window.
+ */
+const MAX_SUBAGENT_COMPACTIONS = 3;
 
 /** Process-wide count of running sub-agents is owned by subagents.ts. */
 
@@ -1583,11 +1590,29 @@ export class Agent {
       : Math.max(1, configuredIterations || 10);
     let finalContent = '';
     let iterations = 0;
+    let compactions = 0;
 
     while (iterations < maxIterations) {
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
       iterations++;
 
+      // Real compaction first: an over-budget transcript is summarized so the
+      // child keeps its findings instead of losing tool output to eviction.
+      // A few compactions per child, then the mechanical trimmer takes over so a
+      // pathological run cannot loop on summarization.
+      if (compactions < MAX_SUBAGENT_COMPACTIONS) {
+        const didCompact = await this.compactSubAgentMessages(messages, {
+          tokenBudget: budget.tokens,
+          task,
+          description,
+          modelName,
+          sessionId: job.sessionId,
+          childConfig,
+          signal: job.abort.signal,
+        });
+        if (didCompact) compactions++;
+      }
+      // Safety net (no-op when under budget): evict stale tool payloads.
       this.trimSubAgentMessages(messages, budget.tokens);
 
       const response = await this.callLLM(
@@ -1692,6 +1717,168 @@ export class Agent {
         total += placeholder.length;
       }
     }
+  }
+
+  /** Size of one transcript entry: content, tool-call arguments and reasoning. */
+  private subAgentMessageChars(m: Record<string, any>): number {
+    const content = typeof m.content === 'string'
+      ? m.content.length
+      : JSON.stringify(m.content ?? '').length;
+    const calls = m.tool_calls ? JSON.stringify(m.tool_calls).length : 0;
+    const reasoning = typeof m.reasoning_content === 'string' ? m.reasoning_content.length : 0;
+    return content + calls + reasoning;
+  }
+
+  private subAgentTranscriptChars(messages: Array<Record<string, any>>): number {
+    let total = 0;
+    for (const m of messages) total += this.subAgentMessageChars(m);
+    return total;
+  }
+
+  /**
+   * Flat rendering of a transcript slice for the summarizer. Tool payloads are
+   * clipped: the summary needs to know what was learned, not every byte read.
+   */
+  private renderSubAgentTranscript(messages: Array<Record<string, any>>): string {
+    const clip = (text: string, max: number): string =>
+      text.length > max ? `${text.slice(0, max)}…` : text;
+    const lines: string[] = [];
+
+    for (const m of messages) {
+      if (m.role === 'assistant') {
+        const text = typeof m.content === 'string' ? m.content.trim() : '';
+        if (text) lines.push(`assistant: ${clip(text, 1200)}`);
+        for (const tc of m.tool_calls || []) {
+          let args = '';
+          try {
+            args = clip(JSON.stringify(tc.function?.arguments ?? ''), 300);
+          } catch {
+            args = '';
+          }
+          lines.push(`assistant called ${tc.function?.name || 'tool'}(${args})`);
+        }
+      } else if (m.role === 'tool') {
+        lines.push(`tool result: ${clip(String(m.content ?? ''), 1200)}`);
+      } else {
+        lines.push(`${m.role}: ${clip(String(m.content ?? ''), 1200)}`);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * Summarize the middle of a sub-agent transcript once it exceeds the child's
+   * window.
+   *
+   * The child has no Session, so the parent's anchored-summary machinery does
+   * not apply. Instead the head (system prompt + task) and the newest turns are
+   * kept verbatim and everything between is replaced by one summary written by
+   * the same model with tools disabled. Returns false when there is nothing to
+   * compact, the model returns nothing, or the job was cancelled — the caller's
+   * mechanical trimmer still runs afterwards either way.
+   */
+  private async compactSubAgentMessages(
+    messages: Array<Record<string, any>>,
+    opts: {
+      tokenBudget: number;
+      task: string;
+      description: string;
+      modelName: string;
+      sessionId?: string;
+      childConfig: any;
+      signal: AbortSignal;
+    },
+  ): Promise<boolean> {
+    if (opts.signal.aborted) return false;
+
+    const cpt = opts.childConfig?.contextManagement?.charsPerToken || 3;
+    const budgetChars = opts.tokenBudget * cpt * 0.72;
+    if (this.subAgentTranscriptChars(messages) <= budgetChars) return false;
+
+    // Keep the first two entries (system prompt + task) and the newest turns.
+    const headCount = Math.min(2, messages.length);
+    const tailLimit = budgetChars * 0.4;
+    let tailStart = messages.length;
+    let tailChars = 0;
+    while (tailStart > headCount) {
+      const size = this.subAgentMessageChars(messages[tailStart - 1]);
+      const kept = messages.length - tailStart;
+      if (kept >= 2 && tailChars + size > tailLimit) break;
+      tailChars += size;
+      tailStart--;
+    }
+    // A tool result is only valid directly after its assistant call.
+    while (tailStart < messages.length && messages[tailStart].role === 'tool') tailStart++;
+    if (tailStart - headCount < 2) return false; // nothing worth summarizing
+
+    const middle = messages.slice(headCount, tailStart);
+    const rendered = this.renderSubAgentTranscript(middle);
+    // Bound the summarizer's own prompt: keep the most recent middle steps.
+    const maxInput = Math.floor(budgetChars * 0.5);
+    const input = rendered.length > maxInput
+      ? `[...earlier steps omitted...]\n${rendered.slice(rendered.length - maxInput)}`
+      : rendered;
+
+    const maxSummaryTokens = Math.max(512, Math.min(2048, Math.floor(opts.tokenBudget * 0.04)));
+    let summary = '';
+    try {
+      const response = await this.callLLM(
+        [
+          {
+            role: 'system',
+            content: [
+              'You compress the working transcript of an autonomous sub-agent so it can keep working in a smaller context window.',
+              'Preserve, compressed but concrete: the goal, what was tried, what was learned, file paths and identifiers that matter, commands that worked or failed, and unfinished steps.',
+              'Drop raw file contents, repeated output and narration. Keep it factual, under 400 words, and never invent results.',
+            ].join(' '),
+          },
+          {
+            role: 'user',
+            content: [
+              `## Original task\n${opts.task}`,
+              opts.description ? `## Short label\n${opts.description}` : '',
+              `## Transcript to compress\n${input}`,
+              '## Output\nWrite only the compressed progress notes the sub-agent should carry forward.',
+            ].filter(Boolean).join('\n\n'),
+          },
+        ],
+        { ...opts.childConfig, maxToolIterations: 1 },
+        opts.signal,
+        () => {},
+        () => {},
+        opts.modelName,
+        opts.sessionId,
+        // No tools: this is a pure summarization call, never another tool loop.
+        toolNames,
+        undefined,
+        maxSummaryTokens,
+      );
+      summary = (response.content || '').trim();
+    } catch (err: any) {
+      if (!opts.signal.aborted) {
+        console.warn(`[subagent] compaction failed: ${err?.message || err}`);
+      }
+      return false;
+    }
+    if (!summary) return false;
+
+    messages.splice(headCount, middle.length, {
+      role: 'user',
+      content: [
+        '## Compacted progress',
+        'Earlier steps of this task were summarized to stay inside your context window.',
+        'Treat these notes as your own prior work and continue from them; re-read a file or re-run a command if you need exact details.',
+        '',
+        summary,
+      ].join('\n'),
+    });
+
+    console.log(
+      `[subagent] compacted ${opts.description || opts.task.slice(0, 40)}: ` +
+      `${middle.length} message(s) -> summary ` +
+      `(${this.subAgentTranscriptChars(messages)} chars, budget ${Math.round(budgetChars)})`,
+    );
+    return true;
   }
 
   private listAttachments(): string {
