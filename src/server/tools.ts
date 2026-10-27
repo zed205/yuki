@@ -1,16 +1,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { exec, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { applyPatch } from 'diff';
 import TurndownService from 'turndown';
 import { getConfig } from './config';
 import { memorySave, memoryRead, memoryList, memoryDelete } from './memory';
 import { skillList, skillLoad, skillSave, skillDelete } from './skill';
+import { runShellCommand } from './shell';
 import { normalizeLineEndings } from './utils/line-endings';
 
-const execAsync = promisify(exec);
+// Durable cwd: persists across calls so `cd foo` carries forward.
+let _shellCwd = '';
+
 const turndown = new TurndownService({
   headingStyle: 'atx',
   codeBlockStyle: 'fenced',
@@ -482,19 +484,23 @@ export async function toolViewImage(filePath: string, projectPath?: string): Pro
 }
 
 export async function toolShell(command: string, cwd?: string): Promise<string> {
-  try {
-    const { stdout, stderr } = await execAsync(command, {
-      cwd: cwd || process.cwd(),
-      timeout: 30000,
-      maxBuffer: 1024 * 1024,
-    });
+  // Resolve durable cwd: explicit param > persisted from previous call > process.cwd()
+  const resolvedCwd = cwd || _shellCwd || process.cwd();
 
-    const output = normalizeLineEndings(stdout) || '(no output)';
-    const full = stderr ? `${output}\n\nSTDERR:\n${normalizeLineEndings(stderr)}` : output;
+  try {
+    const result = await runShellCommand(command, resolvedCwd, 30000);
+
+    // Persist the directory we ended up in, so `cd` carries across calls.
+    _shellCwd = result.cwd;
+
+    const output = result.stdout || '(no output)';
+    const full = result.stderr ? `${output}\n\nSTDERR:\n${result.stderr}` : output;
+    const withError = result.error ? `${full}\n\n${result.error}` : full;
+    const suffix = result.exitCode ? `\n\n(exit code ${result.exitCode})` : '';
     const maxChars = getConfig().maxToolOutputChars ?? 20000;
-    return truncateOutput(full, maxChars, 'shell output');
+    return truncateOutput(withError + suffix, maxChars, 'shell output');
   } catch (err: any) {
-    return `Command failed:\n${err.message}`;
+    return `Command failed:\n${err.message || String(err)}`;
   }
 }
 
@@ -829,7 +835,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'view_image',
-      description: 'Read an image file from disk and return it as a base64-encoded image. The model will receive the image and can analyze it (e.g., describe content, read text, identify objects). Supports common formats: jpg, jpeg, png, gif, webp, bmp, svg, tiff. Relative paths are resolved against the project directory.',
+      description: 'Read an image file from disk and return it as a base64-encoded image. The model will receive the image and can analyze it (e.g., describe content, read text, identify objects). Supports common formats: jpg, jpeg, png, gif, webp, bmp, svg, tiff. Relative paths are resolved against the project directory. NOTE: This tool consumes significant context (each image can use 5K–8K tokens and trigger a full prefill). When processing multiple images, consider spawning sub-agents to handle image inspection in parallel — this avoids context overflow and reduces repeated prefill overhead. The main agent should work from the text summaries returned by sub-agents rather than viewing images directly.',
       parameters: {
         type: 'object',
         properties: {
@@ -1488,3 +1494,4 @@ export const toolNames = toolDefinitions.map(t => t.function.name);
 export function getBuiltinToolNames(): string[] {
   return toolNames;
 }
+

@@ -2,13 +2,8 @@ import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { getConfig } from './config';
+import { getShellInvocation, stripAnsi } from './shell';
 import { splitLines } from './utils/line-endings';
-
-// Strip ANSI escape sequences (PowerShell adds color codes).
-function stripAnsi(str: string): string {
-  return str.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\([B]/g, '');
-}
 
 // Background shell jobs: long-running commands started via shell(background: true).
 // Jobs are ephemeral — they are child processes of this server and die with it,
@@ -105,30 +100,12 @@ export function startJob(command: string, opts: { sessionId?: string; wakeOnExit
   };
   jobs.set(id, job);
 
-  // Use the configured shell engine (default: pwsh on Windows)
-  const shellCfg = getConfig().shell;
-  let cmd: string, args: string[];
-  if (process.platform === 'win32') {
-    switch (shellCfg.engine) {
-      case 'pwsh':
-        cmd = shellCfg.pwshPath || 'pwsh';
-        args = ['-NoProfile', '-Command', command];
-        break;
-      case 'ps5':
-        cmd = shellCfg.ps5Path || 'powershell';
-        args = ['-NoProfile', '-Command', command];
-        break;
-      case 'cmd':
-      default:
-        cmd = shellCfg.cmdPath || 'cmd';
-        args = ['/d', '/s', '/c', command];
-        break;
-    }
-  } else {
-    cmd = 'sh';
-    args = ['-c', command];
-  }
-  const proc = spawn(cmd, args, { cwd: process.cwd(), windowsHide: true });
+  // Use the latest PowerShell (pwsh)
+  const inv = getShellInvocation(command);
+  const proc = spawn(inv.file, inv.args, {
+    cwd: process.cwd(),
+    windowsHide: true,
+  });
   procs.set(id, proc);
 
   let pending = '';

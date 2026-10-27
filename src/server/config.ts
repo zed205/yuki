@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, ShellEngine } from '../shared/types';
+import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig } from '../shared/types';
 import { splitLines } from './utils/line-endings';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
@@ -40,10 +40,7 @@ const defaultUIAutomationConfig: UIAutomationConfig = {
 };
 
 const defaultShellConfig: ShellConfig = {
-  engine: 'pwsh',
   pwshPath: 'pwsh',
-  ps5Path: 'powershell',
-  cmdPath: 'cmd',
 };
 
 const defaultConfig: Config = {

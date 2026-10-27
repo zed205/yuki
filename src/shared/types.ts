@@ -158,13 +158,9 @@ export interface UIAutomationConfig {
   enabled: boolean;
 }
 
-export type ShellEngine = 'pwsh' | 'ps5' | 'cmd';
-
 export interface ShellConfig {
-  engine: ShellEngine;
+  /** Path to the PowerShell 7+ (`pwsh`) executable. */
   pwshPath: string;
-  ps5Path: string;
-  cmdPath: string;
 }
 
 export interface PlanStep {
