@@ -969,15 +969,17 @@
   }
 
   // --- Thinking Bubble ---
-  function showThinkingBubble() {
+  function showThinkingBubble(compacted) {
     if (thinkingBubble) return;
     thinkingWasShown = true;
 
     const wrapper = document.createElement('div');
     wrapper.className = 'flex justify-start thinking-wrapper';
+    if (compacted) wrapper.classList.add('opacity-40');
 
     const details = document.createElement('details');
-    details.className = 'bg-surface/50 border border-yellow-500/20 rounded-lg text-xs thinking-block max-w-[90%] font-mono group';
+    details.className =
+      (compacted ? 'opacity-40 ' : '') + 'bg-surface/50 border border-yellow-500/20 rounded-lg text-xs thinking-block max-w-[90%] font-mono group';
     details.open = connectedConfig.expandThinking !== false;
 
     const summary = document.createElement('summary');
@@ -1309,12 +1311,14 @@
     return msg && msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith(SUMMARY_PREFIX);
   }
 
-  function appendSummaryMessage(content) {
+  function appendSummaryMessage(content, compacted) {
     const el = document.createElement('div');
     el.className = 'flex justify-start my-2';
+    if (compacted) el.classList.add('opacity-40');
 
     const details = document.createElement('details');
-    details.className = 'summary-card max-w-[85%] bg-summaryBg border border-summaryBorder rounded-xl text-sm group';
+    details.className =
+      (compacted ? 'opacity-40 ' : '') + 'summary-card max-w-[85%] bg-summaryBg border border-summaryBorder rounded-xl text-sm group';
     details.open = false; // collapsed by default, like other bubbles
 
     const summary = document.createElement('summary');
@@ -1377,9 +1381,10 @@
     }
   }
 
-  function showToolCall(toolCall) {
+  function showToolCall(toolCall, compacted) {
     const details = document.createElement('details');
-    details.className = 'bg-surface/50 border border-border rounded-lg text-sm group font-mono w-full min-w-0';
+    details.className =
+      (compacted ? 'opacity-40 ' : '') + 'bg-surface/50 border border-border rounded-lg text-sm group font-mono w-full min-w-0';
     details.id = `tool-${toolCall.id}`;
     details.open = connectedConfig.expandToolOutputs !== false;
 
@@ -1453,7 +1458,7 @@
     }
   }
 
-  function updateToolResult(toolCallId, result, status) {
+  function updateToolResult(toolCallId, result, status, compacted) {
     const el = document.getElementById(`tool-${toolCallId}`);
     if (el) {
       const statusEl = el.querySelector('.tool-status');
@@ -1480,6 +1485,9 @@
         resultEl.textContent = displayResult;
       }
       const wrapper = el.closest('.tool-call-wrapper');
+      if (wrapper && compacted) {
+        wrapper.classList.add('opacity-40');
+      }
       if (wrapper) refreshTTGroupSummary(wrapper);
     }
   }
@@ -2459,7 +2467,7 @@ function scrollToBottom() {
       for (let mi = 0; mi < session.messages.length; mi++) {
         const msg = session.messages[mi];
         if (isSummaryMessage(msg)) {
-          appendSummaryMessage(msg.content);
+          appendSummaryMessage(msg.content, false);
           continue;
         }
         if (msg.role !== 'system') {
@@ -2470,7 +2478,7 @@ function scrollToBottom() {
             }
             thinkingWasShown = false;
             if (msg.reasoningContent) {
-              showThinkingBubble();
+              showThinkingBubble(msg.compacted);
               updateThinkingBubble(msg.reasoningContent);
             }
             if (msg.toolCalls) {
@@ -2479,10 +2487,10 @@ function scrollToBottom() {
                   appendAgentHistory(tc, msg.compacted);
                   continue;
                 }
-                showToolCall(tc);
+                showToolCall(tc, msg.compacted);
                 updateToolCall(tc);
                 if (tc.result) {
-                  updateToolResult(tc.id, tc.result, tc.status);
+                  updateToolResult(tc.id, tc.result, tc.status, msg.compacted);
                 }
               }
             }
