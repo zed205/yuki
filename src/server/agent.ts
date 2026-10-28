@@ -126,13 +126,6 @@ const SUBAGENT_TOOL_EXCLUSIONS = [
  */
 const SUBAGENT_CONTEXT_SHARE = 1;
 
-/**
- * How many times one sub-agent may summarize its own transcript. Compaction is
- * an extra LLM call, so it is capped; beyond that the mechanical trimmer keeps
- * the request under the window.
- */
-const MAX_SUBAGENT_COMPACTIONS = 3;
-
 /** Process-wide count of running sub-agents is owned by subagents.ts. */
 
 /**
@@ -1549,10 +1542,9 @@ export class Agent {
     // 16k-char grep would otherwise consume most of a small parallel slot.
     const budget = this.subAgentContextBudget(modelName);
     const cm = config.contextManagement;
-    const charsPerToken = cm?.charsPerToken && cm.charsPerToken > 0 ? cm.charsPerToken : 3;
     const childToolResultChars = Math.max(2000, Math.min(
       this.storedResultLimit(config),
-      Math.floor(budget.tokens * charsPerToken * 0.25),
+      Math.floor(budget.tokens * (cm?.charsPerToken || 3) * 0.25),
     ));
     // Completion tokens occupy the same slot as the prompt, so a child cannot
     // be allowed to emit an unbounded report into a narrow parallel window.
@@ -1588,21 +1580,39 @@ export class Agent {
     const maxIterations = configuredIterations === -1
       ? 40
       : Math.max(1, configuredIterations || 10);
+    const ctxWindow = budget.declared;
+    const compactionThreshold = cm?.compactionThreshold ?? 0.85;
+    const hardStopThreshold = cm?.hardStopThreshold ?? 0.95;
+    const safetyMargin = cm?.estimateSafetyMargin ?? 1.15;
+    let lastActualPromptTokens = 0;
     let finalContent = '';
     let iterations = 0;
-    let compactions = 0;
 
     while (iterations < maxIterations) {
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
       iterations++;
 
-      // Real compaction first: an over-budget transcript is summarized so the
-      // child keeps its findings instead of losing tool output to eviction.
-      // A few compactions per child, then the mechanical trimmer takes over so a
-      // pathological run cannot loop on summarization.
-      if (compactions < MAX_SUBAGENT_COMPACTIONS) {
-        const didCompact = await this.compactSubAgentMessages(messages, {
+      // Token estimation — same function as the main agent, no heuristics.
+      const liveEstimate = estimateRequestTokens(messages, undefined, childConfig);
+      // Project forward using last provider-confirmed count (when available).
+      const projected = lastActualPromptTokens > 0
+        ? Math.max(liveEstimate, Math.ceil(lastActualPromptTokens * safetyMargin))
+        : liveEstimate;
+
+      const overThreshold = projected > ctxWindow * compactionThreshold;
+      const atWall = projected > ctxWindow * hardStopThreshold;
+
+      if (overThreshold) {
+        if (atWall) {
+          console.warn(`[subagent] ${agentId}: context wall (${projected}/${ctxWindow}), halting`);
+          return '[Sub-agent stopped: context window exhausted.]';
+        }
+        // Compact the transcript using the same anchored-summary approach as
+        // the main agent. This replaces the middle of the transcript with a
+        // summary written by the model with tools disabled.
+        const compacted = await this.compactSubAgentMessages(messages, {
           tokenBudget: budget.tokens,
+          ctxWindow,
           task,
           description,
           modelName,
@@ -1610,13 +1620,11 @@ export class Agent {
           childConfig,
           signal: job.abort.signal,
         });
-        if (didCompact) compactions++;
+        if (!compacted) {
+          console.warn(`[subagent] ${agentId}: compaction did not reclaim enough`);
+          return '[Sub-agent stopped: could not compact further.]';
+        }
       }
-      // Safety net (no-op when under budget): evict stale tool payloads.
-      this.trimSubAgentMessages(messages, budget.tokens);
-      // Pre-flight: if the estimate is still over budget, aggressively trim
-      // whole turns so the API call never overflows.
-      this.enforceSubAgentBudget(messages, budget.tokens);
 
       const response = await this.callLLM(
         messages,
@@ -1630,6 +1638,11 @@ export class Agent {
         SUBAGENT_TOOL_EXCLUSIONS,
         childMaxOutput,
       );
+
+      // Calibrate estimate from the provider's actual count.
+      if (response.usage?.promptTokens) {
+        lastActualPromptTokens = response.usage.promptTokens;
+      }
 
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
 
@@ -1695,133 +1708,25 @@ export class Agent {
    * preserved (assistant tool_calls still have matching tool messages), only
    * the bulky content is dropped.
    */
-  private trimSubAgentMessages(messages: Array<Record<string, any>>, tokenBudget: number): void {
-    const cm = getConfig().contextManagement;
-    const cpt = cm?.charsPerToken && cm.charsPerToken > 0 ? cm.charsPerToken : 3;
-    const budget = tokenBudget * cpt * 0.72;
-    let total = 0;
-    for (const m of messages) {
-      total += typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length;
-      if (m.tool_calls) total += JSON.stringify(m.tool_calls).length;
-    }
-    if (total <= budget) return;
-
-    const placeholder = '[Tool result omitted to keep the sub-agent within its context window.]';
-    for (let i = 1; i < messages.length - 6 && total > budget; i++) {
-      const m = messages[i];
-      if (
-        m.role === 'tool'
-        && typeof m.content === 'string'
-        && m.content !== placeholder
-        && !m.content.startsWith('data:image')
-      ) {
-        total -= m.content.length;
-        m.content = placeholder;
-        total += placeholder.length;
-      }
-    }
-  }
-
   /**
-   * Aggressive pre-flight trim: when the character estimate is still over
-   * budget after compaction, remove whole assistant+tool pairs (and their
-   * reasoning) from the middle, keeping only head + tail.
-   */
-  private enforceSubAgentBudget(messages: Array<Record<string, any>>, tokenBudget: number): void {
-    const cm = getConfig().contextManagement;
-    const cpt = cm?.charsPerToken && cm.charsPerToken > 0 ? cm.charsPerToken : 3;
-    const budget = tokenBudget * cpt * 0.9; // tighter headroom to account for estimate noise
-    let total = this.subAgentTranscriptChars(messages);
-    if (total <= budget) return;
-
-    // Keep head (system + task) and tail (~40% of budget).
-    const headCount = 2;
-    let tailStart = messages.length;
-    let tailChars = 0;
-    while (tailStart > headCount) {
-      const size = this.subAgentMessageChars(messages[tailStart - 1]);
-      if (tailChars + size > budget * 0.4) break;
-      tailChars += size;
-      tailStart--;
-    }
-    // Tool results must follow their assistant call.
-    while (tailStart < messages.length && messages[tailStart].role === 'tool') tailStart++;
-
-    if (tailStart <= headCount + 1) return; // nothing to remove
-
-    // Count chars that would be removed.
-    let removeChars = 0;
-    for (let i = headCount; i < tailStart; i++) {
-      removeChars += this.subAgentMessageChars(messages[i]);
-    }
-    if (total - removeChars <= budget) {
-      messages.splice(headCount, tailStart - headCount);
-      console.log(`[subagent] aggressive trim: removed ${tailStart - headCount} msg(s) to stay within budget`);
-    }
-  }
-
-  /** Size of one transcript entry: content, tool-call arguments and reasoning. */
-  private subAgentMessageChars(m: Record<string, any>): number {
-    const content = typeof m.content === 'string'
-      ? m.content.length
-      : JSON.stringify(m.content ?? '').length;
-    const calls = m.tool_calls ? JSON.stringify(m.tool_calls).length : 0;
-    const reasoning = typeof m.reasoning_content === 'string' ? m.reasoning_content.length : 0;
-    return content + calls + reasoning;
-  }
-
-  private subAgentTranscriptChars(messages: Array<Record<string, any>>): number {
-    let total = 0;
-    for (const m of messages) total += this.subAgentMessageChars(m);
-    return total;
-  }
-
-  /**
-   * Flat rendering of a transcript slice for the summarizer. Tool payloads are
-   * clipped: the summary needs to know what was learned, not every byte read.
-   */
-  private renderSubAgentTranscript(messages: Array<Record<string, any>>): string {
-    const clip = (text: string, max: number): string =>
-      text.length > max ? `${text.slice(0, max)}…` : text;
-    const lines: string[] = [];
-
-    for (const m of messages) {
-      if (m.role === 'assistant') {
-        const text = typeof m.content === 'string' ? m.content.trim() : '';
-        if (text) lines.push(`assistant: ${clip(text, 1200)}`);
-        for (const tc of m.tool_calls || []) {
-          let args = '';
-          try {
-            args = clip(JSON.stringify(tc.function?.arguments ?? ''), 300);
-          } catch {
-            args = '';
-          }
-          lines.push(`assistant called ${tc.function?.name || 'tool'}(${args})`);
-        }
-      } else if (m.role === 'tool') {
-        lines.push(`tool result: ${clip(String(m.content ?? ''), 1200)}`);
-      } else {
-        lines.push(`${m.role}: ${clip(String(m.content ?? ''), 1200)}`);
-      }
-    }
-    return lines.join('\n');
-  }
-
-  /**
-   * Summarize the middle of a sub-agent transcript once it exceeds the child's
-   * window.
+   * Compact a sub-agent's in-memory transcript using the same anchored-summary
+   * approach as the main agent.
    *
-   * The child has no Session, so the parent's anchored-summary machinery does
-   * not apply. Instead the head (system prompt + task) and the newest turns are
-   * kept verbatim and everything between is replaced by one summary written by
-   * the same model with tools disabled. Returns false when there is nothing to
-   * compact, the model returns nothing, or the job was cancelled — the caller's
-   * mechanical trimmer still runs afterwards either way.
+   * Keeps the head (system prompt + task) and the newest turns verbatim, then
+   * replaces everything between with one summary written by the model with
+   * **tools disabled**.  The summary is injected as a `user` message (never
+   * `system` — avoids Qwen's template-violation for mid-conversation system
+   * messages) and tells the child to treat it as prior work.
+   *
+   * Token estimation uses `estimateRequestTokens` — the same function as the
+   * main agent — so there is no heuristic gap between the estimate and what
+   * actually hits the API.
    */
   private async compactSubAgentMessages(
     messages: Array<Record<string, any>>,
     opts: {
       tokenBudget: number;
+      ctxWindow: number;
       task: string;
       description: string;
       modelName: string;
@@ -1832,19 +1737,18 @@ export class Agent {
   ): Promise<boolean> {
     if (opts.signal.aborted) return false;
 
-    const cpt = opts.childConfig?.contextManagement?.charsPerToken || 3;
-    const budgetChars = opts.tokenBudget * cpt * 0.6;
-    if (this.subAgentTranscriptChars(messages) <= budgetChars) return false;
+    // Estimate tokens the same way the main agent does.
+    const liveEstimate = estimateRequestTokens(messages, undefined, opts.childConfig);
+    if (liveEstimate <= opts.ctxWindow * 0.85) return false;
 
-    // Keep the first two entries (system prompt + task) and the newest turns.
+    // Keep head (system + task) and newest turns (~40% of window).
     const headCount = Math.min(2, messages.length);
-    const tailLimit = budgetChars * 0.4;
+    const tailLimit = opts.ctxWindow * 0.4;
     let tailStart = messages.length;
     let tailChars = 0;
     while (tailStart > headCount) {
-      const size = this.subAgentMessageChars(messages[tailStart - 1]);
-      const kept = messages.length - tailStart;
-      if (kept >= 2 && tailChars + size > tailLimit) break;
+      const size = estimateRequestTokens([messages[tailStart - 1]], undefined, opts.childConfig);
+      if (tailChars + size > tailLimit) break;
       tailChars += size;
       tailStart--;
     }
@@ -1855,7 +1759,7 @@ export class Agent {
     const middle = messages.slice(headCount, tailStart);
     const rendered = this.renderSubAgentTranscript(middle);
     // Bound the summarizer's own prompt: keep the most recent middle steps.
-    const maxInput = Math.floor(budgetChars * 0.5);
+    const maxInput = Math.floor(opts.ctxWindow * 0.5);
     const input = rendered.length > maxInput
       ? `[...earlier steps omitted...]\n${rendered.slice(rendered.length - maxInput)}`
       : rendered;
@@ -1916,10 +1820,36 @@ export class Agent {
 
     console.log(
       `[subagent] compacted ${opts.description || opts.task.slice(0, 40)}: ` +
-      `${middle.length} message(s) -> summary ` +
-      `(${this.subAgentTranscriptChars(messages)} chars, budget ${Math.round(budgetChars)})`,
+      `${middle.length} message(s) -> summary (estimate ~${liveEstimate}, window ${opts.ctxWindow})`,
     );
     return true;
+  }
+
+  private renderSubAgentTranscript(messages: Array<Record<string, any>>): string {
+    const clip = (text: string, max: number): string =>
+      text.length > max ? `${text.slice(0, max)}…` : text;
+    const lines: string[] = [];
+
+    for (const m of messages) {
+      if (m.role === 'assistant') {
+        const text = typeof m.content === 'string' ? m.content.trim() : '';
+        if (text) lines.push(`assistant: ${clip(text, 1200)}`);
+        for (const tc of m.tool_calls || []) {
+          let args = '';
+          try {
+            args = clip(JSON.stringify(tc.function?.arguments ?? ''), 300);
+          } catch {
+            args = '';
+          }
+          lines.push(`assistant called ${tc.function?.name || 'tool'}(${args})`);
+        }
+      } else if (m.role === 'tool') {
+        lines.push(`tool result: ${clip(String(m.content ?? ''), 1200)}`);
+      } else {
+        lines.push(`${m.role}: ${clip(String(m.content ?? ''), 1200)}`);
+      }
+    }
+    return lines.join('\n');
   }
 
   private listAttachments(): string {
