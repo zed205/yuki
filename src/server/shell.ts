@@ -77,12 +77,18 @@ export function runShellCommand(
           stdout = stdout.slice(0, idx) + (nl >= 0 ? stdout.slice(nl + 1) : '');
         }
 
-        // Surface spawn failures / timeouts that produce no other output.
+        // Surface spawn failures / timeouts. A plain non-zero exit is reported
+        // via `exitCode` (plus stderr), so we deliberately avoid exec's
+        // `err.message` there — it would duplicate the command (including the
+        // internal cwd probe) into the output.
         let error: string | undefined;
-        if (err && !stdout.trim() && !stderr.trim()) {
-          error = err.killed ? `Command timed out after ${timeoutMs}ms` : err.message;
-        } else if (err && err.killed) {
-          error = `Command timed out after ${timeoutMs}ms`;
+        if (err) {
+          if (err.killed) {
+            error = `Command timed out after ${timeoutMs}ms`;
+          } else if (typeof err.code !== 'number') {
+            // Spawn/exec failure, e.g. ENOENT for a missing executable.
+            error = err.message;
+          }
         }
 
         resolve({

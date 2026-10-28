@@ -1565,7 +1565,7 @@
     return { text: '...', cls: 'ml-auto text-xs font-medium shrink-0 text-agentAccent animate-pulse' };
   }
 
-  function createAgentBubble({ key, description, task, model, status = 'running', result = '' }) {
+  function createAgentBubble({ key, description, task, model, status = 'running', result = '', compacted }) {
     // Never let later parent tool bubbles get appended above this bubble.
     sealTTGroup();
 
@@ -1574,7 +1574,8 @@
     if (key) wrapper.dataset.agentId = key;
 
     const details = document.createElement('details');
-    details.className = 'bg-agentBg border border-agentBorder rounded-lg text-sm group w-full min-w-0 agent-bubble';
+    details.className =
+      (compacted ? 'opacity-40 ' : '') + 'bg-agentBg border border-agentBorder rounded-lg text-sm group w-full min-w-0 agent-bubble';
     // Collapsed by default: the summary line shows status/progress, and the
     // user expands the bubble to inspect the child's thinking, tools and report.
     details.open = false;
@@ -1978,6 +1979,7 @@
         task: data.task || '',
         model: data.model,
         status: data.status || 'running',
+        compacted: false,
       });
       agentBubbles.set(data.agentId, state);
       return;
@@ -2017,7 +2019,7 @@
     scrollToBottom();
   }
 
-  /** Re-render a stored spawn_agent tool call when a session is reloaded. */  function appendAgentHistory(toolCall) {
+  /** Re-render a stored spawn_agent tool call when a session is reloaded. */  function appendAgentHistory(toolCall, compacted) {
     const result = toolCall.result || '';
     // Background spawns return an id, not a report. Their lifecycle belongs to
     // the live bubble/panel; a history bubble would show a stale "completed".
@@ -2030,6 +2032,7 @@
       task: params.task || '',
       status,
       result: toolCall.result || '',
+      compacted,
     });
   }
 
@@ -2473,7 +2476,7 @@ function scrollToBottom() {
             if (msg.toolCalls) {
               for (const tc of msg.toolCalls) {
                 if (tc.name === 'spawn_agent') {
-                  appendAgentHistory(tc);
+                  appendAgentHistory(tc, msg.compacted);
                   continue;
                 }
                 showToolCall(tc);

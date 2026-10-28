@@ -490,6 +490,7 @@ export async function toolShell(command: string, cwd?: string, scope?: string, d
   // otherwise the agent's persisted cwd, then its project directory.
   const key = scope || 'default';
   const resolvedCwd = cwd || shellCwds.get(key) || defaultCwd || process.cwd();
+  const maxChars = getConfig().maxToolOutputChars ?? 20000;
 
   try {
     const result = await runShellCommand(command, resolvedCwd, 30000);
@@ -497,14 +498,22 @@ export async function toolShell(command: string, cwd?: string, scope?: string, d
     // Persist the directory we ended up in, so `cd` carries across calls.
     shellCwds.set(key, result.cwd);
 
-    const output = result.stdout || '(no output)';
-    const full = result.stderr ? `${output}\n\nSTDERR:\n${result.stderr}` : output;
-    const withError = result.error ? `${full}\n\n${result.error}` : full;
-    const suffix = result.exitCode ? `\n\n(exit code ${result.exitCode})` : '';
-    const maxChars = getConfig().maxToolOutputChars ?? 20000;
-    return truncateOutput(withError + suffix, maxChars, 'shell output');
+    // Assemble everything the model needs to diagnose a failure — stdout,
+    // stderr, spawn/timeout errors and the exit code — into one message, then
+    // run it through the normal truncation path so large error output is saved
+    // to disk just like any other tool result.
+    const parts: string[] = [];
+    if (result.stdout) parts.push(result.stdout);
+    if (result.stderr) parts.push(`STDERR:\n${result.stderr}`);
+    if (result.error) parts.push(result.error);
+    if (result.exitCode) parts.push(`(exit code ${result.exitCode})`);
+    if (parts.length === 0) parts.push('(no output)');
+
+    return truncateOutput(parts.join('\n\n'), maxChars, 'shell output');
   } catch (err: any) {
-    return `Command failed:\n${err.message || String(err)}`;
+    // Unexpected failures (e.g. the shell could not be spawned) still return
+    // the error text, routed through the same truncation logic.
+    return truncateOutput(`Command failed:\n${err?.message || String(err)}`, maxChars, 'shell error');
   }
 }
 
