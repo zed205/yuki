@@ -90,23 +90,22 @@ Shared stateful services are still serialised by mutexes: `browser_*` and
 
 ## Server sizing
 
-Each child is budgeted **half of the main model's declared context window**
-(`contextWindow / 2`). Prompt caching means the shared prefix — system prompt and
+Each child is budgeted the **full context window** of the model it runs on
+(`contextWindow`). Prompt caching means the shared prefix — system prompt and
 tool definitions — is computed once and reused across concurrent slots, so a large
 per-child window does not cost a large prompt every turn. Override
 `subAgents.perSlotContextTokens` if the server's real per-slot window is smaller
 (for example when `-c` is split across `--parallel` slots).
 
 `--parallel` should still cover `maxAgentSlots + 1` (main + children). Example for
-`--parallel 4` with a 256k model, giving each child 128k:
+`--parallel 4` with a 256k model:
 
 ```json
 "subAgents": {
   "enabled": true,
   "maxAgentSlots": 3,
   "background": true,
-  "maxQueued": 8,
-  "perSlotContextTokens": 128000
+  "maxQueued": 8
 }
 ```
 

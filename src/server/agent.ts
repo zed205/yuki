@@ -120,11 +120,11 @@ const SUBAGENT_TOOL_EXCLUSIONS = [
 ];
 
 /**
- * Fraction of the main model's context window a sub-agent may use. Prompt
- * caching makes the shared prefix cheap, so children get a generous working
- * window rather than a 1/(1+slots) slice.
+ * Fraction of the main model's context window a sub-agent may use.
+ * 1 = full context window. Use perSlotContextTokens in config when you
+ * need to carve a smaller slice across many slots.
  */
-const SUBAGENT_CONTEXT_SHARE = 0.5;
+const SUBAGENT_CONTEXT_SHARE = 1;
 
 /**
  * How many times one sub-agent may summarize its own transcript. Compaction is
@@ -1614,6 +1614,9 @@ export class Agent {
       }
       // Safety net (no-op when under budget): evict stale tool payloads.
       this.trimSubAgentMessages(messages, budget.tokens);
+      // Pre-flight: if the estimate is still over budget, aggressively trim
+      // whole turns so the API call never overflows.
+      this.enforceSubAgentBudget(messages, budget.tokens);
 
       const response = await this.callLLM(
         messages,
@@ -1719,6 +1722,44 @@ export class Agent {
     }
   }
 
+  /**
+   * Aggressive pre-flight trim: when the character estimate is still over
+   * budget after compaction, remove whole assistant+tool pairs (and their
+   * reasoning) from the middle, keeping only head + tail.
+   */
+  private enforceSubAgentBudget(messages: Array<Record<string, any>>, tokenBudget: number): void {
+    const cm = getConfig().contextManagement;
+    const cpt = cm?.charsPerToken && cm.charsPerToken > 0 ? cm.charsPerToken : 3;
+    const budget = tokenBudget * cpt * 0.9; // tighter headroom to account for estimate noise
+    let total = this.subAgentTranscriptChars(messages);
+    if (total <= budget) return;
+
+    // Keep head (system + task) and tail (~40% of budget).
+    const headCount = 2;
+    let tailStart = messages.length;
+    let tailChars = 0;
+    while (tailStart > headCount) {
+      const size = this.subAgentMessageChars(messages[tailStart - 1]);
+      if (tailChars + size > budget * 0.4) break;
+      tailChars += size;
+      tailStart--;
+    }
+    // Tool results must follow their assistant call.
+    while (tailStart < messages.length && messages[tailStart].role === 'tool') tailStart++;
+
+    if (tailStart <= headCount + 1) return; // nothing to remove
+
+    // Count chars that would be removed.
+    let removeChars = 0;
+    for (let i = headCount; i < tailStart; i++) {
+      removeChars += this.subAgentMessageChars(messages[i]);
+    }
+    if (total - removeChars <= budget) {
+      messages.splice(headCount, tailStart - headCount);
+      console.log(`[subagent] aggressive trim: removed ${tailStart - headCount} msg(s) to stay within budget`);
+    }
+  }
+
   /** Size of one transcript entry: content, tool-call arguments and reasoning. */
   private subAgentMessageChars(m: Record<string, any>): number {
     const content = typeof m.content === 'string'
@@ -1792,7 +1833,7 @@ export class Agent {
     if (opts.signal.aborted) return false;
 
     const cpt = opts.childConfig?.contextManagement?.charsPerToken || 3;
-    const budgetChars = opts.tokenBudget * cpt * 0.72;
+    const budgetChars = opts.tokenBudget * cpt * 0.6;
     if (this.subAgentTranscriptChars(messages) <= budgetChars) return false;
 
     // Keep the first two entries (system prompt + task) and the newest turns.
