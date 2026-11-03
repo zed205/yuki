@@ -345,9 +345,7 @@ export interface SessionClearedEvent extends WSEvent {
 
 // Search provider configuration
 export interface SearchConfig {
-  provider: 'exa' | 'serper' | 'duckduckgo';
   exaApiKey?: string;
-  serperApiKey?: string;
 }
 // Desktop events
 export interface ScreenshotEvent extends WSEvent {

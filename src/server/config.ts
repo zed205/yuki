@@ -105,9 +105,7 @@ const defaultConfig: Config = {
   },
   tempOutputCleanupTTLMinutes: 60,
   observer: { ...defaultObserverConfig },
-  search: {
-    provider: 'duckduckgo',
-  },
+  search: {},
 };
 
 export function loadEnvFile(): void {

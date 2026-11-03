@@ -523,85 +523,6 @@ interface SearchResult {
   snippet: string;
 }
 
-async function searchDuckDuckGo(query: string, numResults: number = 8): Promise<SearchResult[]> {
-  const response = await fetch('https://html.duckduckgo.com/html', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-      Accept: 'text/html',
-      Referer: 'https://duckduckgo.com/',
-    },
-    body: new URLSearchParams({ q: query }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`DuckDuckGo returned status ${response.status}`);
-  }
-
-  const html = await response.text();
-  const results: SearchResult[] = [];
-
-  const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
-  const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-
-  const links: Array<{ url: string; title: string }> = [];
-  let m;
-  while ((m = resultRegex.exec(html)) !== null) {
-    const linkUrl = decodeURIComponent(m[1].replace(/\/\/duckduckgo\.com\/l\/\?uddg=/, '').replace(/&rut=.*$/, ''));
-    const title = m[2].replace(/<[^>]+>/g, '').trim();
-    if (title && linkUrl) links.push({ url: linkUrl, title });
-  }
-
-  const snippets: string[] = [];
-  while ((m = snippetRegex.exec(html)) !== null) {
-    snippets.push(m[1].replace(/<[^>]+>/g, '').trim());
-  }
-
-  for (let i = 0; i < Math.min(links.length, numResults); i++) {
-    results.push({
-      title: links[i].title,
-      url: links[i].url,
-      snippet: snippets[i] || '',
-    });
-  }
-
-  return results;
-}
-
-async function searchSerper(query: string, numResults: number = 8): Promise<SearchResult[]> {
-  const apiKey = process.env.SERPER_API_KEY;
-  if (!apiKey) {
-    throw new Error('SERPER_API_KEY is not set. Add it to a .env file in the project root.');
-  }
-  const response = await fetch('https://google.serper.dev/search', {
-    method: 'POST',
-    headers: {
-      'X-API-KEY': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ q: query, num: numResults }),
-    signal: AbortSignal.timeout(15000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Serper returned status ${response.status}`);
-  }
-
-  const data = await response.json();
-  const results: SearchResult[] = [];
-
-  for (const item of (data.organic || []).slice(0, numResults)) {
-    results.push({
-      title: item.title || '',
-      url: item.link || '',
-      snippet: item.snippet || '',
-    });
-  }
-
-  return results;
-}
-
 async function searchExa(query: string, numResults: number = 8): Promise<SearchResult[]> {
   const config = getConfig();
   const apiKey = config.search?.exaApiKey || process.env.EXA_API_KEY;
@@ -652,26 +573,12 @@ export async function toolWebSearch(query: string, numResults?: number): Promise
   if (!query || !query.trim()) return 'Please provide a search query.';
 
   const count = Math.min(Math.max(numResults || 20, 1), 50);
-  const config = getConfig();
-  const provider = config.search?.provider || 'duckduckgo';
 
   try {
-    let results: SearchResult[];
-    if (provider === 'exa') {
-      results = await searchExa(query, count);
-    } else if (provider === 'serper') {
-      results = await searchSerper(query, count);
-    } else {
-      results = await searchDuckDuckGo(query, count);
-    }
+    const results = await searchExa(query, count);
     return formatSearchResults(results, query);
   } catch (err: any) {
-    try {
-      const results = await searchDuckDuckGo(query, 20);
-      return formatSearchResults(results, query);
-    } catch {
-      return `Web search error: ${err.message}`;
-    }
+    return `Web search error: ${err.message}`;
   }
 }
 
