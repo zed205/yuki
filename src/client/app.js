@@ -1087,17 +1087,11 @@
     const arrow = document.createElement('span');
     arrow.className = 'text-[10px] text-muted shrink-0';
     arrow.textContent = '▶';
-
-    const icon = document.createElement('span');
-    icon.className = 'shrink-0';
-    icon.textContent = '⚙';
-
     const label = document.createElement('span');
     label.className = 'truncate min-w-0';
     label.textContent = '…';
 
     header.appendChild(arrow);
-    header.appendChild(icon);
     header.appendChild(label);
 
     const body = document.createElement('div');
@@ -1106,7 +1100,7 @@
     el.appendChild(header);
     el.appendChild(body);
 
-    const group = { el, header, body, arrow, icon, label, lastEl: null, count: 0, sealed: false };
+    const group = { el, header, body, arrow, label, lastEl: null, count: 0, sealed: false };
     header.addEventListener('click', () => toggleTTGroup(group));
     return group;
   }
@@ -1395,10 +1389,6 @@
     arrow.className = 'text-muted transition-transform group-open:rotate-90 text-[10px] shrink-0';
     arrow.innerHTML = '▶';
 
-    const icon = document.createElement('span');
-    icon.className = 'shrink-0';
-    icon.textContent = '⚙';
-
     const nameSpan = document.createElement('span');
     nameSpan.className = 'font-mono text-primary font-medium shrink-0';
     nameSpan.textContent = `${toolCall.name}`;
@@ -1412,7 +1402,6 @@
     statusBadge.textContent = '...';
 
     summary.appendChild(arrow);
-    summary.appendChild(icon);
     summary.appendChild(nameSpan);
     summary.appendChild(paramsSpan);
     summary.appendChild(statusBadge);
@@ -1595,10 +1584,6 @@
     arrow.className = 'text-agentAccent/70 transition-transform group-open:rotate-90 text-[10px] shrink-0';
     arrow.textContent = '▶';
 
-    const icon = document.createElement('span');
-    icon.className = 'shrink-0 text-agentAccent';
-    icon.textContent = '🤖';
-
     const label = document.createElement('span');
     label.className = 'font-medium text-agentAccent shrink-0';
     label.textContent = 'Agent';
@@ -1618,7 +1603,6 @@
     statusBadge.textContent = badge.text;
 
     summary.appendChild(arrow);
-    summary.appendChild(icon);
     summary.appendChild(label);
     summary.appendChild(descEl);
     if (model) summary.appendChild(modelEl);
@@ -1746,11 +1730,6 @@
     const arrow = document.createElement('span');
     arrow.className = 'text-agentAccent/70 transition-transform group-open:rotate-90 text-[10px] shrink-0';
     arrow.textContent = '▶';
-
-    const icon = document.createElement('span');
-    icon.className = 'shrink-0';
-    icon.textContent = '⚙';
-
     const nameSpan = document.createElement('span');
     nameSpan.className = 'font-mono text-agentAccent font-medium shrink-0';
     nameSpan.textContent = toolCall.name;
@@ -1764,7 +1743,6 @@
     statusBadge.textContent = '...';
 
     summary.appendChild(arrow);
-    summary.appendChild(icon);
     summary.appendChild(nameSpan);
     summary.appendChild(paramsSpan);
     summary.appendChild(statusBadge);
