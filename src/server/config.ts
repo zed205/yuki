@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig } from '../shared/types';
+import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, SearchConfig } from '../shared/types';
 import { splitLines } from './utils/line-endings';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
@@ -105,6 +105,9 @@ const defaultConfig: Config = {
   },
   tempOutputCleanupTTLMinutes: 60,
   observer: { ...defaultObserverConfig },
+  search: {
+    provider: 'duckduckgo',
+  },
 };
 
 export function loadEnvFile(): void {

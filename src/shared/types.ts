@@ -91,6 +91,8 @@ export interface Config {
   autoSessionSummary?: boolean;
   // Temp output file cleanup TTL in minutes (default: 60)
   tempOutputCleanupTTLMinutes?: number;
+  // Search provider configuration
+  search?: SearchConfig;
 }
 
 export interface STTConfig {
@@ -340,6 +342,13 @@ export interface SessionClearedEvent extends WSEvent {
   };
 }
 
+
+// Search provider configuration
+export interface SearchConfig {
+  provider: 'exa' | 'serper' | 'duckduckgo';
+  exaApiKey?: string;
+  serperApiKey?: string;
+}
 // Desktop events
 export interface ScreenshotEvent extends WSEvent {
   type: 'desktop:screenshot';

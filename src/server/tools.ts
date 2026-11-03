@@ -602,6 +602,44 @@ async function searchSerper(query: string, numResults: number = 8): Promise<Sear
   return results;
 }
 
+async function searchExa(query: string, numResults: number = 8): Promise<SearchResult[]> {
+  const config = getConfig();
+  const apiKey = config.search?.exaApiKey || process.env.EXA_API_KEY;
+  if (!apiKey) {
+    throw new Error('Exa API key is not configured. Add it to the search config or EXA_API_KEY env var.');
+  }
+
+  const response = await fetch('https://docs.exa.ai/search', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      numResults: Math.min(numResults, 50),
+      type: 'auto',
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Exa returned status ${response.status}: ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const results: SearchResult[] = [];
+
+  for (const item of (data.results || []).slice(0, numResults)) {
+    results.push({
+      title: item.title || '',
+      url: item.url || '',
+      snippet: item.text || '',
+    });
+  }
+
+  return results;
+}
 function formatSearchResults(results: SearchResult[], query: string): string {
   if (results.length === 0) return `No search results found for "${query}".`;
   const lines = results.map((r, i) =>
@@ -614,9 +652,18 @@ export async function toolWebSearch(query: string, numResults?: number): Promise
   if (!query || !query.trim()) return 'Please provide a search query.';
 
   const count = Math.min(Math.max(numResults || 20, 1), 50);
+  const config = getConfig();
+  const provider = config.search?.provider || 'duckduckgo';
 
   try {
-    const results = await searchSerper(query, count);
+    let results: SearchResult[];
+    if (provider === 'exa') {
+      results = await searchExa(query, count);
+    } else if (provider === 'serper') {
+      results = await searchSerper(query, count);
+    } else {
+      results = await searchDuckDuckGo(query, count);
+    }
     return formatSearchResults(results, query);
   } catch (err: any) {
     try {
@@ -1237,7 +1284,7 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'DEFAULT web search — always use this first for any online question. Returns titles, URLs, and snippets via Parallel Search API. Do NOT use web_fetch or browser_navigate unless search results are insufficient.',
+      description: 'DEFAULT web search — always use this first for any online question. Returns titles, URLs, and snippets. Uses Exa search by default (configured in yukiweb config). Do NOT use web_fetch or browser_navigate unless search results are insufficient.',
       parameters: {
         type: 'object',
         properties: {
@@ -1551,4 +1598,3 @@ export const toolNames = toolDefinitions.map(t => t.function.name);
 export function getBuiltinToolNames(): string[] {
   return toolNames;
 }
-
