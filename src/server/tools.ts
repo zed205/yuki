@@ -530,7 +530,7 @@ async function searchExa(query: string, numResults: number = 8): Promise<SearchR
     throw new Error('Exa API key is not configured. Add it to the search config or EXA_API_KEY env var.');
   }
 
-  const response = await fetch('https://docs.exa.ai/search', {
+  const response = await fetch('https://api.exa.ai/search', {
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
