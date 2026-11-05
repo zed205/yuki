@@ -11,6 +11,24 @@ import { toolNames, subAgentToolNames } from './tools';
 import { planGet, loadPlans } from './plan';
 import { loadProjects, getProjects, getProject, createProject, renameProject, deleteProject, reorderProjects } from './project';
 import { Session, Message, Attachment } from '../shared/types';
+import {
+  initDb,
+  getDb,
+  run,
+  get as dbGet,
+  listSessionsMeta,
+  getSessionRow,
+  upsertSession,
+  upsertMessage,
+  deleteMessagesForSession,
+  getMessages as dbGetMessages,
+  deleteSession as dbDeleteSession,
+  saveSession as dbSaveSession,
+  getSession as dbGetSession,
+  createSession as dbCreateSession,
+  loadSessions as dbLoadSessions,
+  updateSessionField,
+} from '../db';
 import * as fs from 'fs';
 import { normalizeLineEndings } from './utils/line-endings';
 import * as os from 'os';
@@ -24,15 +42,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 
-const sessions: Map<string, Session> = new Map();
 const sessionDataDir = path.join(os.homedir(), '.config', 'yukiweb', 'sessions');
 const attachmentsDir = path.join(os.homedir(), '.config', 'yukiweb', 'attachments');
-
-function ensureSessionDir(): void {
-  if (!fs.existsSync(sessionDataDir)) {
-    fs.mkdirSync(sessionDataDir, { recursive: true });
-  }
-}
 
 // Decode data URLs for dropped files, write them to disk, and return attachment
 // metadata to store on the user message.
@@ -111,97 +122,35 @@ function persistImages(images: string[], sessionId: string, msgId: string, start
 
 function saveSession(session: Session): void {
   try {
-    ensureSessionDir();
-    const filePath = path.join(sessionDataDir, `${session.id}.json`);
-    const serialized = {
-      ...session,
-      createdAt: session.createdAt.toISOString(),
-      updatedAt: session.updatedAt.toISOString(),
-      messages: session.messages.map((m) => ({
-        ...m,
-        timestamp: m.timestamp.toISOString(),
-      })),
-    };
-    fs.writeFileSync(filePath, JSON.stringify(serialized));
+    dbSaveSession(session);
   } catch (err) {
     console.error('Failed to save session:', err);
   }
 }
 
 function loadSessions(): void {
-  try {
-    ensureSessionDir();
-    const files = fs.readdirSync(sessionDataDir).filter((f) => f.endsWith('.json'));
-
-    for (const file of files) {
-      const filePath = path.join(sessionDataDir, file);
-      const data = JSON.parse(normalizeLineEndings(fs.readFileSync(filePath, 'utf-8')));
-
-      const session: Session = {
-        id: data.id,
-        title: data.title,
-        projectId: data.projectId || 'default',
-        thinkingEnabled: data.thinkingEnabled,
-        voiceMode: data.voiceMode,
-        charsPerToken: typeof data.charsPerToken === 'number' ? data.charsPerToken : undefined,
-        lastPromptTokens: typeof data.lastPromptTokens === 'number' ? data.lastPromptTokens : undefined,
-        createdAt: new Date(data.createdAt),
-        updatedAt: new Date(data.updatedAt),
-        messages: data.messages.map((m: any) => ({
-          ...m,
-          timestamp: new Date(m.timestamp),
-        })),
-      };
-
-      sessions.set(session.id, session);
-    }
-
-    if (files.length > 0) {
-      const lastFile = files.sort().pop()!;
-      const lastData = JSON.parse(normalizeLineEndings(fs.readFileSync(path.join(sessionDataDir, lastFile), 'utf-8')));
-      activeSessionId = lastData.id;
-    }
-  } catch (err) {
-    console.error('Failed to load sessions:', err);
-  }
+  // Migration handled by initDb + dbLoadSessions at startup
 }
 
 function createSession(projectId?: string): Session {
-  const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const session: Session = {
-    id,
-    messages: [],
-    projectId: projectId || 'default',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    thinkingEnabled: undefined,
-    disabledTools: [
-      'browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_get_content', 'browser_get_links',
-      'browser_evaluate_js', 'browser_xpath', 'browser_scroll', 'browser_wait_for', 'browser_select',
-      'browser_get_visible_elements', 'browser_get_ax_tree', 'browser_get_react_tree', 'browser_hover',
-      'browser_click_xpath', 'browser_extract_content', 'browser_get_page_structure', 'browser_scroll_to', 'browser_wait_for_selector',
-    ],
-  };
+  const project = projectId || 'default';
+  const disabledTools = [
+    'browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_get_content', 'browser_get_links',
+    'browser_evaluate_js', 'browser_xpath', 'browser_scroll', 'browser_wait_for', 'browser_select',
+    'browser_get_visible_elements', 'browser_get_ax_tree', 'browser_get_react_tree', 'browser_hover',
+    'browser_click_xpath', 'browser_extract_content', 'browser_get_page_structure', 'browser_scroll_to', 'browser_wait_for_selector',
+  ];
 
   const systemPrompt = loadSystemPrompt();
-  if (systemPrompt) {
-    session.messages.push({
-      id: `${id}-system`,
-      role: 'system',
-      content: systemPrompt,
-      timestamp: new Date(),
-      sessionId: id,
-    });
-  }
-
-  sessions.set(id, session);
+  const session = dbCreateSession(systemPrompt, project, disabledTools);
   return session;
 }
 
 let activeSessionId: string | null = null;
 
+initDb();
+activeSessionId = dbLoadSessions(sessionDataDir) || null;
 loadConfig();
-loadSessions();
 loadPlans();
 loadProjects();
 
@@ -237,7 +186,7 @@ function startSubAgentWakeTurn(sessionId: string): void {
   // agent_result. Never wake the model with nothing to review.
   if (pending.length === 0) return;
 
-  const session = sessions.get(sessionId);
+  const session = dbGetSession(sessionId);
   if (!session) return;
   const ws = Array.from(sessionSockets.entries()).find(([, sid]) => sid === sessionId)?.[0];
   if (!ws || ws.readyState !== 1) return; // no viewer — the report waits for the next turn
@@ -312,17 +261,8 @@ agent.setSubAgentWakeHandler((job) => {
 
 // --- Session API ---
 app.get('/api/sessions', (req, res) => {
-  const projectId = req.query.projectId as string || 'default';
-  const sessionList = Array.from(sessions.values())
-    .filter(s => (s.projectId || 'default') === projectId)
-    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-    .map((s) => ({
-      id: s.id,
-      title: s.title,
-      createdAt: s.createdAt.toISOString(),
-      updatedAt: s.updatedAt.toISOString(),
-      messageCount: s.messages.filter((m) => m.role !== 'system').length,
-    }));
+  const projectId = (req.query.projectId as string) || 'default';
+  const sessionList = listSessionsMeta(projectId);
   res.json(sessionList);
 });
 
@@ -337,41 +277,66 @@ function makeSnippet(content: string, query: string, maxLen = 160): string {
 }
 
 app.get('/api/sessions/search', (req, res) => {
-  const q = String(req.query.q || '').trim().toLowerCase();
+  const q = String(req.query.q || '').trim();
   if (!q) {
     res.json([]);
     return;
   }
+  const lowerQ = q.toLowerCase();
+
+  // Search in session titles
+  const titleResults = getDb().prepare(
+    `SELECT s.id, s.title, s.summary, s.project_id, s.created_at, s.updated_at,
+            (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role != 'system') as msg_count
+     FROM sessions s WHERE s.title IS NOT NULL AND lower(s.title) LIKE ?
+     ORDER BY s.updated_at DESC`,
+    [`%${lowerQ}%`]
+  ).all() as Array<{
+    id: string; title?: string; summary?: string; project_id?: string;
+    created_at: number; updated_at: number; msg_count: number;
+  }>;
+
+  // Search in message content (distinct sessions)
+  const contentResults = getDb().prepare(
+    `SELECT DISTINCT s.id, s.title, s.summary, s.project_id, s.created_at, s.updated_at
+     FROM messages m
+     JOIN sessions s ON m.session_id = s.id
+     WHERE lower(m.content) LIKE ?
+     ORDER BY s.updated_at DESC`,
+    [`%${lowerQ}%`]
+  ).all() as Array<{
+    id: string; title?: string; summary?: string; project_id?: string;
+    created_at: number; updated_at: number;
+  }>;
+
+  // Deduplicate and build results
+  const seen = new Set<string>();
   const results: any[] = [];
-  for (const s of sessions.values()) {
-    const title = s.title || '';
-    const titleMatch = title.toLowerCase().includes(q);
-    let snippet = '';
-    let matchCount = 0;
-    for (const m of s.messages) {
-      const content = m.content || '';
-      if (content.toLowerCase().includes(q)) {
-        matchCount++;
-        if (!snippet) snippet = makeSnippet(content, q);
-      }
-    }
-    if (!titleMatch && matchCount === 0) continue;
+
+  const addResult = (row: any) => {
+    if (seen.has(row.id)) return;
+    seen.add(row.id);
+    const msgCount = row.msg_count || (dbGetMessages(row.id) || []).filter((m: any) => m.role !== 'system').length;
+    const snippet = row.title ? makeSnippet(row.title, q) : '';
     results.push({
-      id: s.id,
-      title: title || `${s.messages.filter((m) => m.role !== 'system').length} messages`,
-      createdAt: s.createdAt.toISOString(),
-      updatedAt: s.updatedAt.toISOString(),
-      messageCount: s.messages.filter((m) => m.role !== 'system').length,
+      id: row.id,
+      title: row.title || `${msgCount} messages`,
+      createdAt: new Date(row.created_at * 1000).toISOString(),
+      updatedAt: new Date(row.updated_at * 1000).toISOString(),
+      messageCount: msgCount,
       snippet,
-      matchCount,
     });
-  }
-  results.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  };
+
+  for (const row of titleResults) addResult(row);
+  for (const row of contentResults) addResult(row);
+
+  results.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   res.json(results);
 });
 
 app.get('/api/sessions/:id', (req, res) => {
-  const session = sessions.get(req.params.id);
+  const session = dbGetSession(req.params.id);
   if (!session) {
     res.status(404).json({ error: 'Session not found' });
     return;
@@ -387,7 +352,9 @@ app.post('/api/sessions', (req, res) => {
 });
 
 function deleteSessionById(id: string): void {
-  if (!sessions.has(id)) return;
+  const row = getSessionRow(id);
+  if (!row) return;
+
   // Background sub-agents belong to the session that spawned them.
   const cancelled = agent.cancelSessionSubAgents(id);
   if (cancelled > 0) console.log(`[subagent] cancelled ${cancelled} agent(s) for deleted session ${id}`);
@@ -396,7 +363,10 @@ function deleteSessionById(id: string): void {
     clearTimeout(timer);
     wakeTimers.delete(id);
   }
-  sessions.delete(id);
+
+  dbDeleteSession(id);
+
+  // Clean up the legacy file if it still exists
   try {
     const filePath = path.join(sessionDataDir, `${id}.json`);
     if (fs.existsSync(filePath)) {
@@ -405,14 +375,18 @@ function deleteSessionById(id: string): void {
   } catch (err) {
     console.error('Failed to delete session file:', err);
   }
+
   if (activeSessionId === id) {
-    activeSessionId = sessions.size > 0 ? Array.from(sessions.keys())[0] : null;
+    const recent = getDb().prepare(
+      'SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1'
+    ).get() as { id: string } | undefined;
+    activeSessionId = recent?.id || null;
   }
 }
 
 app.delete('/api/sessions/:id', (req, res) => {
   const id = req.params.id;
-  if (!sessions.has(id)) {
+  if (!getSessionRow(id)) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
@@ -421,15 +395,12 @@ app.delete('/api/sessions/:id', (req, res) => {
 });
 
 app.post('/api/sessions/:id/rename', (req, res) => {
-  const session = sessions.get(req.params.id);
-  if (!session) {
+  const id = req.params.id;
+  if (!getSessionRow(id)) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-
-  session.title = req.body.title;
-  session.updatedAt = new Date();
-  saveSession(session);
+  updateSessionField(id, { title: { value: req.body.title } });
   res.json({ success: true });
 });
 
@@ -500,10 +471,11 @@ app.delete('/api/projects/:id', (req, res) => {
     const success = deleteProject(req.params.id);
     if (!success) return res.status(404).json({ error: 'Project not found' });
     // Delete all sessions belonging to the project
-    for (const session of Array.from(sessions.values())) {
-      if ((session.projectId || 'default') === req.params.id) {
-        deleteSessionById(session.id);
-      }
+    const projectSessions = getDb().prepare(
+      'SELECT id FROM sessions WHERE project_id = ?',
+    ).all(req.params.id) as Array<{ id: string }>;
+    for (const row of projectSessions) {
+      deleteSessionById(row.id);
     }
     res.json({ success: true });
   } catch (err: any) {
@@ -512,22 +484,33 @@ app.delete('/api/projects/:id', (req, res) => {
 });
 
 app.get('/api/tree', (_req, res) => {
-  const tree = getProjects().map(p => ({
-    id: p.id,
-    name: p.name,
-    sessions: Array.from(sessions.values())
-      .filter(s => (s.projectId || 'default') === p.id)
-      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-      .map(s => ({
-        id: s.id,
-        title: s.title,
-        summary: s.summary,
-        updatedAt: s.updatedAt.toISOString(),
-        messageCount: s.messages.filter(m => m.role !== 'system').length,
+  const tree = getProjects().map(p => {
+    const sessionRows = getDb().prepare(
+      `SELECT s.id, s.title, s.summary, s.updated_at,
+              (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role != 'system') as msg_count
+       FROM sessions s WHERE s.project_id = ?
+       ORDER BY s.updated_at DESC`
+    ).all([p.id]) as Array<{
+      id: string; title?: string; summary?: string; updated_at: number; msg_count: number;
+    }>;
+    return {
+      id: p.id,
+      name: p.name,
+      sessions: sessionRows.map((row: any) => ({
+        id: row.id,
+        title: row.title,
+        summary: row.summary,
+        updatedAt: new Date(row.updated_at * 1000).toISOString(),
+        messageCount: row.msg_count,
         projectId: p.id,
       })),
-  }));
-  res.json({ projects: tree, activeProjectId: activeSessionId ? (sessions.get(activeSessionId)?.projectId || 'default') : 'default' });
+    };
+  });
+  const activeSession = activeSessionId ? getSessionRow(activeSessionId) : undefined;
+  res.json({
+    projects: tree,
+    activeProjectId: activeSession?.project_id || 'default',
+  });
 });
 
 // --- Audio API ---
@@ -684,15 +667,32 @@ function getSessionDisabledToolsForSession(session: Session): string[] {
 }
 
 function getSession(id?: string): Session {
-  if (id && sessions.has(id)) {
-    activeSessionId = id;
-    return sessions.get(id)!;
+  // Explicit session ID requested
+  if (id) {
+    const session = dbGetSession(id);
+    if (session) {
+      activeSessionId = id;
+      return session;
+    }
   }
 
-  if (activeSessionId && sessions.has(activeSessionId)) {
-    return sessions.get(activeSessionId)!;
+  // Use active session if set and valid
+  if (activeSessionId) {
+    const session = dbGetSession(activeSessionId);
+    if (session) return session;
   }
 
+  // Fallback: most recent session or create new
+  const recentRow = getDb().prepare(
+    'SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1'
+  ).get() as { id: string } | undefined;
+  if (recentRow) {
+    activeSessionId = recentRow.id;
+    const session = dbGetSession(recentRow.id);
+    if (session) return session;
+  }
+
+  // Create new session
   const session = createSession();
   activeSessionId = session.id;
   return session;
@@ -873,9 +873,9 @@ wss.on('connection', (ws) => {
           return;
         }
         const id = message.data.sessionId;
-        if (id && sessions.has(id)) {
+        if (id && getSessionRow(id)) {
           activeSessionId = id;
-          const switchedSession = sessions.get(id)!;
+          const switchedSession = dbGetSession(id)!;
           sessionSockets.set(ws, id);
           agent.bindClient(id, ws);
           ws.send(JSON.stringify({
@@ -903,20 +903,18 @@ wss.on('connection', (ws) => {
         const projectId = message.data.projectId;
         if (projectId && getProject(projectId)) {
           // Switch to first session in this project, or create one
-          const projectSessions = Array.from(sessions.values())
-            .filter(s => (s.projectId || 'default') === projectId)
-            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+          const projectRows = getDb().prepare(
+            'SELECT id FROM sessions WHERE project_id = ? ORDER BY updated_at DESC',
+          ).all(projectId) as Array<{ id: string }>;
 
           let targetSession: Session;
-          if (projectSessions.length > 0) {
-            targetSession = projectSessions[0];
+          if (projectRows.length > 0) {
+            targetSession = dbGetSession(projectRows[0].id)!;
           } else {
-            targetSession = createSession();
-            targetSession.projectId = projectId;
-            saveSession(targetSession);
+            targetSession = createSession(projectId);
+            activeSessionId = targetSession.id;
           }
 
-          activeSessionId = targetSession.id;
           ws.send(JSON.stringify({
             type: 'project:switched',
             data: {
@@ -999,13 +997,14 @@ wss.on('connection', (ws) => {
       if (message.type === 'message:revert') {
         const msgId = message.data.messageId;
         const sid = message.data.sessionId;
-        const targetSession = sid && sessions.has(sid) ? sessions.get(sid)! : session;
-        const idx = targetSession.messages.findIndex((m) => m.id === msgId);
+        const targetSession = sid ? dbGetSession(sid) : undefined;
+        const actualSession = targetSession || session;
+        const idx = actualSession.messages.findIndex((m) => m.id === msgId);
         if (idx !== -1) {
-          const revertedText = targetSession.messages[idx].content;
-          targetSession.messages = targetSession.messages.slice(0, idx);
-          targetSession.updatedAt = new Date();
-          saveSession(targetSession);
+          const revertedText = actualSession.messages[idx].content;
+          actualSession.messages = actualSession.messages.slice(0, idx);
+          actualSession.updatedAt = new Date();
+          saveSession(actualSession);
           ws.send(JSON.stringify({
             type: 'message:reverted',
             data: { messageId: msgId, text: revertedText },
@@ -1085,11 +1084,8 @@ wss.on('connection', (ws) => {
       if (message.type === 'session:rename') {
         const id = message.data.sessionId;
         const title = message.data.title;
-        if (id && title && sessions.has(id)) {
-          const s = sessions.get(id)!;
-          s.title = title;
-          s.updatedAt = new Date();
-          saveSession(s);
+        if (id && title && getSessionRow(id)) {
+          updateSessionField(id, { title: { value: title } });
           ws.send(JSON.stringify({
             type: 'session:renamed',
             data: { sessionId: id, title },
@@ -1106,11 +1102,9 @@ wss.on('connection', (ws) => {
       if (message.type === 'session:move') {
         const sessionId = message.data.sessionId;
         const projectId = message.data.projectId;
-        const target = sessions.get(sessionId);
-        if (target && projectId && getProject(projectId) && target.projectId !== projectId) {
-          target.projectId = projectId;
-          target.updatedAt = new Date();
-          saveSession(target);
+        const target = getSessionRow(sessionId);
+        if (target && projectId && getProject(projectId) && (target.project_id || 'default') !== projectId) {
+          updateSessionField(sessionId, { project_id: { value: projectId } });
           ws.send(JSON.stringify({
             type: 'session:moved',
             data: { sessionId, projectId },

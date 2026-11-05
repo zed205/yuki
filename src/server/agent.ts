@@ -7,7 +7,7 @@ import { getConfig } from './config';
 import { tools, toolDefinitions, toolNames, planToolNames, subAgentToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
-import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig } from './config';
+import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getModelReasoningEffort } from './config';
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -841,9 +841,10 @@ export class Agent {
 
     const thinkingEnabled = getEffectiveThinking(targetModel);
     if (thinkingEnabled) {
+      const reasoningEffort = getModelReasoningEffort(targetModel);
       const kwargs: Record<string, any> = { enable_thinking: true, preserve_thinking: agentCfg.preserveThinking ?? true };
-      if (agentCfg.reasoningEffort) {
-        kwargs.reasoning_effort = agentCfg.reasoningEffort;
+      if (reasoningEffort) {
+        kwargs.reasoning_effort = reasoningEffort;
       }
       createParams.chat_template_kwargs = kwargs;
     } else {
@@ -917,6 +918,15 @@ export class Agent {
 
     if (toolCalls.length > 0 && fullContent) {
       fullContent = fullContent.replace(/<function>[\s\S]*?<\/function>/gi, '').replace(/<\/?function>/gi, '');
+    }
+
+    // Strip trailing backtick(s) from EOS token of Qwen3.6
+    const origContentLen = fullContent.length;
+    while (fullContent.endsWith('`')) {
+      fullContent = fullContent.slice(0, -1);
+    }
+    if (fullContent.length < origContentLen) {
+      console.log(`[agent] stripped ${origContentLen - fullContent.length} trailing backtick(s) from EOS token`);
     }
 
     const result = { content: fullContent, reasoningContent: fullReasoning, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, usage: usageResult };

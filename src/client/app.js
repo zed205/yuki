@@ -775,6 +775,7 @@
         syncVoiceMode(!!data.data.voiceMode);
         loadTree();
         loadSessionMessages(currentSessionId);
+        subAgentSnapshot = { slots: 0, running: 0, queued: 0, agents: [] };
         break;
 
       case 'project:switched':
@@ -785,6 +786,7 @@
         syncVoiceMode(!!data.data.voiceMode);
         loadTree();
         loadSessionMessages(currentSessionId);
+        subAgentSnapshot = { slots: 0, running: 0, queued: 0, agents: [] };
         break;
 
       case 'session:moved':
@@ -1837,6 +1839,8 @@
 
   function upsertSnapshotAgent(data) {
     if (!data || !data.agentId) return;
+    // Only track agents that belong to the current session.
+    if (currentSessionId && data.sessionId && data.sessionId !== currentSessionId) return;
     const agents = subAgentSnapshot.agents || (subAgentSnapshot.agents = []);
     let entry = agents.find(a => a.agentId === data.agentId);
     if (!entry) {

@@ -1,9 +1,6 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import type Database from 'better-sqlite3';
+import { getDb } from '../db';
 import { normalizeLineEndings } from './utils/line-endings';
-
-const skillsDir = path.join(os.homedir(), '.config', 'yukiweb', 'skills');
 
 interface Skill {
   name: string;
@@ -11,35 +8,50 @@ interface Skill {
   instructions: string;
 }
 
-function ensureDir(): void {
-  if (!fs.existsSync(skillsDir)) fs.mkdirSync(skillsDir, { recursive: true });
-}
-
 export function skillList(): string {
-  ensureDir();
-  const files = fs.readdirSync(skillsDir).filter(f => f.endsWith('.md'));
-  if (files.length === 0) return 'No skills installed.';
-  return files.map(f => f.replace(/\.md$/, '')).join('\n');
+  try {
+    const db: Database.Database = getDb();
+    const rows = db.prepare('SELECT name FROM skills ORDER BY name').all() as { name: string }[];
+    if (rows.length === 0) return 'No skills installed.';
+    return rows.map(r => r.name).join('\n');
+  } catch {
+    return 'No skills installed.';
+  }
 }
 
 export function skillLoad(name: string): string {
-  ensureDir();
-  const filePath = path.join(skillsDir, `${name}.md`);
-  if (!fs.existsSync(filePath)) return `Skill "${name}" not found. Available skills:\n${skillList()}`;
-  return normalizeLineEndings(fs.readFileSync(filePath, 'utf-8'));
+  try {
+    const db: Database.Database = getDb();
+    const row = db.prepare('SELECT * FROM skills WHERE name = ?').get(name) as Skill | undefined;
+    if (!row) {
+      return `Skill "${name}" not found. Available skills:\n${skillList()}`;
+    }
+    // Reconstruct the file format for backward compatibility
+    return normalizeLineEndings(`# ${row.name}\n\n**Description:** ${row.description}\n\n## Instructions\n\n${row.instructions}\n`);
+  } catch {
+    return `Skill "${name}" not found. Available skills:\n${skillList()}`;
+  }
 }
 
 export function skillSave(name: string, description: string, instructions: string): string {
-  ensureDir();
-  const content = `# ${name}\n\n**Description:** ${description}\n\n## Instructions\n\n${instructions}\n`;
-  fs.writeFileSync(path.join(skillsDir, `${name}.md`), content, 'utf-8');
-  return `Saved skill "${name}"`;
+  try {
+    const db: Database.Database = getDb();
+    db.prepare('INSERT OR REPLACE INTO skills (name, description, instructions) VALUES (?, ?, ?)').run(name, description, instructions);
+    return `Saved skill "${name}"`;
+  } catch {
+    return `Failed to save skill "${name}"`;
+  }
 }
 
 export function skillDelete(name: string): string {
-  ensureDir();
-  const filePath = path.join(skillsDir, `${name}.md`);
-  if (!fs.existsSync(filePath)) return `Skill "${name}" not found.`;
-  fs.unlinkSync(filePath);
-  return `Deleted skill "${name}"`;
+  try {
+    const db: Database.Database = getDb();
+    const result = db.prepare('DELETE FROM skills WHERE name = ?').run(name);
+    if (result.changes > 0) {
+      return `Deleted skill "${name}"`;
+    }
+    return `Skill "${name}" not found.`;
+  } catch {
+    return `Skill "${name}" not found.`;
+  }
 }

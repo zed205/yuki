@@ -1,8 +1,10 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type Database from 'better-sqlite3';
 import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, SearchConfig } from '../shared/types';
 import { splitLines } from './utils/line-endings';
+import { getDb } from '../db';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
 const configPath = path.join(configDir, 'config.json');
@@ -18,6 +20,7 @@ const defaultModelConfig: ModelConfig = {
   temperature: undefined,
   thinkingEnabled: false,
   preserveThinking: true,
+  reasoningEffort: 'xhigh',
 };
 
 const defaultSubAgentConfig: SubAgentConfig = {
@@ -46,7 +49,7 @@ const defaultShellConfig: ShellConfig = {
 };
 
 const defaultConfig: Config = {
-  // Default model � used when no models[] are configured
+  // Default model -- used when no models[] are configured
   models: [{
     ...defaultModelConfig,
     name: 'Default',
@@ -108,6 +111,57 @@ const defaultConfig: Config = {
   search: {},
 };
 
+let config: Config = { ...defaultConfig };
+let activeModelName: string | undefined;
+let thinkingOverride: boolean | undefined = undefined;
+
+const DB_CONFIG_KEY = 'config';
+
+/**
+ * Get the config from the database, or null if not found.
+ */
+function loadConfigFromDb(): Config | null {
+  try {
+    const db: Database.Database = getDb();
+    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(DB_CONFIG_KEY) as { value: string } | undefined;
+    if (!row) return null;
+
+    const loaded = JSON.parse(row.value);
+    migrateReasoningEffort(loaded);
+
+    return {
+      ...defaultConfig,
+      ...loaded,
+      models: Array.isArray(loaded.models) ? loaded.models : defaultConfig.models,
+      stt: { ...defaultConfig.stt, ...(loaded.stt || {}) },
+      tts: { ...defaultConfig.tts, ...(loaded.tts || {}) },
+      ui: { ...defaultConfig.ui, ...(loaded.ui || {}) },
+      desktop: { ...defaultConfig.desktop, ...(loaded.desktop || {}) },
+      contextManagement: { ...defaultConfig.contextManagement, ...(loaded.contextManagement || {}) },
+      rawLLMLog: { ...defaultConfig.rawLLMLog, ...(loaded.rawLLMLog || {}) },
+      subAgents: { ...defaultConfig.subAgents, ...(loaded.subAgents || {}) },
+      observer: { ...defaultConfig.observer, ...(loaded.observer || {}) },
+      uiAutomation: { ...defaultConfig.uiAutomation, ...(loaded.uiAutomation || {}) },
+      shell: { ...defaultConfig.shell, ...(loaded.shell || {}) },
+    };
+  } catch (err) {
+    console.error('Failed to load config from database:', err);
+    return null;
+  }
+}
+
+/**
+ * Save the config to the database as a JSON blob.
+ */
+function saveConfigToDb(cfg: Config): void {
+  try {
+    const db: Database.Database = getDb();
+    db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(DB_CONFIG_KEY, JSON.stringify(cfg));
+  } catch (err) {
+    console.error('Failed to save config to database:', err);
+  }
+}
+
 export function loadEnvFile(): void {
   try {
     const envPath = path.join(process.cwd(), '.env');
@@ -116,16 +170,12 @@ export function loadEnvFile(): void {
       const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
       if (m && process.env[m[1]] === undefined) {
         process.env[m[1]] = m[2] || '';
-};
+      }
     }
   } catch (err) {
     console.error('Failed to load .env:', err);
   }
 }
-
-let config: Config = defaultConfig;
-let activeModelName: string | undefined;
-let thinkingOverride: boolean | undefined = undefined;
 
 export function setThinkingOverride(enabled: boolean): void {
   thinkingOverride = enabled;
@@ -154,7 +204,7 @@ export function getModelConfig(name: string): ModelConfig | undefined {
 
 export function getActiveModelName(): string {
   if (activeModelName) return activeModelName;
-  if (config.activeModel) return config.activeModel;
+  if (config?.activeModel) return config.activeModel;
   const models = getNamedModels();
   return models[0]?.name || 'Default';
 }
@@ -181,6 +231,14 @@ export function getAgentModel(modelName?: string): ModelConfig {
   if (activeConfig) return activeConfig;
   // Fallback: create default model config
   return { ...defaultModelConfig, name: 'Default' };
+}
+
+/**
+ * Get reasoning effort for a model, falling back to the default 'xhigh' when unset.
+ */
+export function getModelReasoningEffort(name?: string): string | undefined {
+  const cfg = getAgentModel(name);
+  return cfg.reasoningEffort ?? 'xhigh';
 }
 
 export function getModelDefaultThinking(name?: string): boolean {
@@ -210,6 +268,26 @@ function migrateReasoningEffort(loaded: any): void {
 
 export function loadConfig(): Config {
   try {
+    // Try database first
+    const dbConfig = loadConfigFromDb();
+    if (dbConfig) {
+      config = dbConfig;
+      if (!activeModelName) {
+        activeModelName = config.activeModel || getNamedModels()[0]?.name;
+      }
+      // Only seed the override from disk on first load. Runtime re-loads must
+      // not clobber a live value set by the UI toggle.
+      if (thinkingOverride === undefined && config.thinkingEnabled !== undefined) {
+        thinkingOverride = config.thinkingEnabled;
+      }
+      return config;
+    }
+  } catch (err) {
+    console.error('Failed to load config from database:', err);
+  }
+
+  // Fallback: try legacy file-based config
+  try {
     if (fs.existsSync(configPath)) {
       let raw = fs.readFileSync(configPath, 'utf-8');
       if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
@@ -218,7 +296,7 @@ export function loadConfig(): Config {
       config = {
         ...defaultConfig,
         ...loaded,
-        // models[] loaded directly � no transformation needed
+        models: Array.isArray(loaded.models) ? loaded.models : undefined,
 
         stt: { ...defaultConfig.stt, ...(loaded.stt || {}) },
         tts: { ...defaultConfig.tts, ...(loaded.tts || {}) },
@@ -249,16 +327,14 @@ export function loadConfig(): Config {
       activeModelName = getNamedModels()[0]?.name;
     }
   }
+
   return config;
 }
 
 export function saveConfig(newConfig: Config): void {
   config = newConfig;
   try {
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
-    }
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    saveConfigToDb(newConfig);
   } catch (err) {
     console.error('Failed to save config:', err);
   }

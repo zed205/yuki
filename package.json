@@ -12,6 +12,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.0.3",
     "chrome-remote-interface": "^0.34.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",

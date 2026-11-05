@@ -1,54 +1,48 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import type Database from 'better-sqlite3';
+import { getDb } from '../db';
 import { normalizeLineEndings } from './utils/line-endings';
 
-const memoryPath = path.join(os.homedir(), '.config', 'yukiweb', 'memories.json');
-
-interface MemoryStore {
-  [key: string]: string;
-}
-
-function loadMemories(): MemoryStore {
-  try {
-    if (fs.existsSync(memoryPath)) {
-      return JSON.parse(normalizeLineEndings(fs.readFileSync(memoryPath, 'utf-8')));
-    }
-  } catch {}
-  return {};
-}
-
-function saveMemories(data: MemoryStore): void {
-  const dir = path.dirname(memoryPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(memoryPath, JSON.stringify(data, null, 2));
-}
-
 export function memorySave(key: string, value: string): string {
-  const data = loadMemories();
-  data[key] = value;
-  saveMemories(data);
-  return `Saved memory "${key}"`;
+  try {
+    const db: Database.Database = getDb();
+    db.prepare('INSERT OR REPLACE INTO memories (key, value) VALUES (?, ?)').run(key, value);
+    return `Saved memory "${key}"`;
+  } catch {
+    return `Failed to save memory "${key}"`;
+  }
 }
 
 export function memoryRead(key: string): string {
-  const data = loadMemories();
-  return data[key] !== undefined ? data[key] : `No memory found for "${key}"`;
+  try {
+    const db: Database.Database = getDb();
+    const row = db.prepare('SELECT value FROM memories WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? row.value : `No memory found for "${key}"`;
+  } catch {
+    return `No memory found for "${key}"`;
+  }
 }
 
 export function memoryList(): string {
-  const data = loadMemories();
-  const keys = Object.keys(data);
-  if (keys.length === 0) return 'No memories stored.';
-  return keys.join('\n');
+  try {
+    const db: Database.Database = getDb();
+    const rows = db.prepare('SELECT key FROM memories ORDER BY key').all() as { key: string }[];
+    if (rows.length === 0) return 'No memories stored.';
+    return rows.map(r => r.key).join('\n');
+  } catch {
+    return 'No memories stored.';
+  }
 }
 
 export function memoryDelete(key: string): string {
-  const data = loadMemories();
-  if (data[key] !== undefined) {
-    delete data[key];
-    saveMemories(data);
-    return `Deleted memory "${key}"`;
+  try {
+    const db: Database.Database = getDb();
+    const row = db.prepare('SELECT value FROM memories WHERE key = ?').get(key) as { value: string } | undefined;
+    if (row) {
+      db.prepare('DELETE FROM memories WHERE key = ?').run(key);
+      return `Deleted memory "${key}"`;
+    }
+    return `No memory found for "${key}"`;
+  } catch {
+    return `No memory found for "${key}"`;
   }
-  return `No memory found for "${key}"`;
 }
