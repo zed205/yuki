@@ -64,7 +64,7 @@ app.use((req, res, next) => {
 });
 
 // Serve built client-v2 (Vite output) first (primary SPA), then legacy client for any remaining assets
-app.use(express.static(path.join(__dirname, '..', 'dist', 'client-v2')));
+app.use(express.static(path.join(__dirname, 'client-v2')));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 
 const sessionDataDir = path.join(os.homedir(), '.config', 'yukiweb', 'sessions');
@@ -651,12 +651,12 @@ app.get('/api/browser/screenshot', async (_req, res) => {
 });
 
 app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'dist', 'client-v2', 'index.html'));
+  res.sendFile(path.join(__dirname, 'client-v2', 'index.html'));
 });
 
 // SPA fallback: serve index.html for all non-API, non-static routes
 app.get('*', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'dist', 'client-v2', 'index.html'));
+  res.sendFile(path.join(__dirname, 'client-v2', 'index.html'));
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
