@@ -139,6 +139,7 @@ function TopBar(props: {
 }) {
   const [modelDropdownOpen, setModelDropdownOpen] = createSignal(false);
   const { connectionState, send } = useWebSocket();
+  const { voiceMode, voiceListening } = useAudio();
 
   const contextCircle = () => {
     const pct = props.tokenPct;
