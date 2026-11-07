@@ -317,7 +317,7 @@ export function MainLayout(props: MainLayoutProps) {
         <TopBar
           activeModel={() => sessions().length > 0 ? models()[0]?.name || '' : ''}
           models={() => models()}
-          tokenPct={tokenPct()}
+          tokenPct={tokenPct}
         />
 
         {/* Chat panel */}
@@ -333,7 +333,7 @@ export function MainLayout(props: MainLayoutProps) {
 function TopBar(props: {
   activeModel: () => string;
   models: () => Array<{ name: string; displayName?: string }>;
-  tokenPct: number;
+  tokenPct: () => number;
 }) {
   const [modelDropdownOpen, setModelDropdownOpen] = createSignal(false);
   const { connectionState, send } = useWebSocket();
