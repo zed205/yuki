@@ -1,4 +1,4 @@
-import { type Accessor, createSignal } from 'solid-js';
+import { type Accessor, createContext, createSignal } from 'solid-js';
 import type { ToastType } from './toast';
 
 export type ToastProps = {
