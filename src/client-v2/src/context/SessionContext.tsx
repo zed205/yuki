@@ -101,6 +101,8 @@ export interface SessionContextValue {
   setCurrentSessionId: Setter<string | null>;
   currentProjectId: Accessor<string>;
   setCurrentProjectId: Setter<string>;
+  activeSessionId: Accessor<string | null>;
+  setActiveSessionId: Setter<string | null>;
 
   // Tree / sessions list
   sessions: Accessor<Session[]>;
@@ -110,6 +112,12 @@ export interface SessionContextValue {
   // Audio
   voiceMode: Accessor<boolean>;
   setVoiceMode: Setter<boolean>;
+
+  // WebSocket message router
+  messageRouter: {
+    on: (type: string, handler: (data: unknown) => void) => () => void;
+    off: (type: string, handler: (data: unknown) => void) => void;
+  };
 }
 
 const SessionContext = createContext<SessionContextValue>();
@@ -126,6 +134,7 @@ export function SessionProvider(props: { children: import('solid-js').JSX.Elemen
   const [voiceMode, setVoiceMode] = createSignal(false);
   const [config, setConfig] = createSignal<SessionConfig>({} as SessionConfig);
   const [currentSessionId, setCurrentSessionId] = createSignal<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = createSignal('default');
   const [sessions, setSessions] = createSignal<Session[]>([]);
 
@@ -155,6 +164,8 @@ export function SessionProvider(props: { children: import('solid-js').JSX.Elemen
     setConfig,
     currentSessionId,
     setCurrentSessionId,
+    activeSessionId,
+    setActiveSessionId,
     currentProjectId,
     setCurrentProjectId,
     sessions,
@@ -162,6 +173,10 @@ export function SessionProvider(props: { children: import('solid-js').JSX.Elemen
     tree,
     voiceMode,
     setVoiceMode,
+    messageRouter: {
+      on: () => () => {},
+      off: () => {},
+    },
   };
 
   return <SessionContext.Provider value={value}>{props.children}</SessionContext.Provider>;

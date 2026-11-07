@@ -95,6 +95,8 @@
   let desktopNotifications = true;
   // Stores auto-generated summaries per session
   const sessionSummaries = new Map();
+  // Tracks forks per message: messageId -> array of {sessionId, title, updatedAt}
+  const messageForks = new Map();
 
   // voice mode state
   let voiceMode = false;
@@ -509,7 +511,7 @@
     toastTimer = setTimeout(() => el.classList.add('opacity-0'), ms);
   }
 
-  function handleMessage(data) {
+  async function handleMessage(data) {
     switch (data.type) {
       case 'session:connected':
         currentSessionId = data.data.sessionId;
@@ -886,6 +888,41 @@
         console.log('[Compaction] Failed:', data.data.reason);
         if (compactIndicator) compactIndicator.textContent = 'Failed';
         setTimeout(() => { if (compactIndicator && !isWaiting) compactIndicator.textContent = 'Ready'; }, 3000);
+        break;
+
+      case 'session:forked':
+        {
+          const forkData = data.data;
+          // If we're on the parent session, update forks tracking
+          if (currentSessionId === forkData.parentSessionId) {
+            const session = await fetch(`/api/sessions/${forkData.sessionId}`).then(r => r.json());
+            const forkNote = session.messages.find(m => m.id.includes('fork-note'));
+            const msgId = forkNote && forkNote.content ? forkNote.content.match(/session:([a-zA-Z0-9_-]+)/)?.[1] : null;
+            if (msgId) {
+              if (!messageForks.has(currentSessionId)) messageForks.set(currentSessionId, {});
+              const grouped = messageForks.get(currentSessionId);
+              if (!grouped[msgId]) grouped[msgId] = [];
+              grouped[msgId].push({
+                id: forkData.sessionId,
+                title: session.title || 'Forked session',
+                updatedAt: new Date().toISOString(),
+              });
+              // Update the fork indicator on the original message
+              updateForkIndicatorForMessage(forkData.parentMessageId);
+            }
+          }
+        }
+        break;
+
+      case 'session:fork-result':
+        if (data.data.ok) {
+          showToast('Session forked successfully');
+          loadTree();
+          // Switch to the forked session
+          switchSession(data.data.sessionId);
+        } else {
+          showToast(data.data.error || 'Failed to fork session');
+        }
         break;
     }
   }
@@ -1288,6 +1325,9 @@
         { label: 'Read', action: () => {
           if (content) AudioPlayer.playSynthesized(content);
         }},
+        { label: 'Fork', action: () => {
+          forkAtMessage(messageId);
+        }},
       ]);
       wrapper.appendChild(menuEl);
 
@@ -1299,6 +1339,164 @@
     scrollToBottom();
     updateContextUsage();
     return msgEl;
+  }
+
+  // --- Fork functionality ---
+  async function loadForksForMessage(messageId) {
+    if (!currentSessionId) return;
+    try {
+      const res = await fetch(`/api/sessions/${currentSessionId}/forks`);
+      const forks = await res.json();
+      // Group forks by parent message ID
+      const grouped = {};
+      for (const fork of forks) {
+        const session = await fetch(`/api/sessions/${fork.id}`).then(r => r.json());
+        // Find the fork note message to get the parent message ID
+        const forkNote = session.messages.find(m => m.id.includes('fork-note'));
+        if (forkNote && forkNote.content) {
+          // Extract parent session from content
+          const m = forkNote.content.match(/session:([a-zA-Z0-9_-]+)/);
+          if (m) {
+            if (!grouped[m[1]]) grouped[m[1]] = [];
+            grouped[m[1]].push({ id: fork.id, title: fork.title, updatedAt: fork.updated_at || fork.updatedAt });
+          }
+        }
+      }
+      messageForks.set(currentSessionId, grouped);
+    } catch (err) {
+      console.error('Failed to load forks:', err);
+    }
+  }
+
+  function getForksForCurrentSession(messageId) {
+    const grouped = messageForks.get(currentSessionId);
+    if (!grouped) return [];
+    return grouped[messageId] || [];
+  }
+
+  async function forkAtMessage(messageId) {
+    if (!currentSessionId) {
+      showToast('No session loaded');
+      return;
+    }
+
+    // Find the message index
+    const session = await fetch(`/api/sessions/${currentSessionId}`).then(r => r.json());
+    const msgIdx = session.messages.findIndex(m => m.id === messageId);
+    if (msgIdx === -1 || msgIdx < 0) {
+      showToast('Could not find the message to fork from');
+      return;
+    }
+
+    try {
+      send('session:fork', { sessionId: currentSessionId, messageIndex: msgIdx });
+      showToast('Forking session...');
+    } catch (err) {
+      console.error('Failed to fork:', err);
+      showToast('Failed to fork session');
+    }
+  }
+
+  function renderForkIndicator(messageId, parentSessionId) {
+    const container = document.createElement('div');
+    container.className = 'fork-indicator flex items-center gap-1.5 mt-1.5 text-xs';
+
+    const icon = document.createElement('span');
+    icon.className = 'fork-icon text-primary/60';
+    icon.innerHTML = '⟿';
+
+    const link = document.createElement('a');
+    link.className = 'fork-link text-primary hover:text-text cursor-pointer underline-offset-2 hover:underline';
+    link.textContent = 'Fork';
+
+    // Get forks for this message
+    const forks = getForksForCurrentSession(messageId);
+
+    if (parentSessionId) {
+      // In the original session: show links to forked sessions
+      if (forks.length > 0) {
+        const count = document.createElement('span');
+        count.className = 'text-muted/60';
+        count.textContent = ` (${forks.length})`;
+        container.appendChild(count);
+
+        for (const fork of forks) {
+          const forkLink = document.createElement('a');
+          forkLink.className = 'fork-link text-primary/80 hover:text-text cursor-pointer text-xs';
+          forkLink.textContent = fork.title || fork.id.substring(0, 8);
+          forkLink.title = fork.title || 'Forked session';
+          forkLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            switchSession(fork.id);
+          });
+          container.appendChild(forkLink);
+        }
+      }
+    } else {
+      // In a forked session: link back to the original
+      const originalSession = dbGetSession(parentSessionId);
+      if (originalSession) {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          switchSession(originalSession.id);
+        });
+        container.appendChild(link);
+        container.appendChild(icon);
+      }
+    }
+
+    if (parentSessionId && !forks.length) {
+      // This message is a fork point (has no forks yet)
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        forkAtMessage(messageId);
+      });
+      container.appendChild(icon);
+      container.appendChild(link);
+    }
+
+    return container;
+  }
+
+  function updateForkIndicatorForMessage(messageId) {
+    const msgEl = document.querySelector(`[data-message-id="${messageId}"]`);
+    if (!msgEl) return;
+    // Remove any existing fork indicators
+    const existing = msgEl.querySelector('.fork-indicator');
+    if (existing) existing.remove();
+
+    const forks = getForksForCurrentSession(messageId);
+    if (forks.length === 0) return;
+
+    const indicator = document.createElement('div');
+    indicator.className = 'fork-indicator flex items-center gap-1.5 mt-1.5 text-xs flex-wrap';
+
+    const count = document.createElement('span');
+    count.className = 'text-muted/60';
+    count.textContent = `${forks.length} fork`;
+    if (forks.length > 1) count.textContent += 's';
+    indicator.appendChild(count);
+
+    for (const fork of forks) {
+      const forkLink = document.createElement('a');
+      forkLink.className = 'fork-link text-primary/80 hover:text-text cursor-pointer text-xs';
+      forkLink.textContent = fork.title || fork.id.substring(0, 8);
+      forkLink.title = fork.title || 'Forked session';
+      forkLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        switchSession(fork.id);
+      });
+      indicator.appendChild(forkLink);
+    }
+
+    // Insert indicator after the bubble but before the menu
+    const wrapper = msgEl.querySelector('.group');
+    if (wrapper) {
+      const bubble = wrapper.querySelector('.bg-asstMsg, .bg-userMsg');
+      if (bubble) {
+        bubble.after(indicator);
+      }
+    }
   }
 
   const SUMMARY_PREFIX = 'Summary of previous conversation:';
@@ -2446,10 +2644,35 @@ function scrollToBottom() {
       const session = await res.json();
       clearChatDisplay();
       thinkingBubble = null;
+
+      // Load fork tracking data for this session
+      if (session.forkedFrom) {
+        // This is a forked session - store the parent session ID for display
+        window._forkedParentId = session.forkedFrom;
+      } else {
+        delete window._forkedParentId;
+      }
+
       for (let mi = 0; mi < session.messages.length; mi++) {
         const msg = session.messages[mi];
         if (isSummaryMessage(msg)) {
           appendSummaryMessage(msg.content, false);
+          continue;
+        }
+        // Handle fork note system messages - render as a "forked from" indicator
+        if (msg.id.includes('fork-note')) {
+          const forkNote = document.createElement('div');
+          forkNote.className = 'flex justify-center my-2';
+          const indicator = document.createElement('div');
+          indicator.className = 'fork-indicator bg-surface/30 border border-border rounded-lg px-3 py-1.5 text-xs text-primary/80 cursor-pointer select-none inline-flex items-center gap-2';
+          indicator.textContent = '⟿ Forked from session';
+          indicator.title = 'Click to view original session';
+          indicator.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (session.forkedFrom) switchSession(session.forkedFrom);
+          });
+          forkNote.appendChild(indicator);
+          messagesEl.appendChild(forkNote);
           continue;
         }
         if (msg.role !== 'system') {
@@ -2485,6 +2708,42 @@ function scrollToBottom() {
           }
         }
       }
+
+      // Load forks if this is a parent session (not a fork itself)
+      if (!session.forkedFrom) {
+        await loadForksForMessage(null);
+        // Add fork indicators to all assistant message bubbles
+        const msgElements = messagesEl.querySelectorAll('[data-message-id]');
+        for (const el of msgElements) {
+          const msgId = el.dataset.messageId;
+          if (msgId) {
+            updateForkIndicatorForMessage(msgId);
+          }
+        }
+      }
+
+      // If this is a forked session, show forked-from indicator at the bottom
+      if (session.forkedFrom && window._forkedParentId) {
+        const forkIndicator = document.createElement('div');
+        forkIndicator.className = 'fork-indicator flex items-center justify-center gap-2 my-3 text-xs';
+
+        const icon = document.createElement('span');
+        icon.className = 'text-primary/60';
+        icon.innerHTML = '⟿';
+
+        const link = document.createElement('a');
+        link.className = 'text-primary hover:text-text cursor-pointer underline-offset-2 hover:underline';
+        link.textContent = 'View original session';
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          switchSession(window._forkedParentId);
+        });
+
+        forkIndicator.appendChild(icon);
+        forkIndicator.appendChild(link);
+        messagesEl.appendChild(forkIndicator);
+      }
+
       if (thinkingBubble) {
         finalizeThinkingBubble();
       }

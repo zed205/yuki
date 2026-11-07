@@ -6,6 +6,7 @@ import { WebSocketProvider } from './context/WebSocketContext';
 import { ProjectProvider } from './context/ProjectContext';
 import { ToasterProvider } from './components/Toast/ToasterProvider';
 import { MainLayout } from './components/Layout/MainLayout';
+import { SessionSync } from './components/SessionSync';
 import { createRenderEffect } from 'solid-js';
 
 const queryClient = new QueryClient({
@@ -34,6 +35,7 @@ export default function App() {
                 <ToasterProvider>
                   <MainLayout />
                 </ToasterProvider>
+                <SessionSync />
               </WebSocketProvider>
             </ProjectProvider>
           </BrowserProvider>

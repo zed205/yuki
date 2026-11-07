@@ -340,6 +340,24 @@ body.resizing-sidebar {
   background: #30363d;
 }
 
+/* Fork indicator */
+.fork-indicator {
+  color: #8b949e;
+}
+.fork-indicator a {
+  color: #58a6ff;
+  text-decoration: none;
+  font-size: 0.75rem;
+}
+.fork-indicator a:hover {
+  color: #c9d1d9;
+  text-decoration: underline;
+}
+.fork-icon {
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
 /* Utility */
 .tool-result {
   word-break: break-all;

@@ -1181,6 +1181,38 @@ wss.on('connection', (ws) => {
         }
       }
 
+      if (message.type === 'session:delete') {
+        const id = message.data.sessionId;
+        if (id && getSessionRow(id)) {
+          deleteSessionById(id);
+          ws.send(JSON.stringify({
+            type: 'session:deleted',
+            data: { sessionId: id },
+          }));
+          // If this was the active session, switch to recent
+          if (activeSessionId === id) {
+            const recent = getDb().prepare(
+              'SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1'
+            ).get() as { id: string } | undefined;
+            activeSessionId = recent?.id || null;
+          }
+        }
+      }
+
+      if (message.type === 'session:create') {
+        const projectId = message.data.projectId || 'default';
+        const newSession = createSession(projectId);
+        activeSessionId = newSession.id;
+        ws.send(JSON.stringify({
+          type: 'session:created',
+          data: { sessionId: newSession.id, projectId: newSession.projectId },
+        }));
+        ws.send(JSON.stringify({
+          type: 'session:switched',
+          data: { sessionId: newSession.id, projectId: newSession.projectId, thinkingEnabled: getEffectiveThinking(), voiceMode: false },
+        }));
+      }
+
       if (message.type === 'context:compact') {
         console.log('[server] context:compact received, session has', session.messages.length, 'messages');
         await agent.triggerCompaction(session, getConfig(), ws);

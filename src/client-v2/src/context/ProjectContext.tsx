@@ -30,9 +30,15 @@ export interface ProjectContextActions {
   setCurrentProject: (projectId: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   updateProjectPath: (projectId: string, path: string) => Promise<void>;
+  setProjects: (projects: ProjectData[] | ((prev: ProjectData[]) => ProjectData[])) => void;
 }
 
-export interface ProjectContextValue extends ProjectContextState, ProjectContextActions {}
+export interface ProjectContextValue extends ProjectContextState, ProjectContextActions {
+  messageRouter: {
+    on: (type: string, handler: (data: unknown) => void) => () => void;
+    off: (type: string, handler: (data: unknown) => void) => void;
+  };
+}
 
 const ProjectContext = createContext<ProjectContextValue>();
 
@@ -41,6 +47,9 @@ export function ProjectProvider(props: { children: JSX.Element }) {
 
   const [projects, setProjects] = createSignal<ProjectData[]>([]);
   const [currentProjectId, setCurrentProjectId] = createSignal('default');
+
+  // Expose setProjects externally for SessionSync
+  // (setProjects is already exported in the value below)
 
   // Sync projects from session tree
   createEffect(() => {
@@ -175,6 +184,12 @@ export function ProjectProvider(props: { children: JSX.Element }) {
     setCurrentProject,
     renameProject,
     updateProjectPath,
+    setProjects,
+    messageRouter: {
+      on: () => () => {},
+      off: () => {},
+      getMessageHistory: () => [],
+    },
   };
 
   return <ProjectContext.Provider value={value}>{props.children}</ProjectContext.Provider>;

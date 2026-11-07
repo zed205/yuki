@@ -30,6 +30,25 @@ export interface WebSocketConnectionConfig {
   onDisconnected?: (reason?: string) => void;
 }
 
+// ---------------------------------------------------------------------------
+// Server → Client message types (read-only, matches server/index.ts)
+// ---------------------------------------------------------------------------
+
+export interface ServerMessageRouter {
+  /** Register a handler for a specific server message type. Returns cleanup function. */
+  on(type: string, handler: (data: unknown) => void): () => void;
+  /** Remove a handler for a specific type. */
+  off(type: string, handler: (data: unknown) => void): void;
+  /** Get the current message history. */
+  getMessageHistory(): ServerMessageEntry[];
+}
+
+export interface ServerMessageEntry {
+  type: string;
+  data: unknown;
+  timestamp: number;
+}
+
 const DEFAULT_CONFIG: Required<WebSocketConnectionConfig> = {
   url: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`,
   autoReconnect: true,
@@ -55,11 +74,15 @@ export interface WebSocketContextActions {
   send: (type: string, data?: unknown) => boolean;
   onMessage: (handler: (message: WebSocketMessage) => void) => void;
   offMessage: (handler: (message: WebSocketMessage) => void) => void;
+  messageRouter: ServerMessageRouter;
 }
 
 export interface WebSocketContextValue extends WebSocketContextState, WebSocketContextActions {}
 
 const WebSocketContext = createContext<WebSocketContextValue>();
+
+// Shared message history (singleton for the app)
+let globalMessageHistory: ServerMessageEntry[] = [];
 
 export function WebSocketProvider(props: {
   children: JSX.Element;
@@ -73,6 +96,9 @@ export function WebSocketProvider(props: {
   let reconnectAttempts = 0;
   let messageHandlers: Set<(message: WebSocketMessage) => void> = new Set();
   let cleanupReconnect: ReturnType<typeof setTimeout> | null = null;
+
+  // Per-type handlers for the message router
+  const typeHandlers = new Map<string, Set<(data: unknown) => void>>();
 
   // Clean up on unmount
   onCleanup(() => {
@@ -110,6 +136,19 @@ export function WebSocketProvider(props: {
     ws.onmessage = (event) => {
       try {
         const message: WebSocketMessage = JSON.parse(event.data);
+
+        // Add to global message history
+        globalMessageHistory.push({
+          type: message.type,
+          data: message.data,
+          timestamp: Date.now(),
+        });
+        // Cap history at 500 entries
+        if (globalMessageHistory.length > 500) {
+          globalMessageHistory = globalMessageHistory.slice(-400);
+        }
+
+        // Notify general message handlers
         messageHandlers.forEach((handler) => {
           try {
             handler(message);
@@ -117,6 +156,18 @@ export function WebSocketProvider(props: {
             console.error('WebSocket message handler error:', err);
           }
         });
+
+        // Dispatch to per-type handlers
+        const handlers = typeHandlers.get(message.type);
+        if (handlers) {
+          handlers.forEach((handler) => {
+            try {
+              handler(message.data);
+            } catch (err) {
+              console.error(`Handler error for ${message.type}:`, err);
+            }
+          });
+        }
       } catch (err) {
         console.error('Failed to parse WebSocket message:', err);
       }
@@ -191,6 +242,30 @@ export function WebSocketProvider(props: {
     messageHandlers.delete(handler);
   }
 
+  // Message router API
+  function registerTypeHandler(type: string, handler: (data: unknown) => void): () => void {
+    if (!typeHandlers.has(type)) {
+      typeHandlers.set(type, new Set());
+    }
+    const handlers = typeHandlers.get(type)!;
+    handlers.add(handler);
+    return () => handlers.delete(handler);
+  }
+
+  function unregisterTypeHandler(type: string, handler: (data: unknown) => void) {
+    const handlers = typeHandlers.get(type);
+    if (handlers) {
+      handlers.delete(handler);
+      if (handlers.size === 0) {
+        typeHandlers.delete(type);
+      }
+    }
+  }
+
+  function getMessageHistory(): ServerMessageEntry[] {
+    return [...globalMessageHistory];
+  }
+
   const value: WebSocketContextValue = {
     isConnected,
     connectionState,
@@ -199,6 +274,11 @@ export function WebSocketProvider(props: {
     send,
     onMessage,
     offMessage,
+    messageRouter: {
+      on: registerTypeHandler,
+      off: unregisterTypeHandler,
+      getMessageHistory,
+    },
   };
 
   return <WebSocketContext.Provider value={value}>{props.children}</WebSocketContext.Provider>;

@@ -1,8 +1,9 @@
-import { createSignal, For, Show, type JSX } from 'solid-js';
+import { createSignal, For, Show, createEffect, type JSX } from 'solid-js';
 import { IconButton } from '../ui/IconButton';
 import { Text } from '../ui/Box';
 import { cn } from '../../lib/utils';
 import { useSession } from '../../context/SessionContext';
+import { useWebSocket } from '../../context/WebSocketContext';
 
 interface SessionTreeProps {
   onSessionSelect?: (sessionId: string, projectId: string) => void;
@@ -29,8 +30,26 @@ interface SessionGroup {
 export function SessionTree(props: SessionTreeProps) {
   const { onSessionSelect, onSessionRename, onSessionDelete, className } = props;
   const { sessions } = useSession();
+  const { send, messageRouter } = useWebSocket();
 
   const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
+
+  // Keep active session in sync with server
+  createEffect(() => {
+    const unsubSwitched = messageRouter.on('session:switched', (data: unknown) => {
+      const sd = data as { sessionId: string };
+      if (sd.sessionId) {
+        setActiveSessionId(sd.sessionId);
+      }
+    });
+    const unsubConnected = messageRouter.on('session:connected', (data: unknown) => {
+      const sd = data as { sessionId: string };
+      if (sd.sessionId) {
+        setActiveSessionId(sd.sessionId);
+      }
+    });
+    return () => { unsubSwitched(); unsubConnected(); };
+  });
 
   // Group sessions by project
   const sessionGroups = (): SessionGroup[] => {
@@ -88,7 +107,7 @@ export function SessionTree(props: SessionTreeProps) {
           size="sm"
           tooltip="New session"
           onClick={() => {
-            // Trigger new session creation via context
+            send('session:create', {});
           }}
         />
       </div>

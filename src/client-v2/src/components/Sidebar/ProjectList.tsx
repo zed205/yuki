@@ -1,8 +1,9 @@
-import { createSignal, For, Show } from 'solid-js';
+import { createSignal, For, Show, createEffect } from 'solid-js';
 import { IconButton } from '../ui/IconButton';
 import { Text } from '../ui/Box';
 import { cn } from '../../lib/utils';
 import { useProject } from '../../context/ProjectContext';
+import { useWebSocket } from '../../context/WebSocketContext';
 
 interface ProjectListProps {
   onProjectSelect?: (projectId: string) => void;
@@ -20,6 +21,26 @@ export interface ProjectItem {
 export function ProjectList(props: ProjectListProps) {
   const { onProjectSelect, onAddProject, className } = props;
   const { projects, currentProjectId, removeProject, renameProject } = useProject();
+  const { messageRouter } = useWebSocket();
+
+  const [activeProjectId, setActiveProjectId] = createSignal(currentProjectId());
+
+  // Keep active project in sync
+  createEffect(() => {
+    const unsubSwitched = messageRouter.on('project:switched', (data: unknown) => {
+      const pd = data as { projectId: string };
+      if (pd.projectId) {
+        setActiveProjectId(pd.projectId);
+      }
+    });
+    const unsubConnected = messageRouter.on('session:connected', (data: unknown) => {
+      const sd = data as { activeProjectId: string };
+      if (sd.activeProjectId) {
+        setActiveProjectId(sd.activeProjectId);
+      }
+    });
+    return () => { unsubSwitched(); unsubConnected(); };
+  });
 
   // Default project if none exist
   const allProjects = (): ProjectItem[] => {
@@ -63,7 +84,7 @@ export function ProjectList(props: ProjectListProps) {
           {(project) => (
             <ProjectItemComponent
               project={project}
-              isActive={currentProjectId() === project.id}
+              isActive={activeProjectId() === project.id}
               onSelect={() => onProjectSelect?.(project.id)}
               onRename={() => {
                 const name = prompt('Rename project:', project.name);
