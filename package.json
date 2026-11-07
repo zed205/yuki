@@ -4,10 +4,10 @@
   "description": "Personal AI agent with speech-to-speech, browser automation, and desktop control",
   "main": "dist/server/index.js",
   "scripts": {
-    "build:client": "cd src/client-v2 && npm run build",
+    "build:client": "npm --prefix src/client-v2 run build",
     "build:server": "tsc",
     "build": "npm run build:client && npm run build:server && node scripts/copy-client.js",
-    "dev:client": "cd src/client-v2 && npm run dev",
+    "dev:client": "npx -C src/client-v2 vite",
     "dev:server": "npx ts-node src/server/index.ts",
     "dev": "npx concurrently \"npm run dev:client\" \"npm run dev:server\""
   },
