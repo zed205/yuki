@@ -204,6 +204,72 @@ export function ChatPanel(props: ChatPanelProps) {
   // Track the streaming message ID
   let streamingMessageId = '';
 
+  // Monotonic token so a slow fetch can't overwrite a newer session's history
+  let loadSeq = 0;
+
+  // The server only sends session metadata on session:switched/session:connected,
+  // so the transcript itself has to be fetched from the REST API.
+  async function loadSession(sessionId: string) {
+    if (!sessionId) return;
+    const seq = ++loadSeq;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        messages?: Array<{
+          id: string;
+          role: string;
+          content?: string;
+          toolCalls?: Array<{
+            id: string;
+            name: string;
+            parameters?: Record<string, unknown>;
+            result?: string;
+            status?: string;
+          }>;
+        }>;
+      };
+      // A newer session was requested while this fetch was in flight
+      if (seq !== loadSeq) return;
+
+      const history = (data.messages || [])
+        .filter((m) => m.role !== 'system')
+        .map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content || '',
+          toolCalls: m.toolCalls,
+          isStreaming: false,
+        }));
+
+      streamingMessageId = '';
+      setIsStreaming(false);
+      setMessages(history);
+    } catch (err) {
+      console.error('[ChatPanel] failed to load session', sessionId, err);
+    }
+  }
+
+  // If the WebSocket connected before this component mounted, the
+  // session:connected message is already in the router history — replay it.
+  onMount(() => {
+    const history = messageRouter.getMessageHistory();
+    for (let i = history.length - 1; i >= 0; i--) {
+      const entry = history[i];
+      if (
+        entry.type === 'session:connected' ||
+        entry.type === 'session:switched' ||
+        entry.type === 'project:switched'
+      ) {
+        const d = entry.data as { sessionId?: string } | undefined;
+        if (d?.sessionId) {
+          loadSession(d.sessionId);
+          break;
+        }
+      }
+    }
+  });
+
   // Register message handlers
   createEffect(() => {
     const unsubChatMessage = messageRouter.on('chat:message', (data: unknown) => {
@@ -276,7 +342,7 @@ export function ChatPanel(props: ChatPanelProps) {
     // Tool events
     const unsubToolCall = messageRouter.on('tool:call', (data: unknown) => {
       const toolData = data as { toolCall: { id: string; name: string; parameters?: Record<string, unknown>; status?: string } };
-      if (toolCallData.toolCall) {
+      if (toolData.toolCall) {
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.role === 'assistant' && m.isStreaming);
           if (idx >= 0) {
@@ -333,13 +399,33 @@ export function ChatPanel(props: ChatPanelProps) {
       });
     });
 
-    // Session switch: clear messages
+    // Session switch: load the new session's transcript from the server
     const unsubSessionSwitched = messageRouter.on('session:switched', (data: unknown) => {
-      setMessages([]);
+      const sd = data as { sessionId?: string };
+      if (sd.sessionId) {
+        loadSession(sd.sessionId);
+      }
+    });
+
+    // Project switch: the server also activates a session in that project
+    const unsubProjectSwitched = messageRouter.on('project:switched', (data: unknown) => {
+      const pd = data as { sessionId?: string };
+      if (pd.sessionId) {
+        loadSession(pd.sessionId);
+      }
+    });
+
+    // Initial connection (or reconnect): load the active session's transcript
+    const unsubSessionConnected = messageRouter.on('session:connected', (data: unknown) => {
+      const sd = data as { sessionId?: string };
+      if (sd.sessionId) {
+        loadSession(sd.sessionId);
+      }
     });
 
     // Session cleared: clear messages
     const unsubSessionCleared = messageRouter.on('session:cleared', () => {
+      streamingMessageId = '';
       setMessages([]);
     });
 
@@ -363,6 +449,8 @@ export function ChatPanel(props: ChatPanelProps) {
       unsubThinkingChunk();
       unsubMessageReverted();
       unsubSessionSwitched();
+      unsubProjectSwitched();
+      unsubSessionConnected();
       unsubSessionCleared();
       unsubSessionRenamed();
       unsubContextUpdate();
