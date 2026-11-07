@@ -79,6 +79,11 @@ export function WebSocketProvider(props: {
     disconnect();
   });
 
+  // Start connection on mount
+  onMount(() => {
+    connect();
+  });
+
   function connect() {
     if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
       return;
