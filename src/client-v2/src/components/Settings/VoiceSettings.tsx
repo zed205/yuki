@@ -1,4 +1,4 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, For, Show } from 'solid-js';
 import { Box, Text, Switch, Slider, Select } from '../ui';
 import { cn } from '../../lib/utils';
 import { useAudio } from '../../context/AudioContext';
@@ -56,7 +56,7 @@ export function VoiceSettings() {
             </Text>
           </Box>
           <Switch
-            checked={voiceMode}
+            checked={voiceMode()}
             onChange={setVoiceMode}
           />
         </Box>
@@ -79,7 +79,7 @@ export function VoiceSettings() {
             </Text>
           </Box>
           <Switch
-            checked={micEnabled}
+            checked={micEnabled()}
             onChange={setMicEnabled}
           />
         </Box>
@@ -95,7 +95,7 @@ export function VoiceSettings() {
             </Text>
           </Box>
           <Switch
-            checked={pushToTalk}
+            checked={pushToTalk()}
             onChange={setPushToTalk}
           />
         </Box>
@@ -112,7 +112,7 @@ export function VoiceSettings() {
             </Text>
           </Box>
           <Switch
-            checked={ttsEnabled}
+            checked={ttsEnabled()}
             onChange={setTtsEnabled}
           />
         </Box>
@@ -158,7 +158,7 @@ export function VoiceSettings() {
       <div class="space-y-3">
         <Text weight="semibold" size="sm">Voice</Text>
         <Select
-          value={selectedVoice}
+          value={selectedVoice()}
           onChange={setSelectedVoice}
         >
           <For each={voices}>
@@ -183,7 +183,7 @@ export function VoiceSettings() {
               </Text>
             </Box>
             <Switch
-              checked={thinkingEnabled}
+              checked={thinkingEnabled()}
               onChange={setThinkingEnabled}
             />
           </Box>
@@ -195,7 +195,7 @@ export function VoiceSettings() {
               </Text>
             </Box>
             <Switch
-              checked={compactMode}
+              checked={compactMode()}
               onChange={setCompactMode}
             />
           </Box>
@@ -207,7 +207,7 @@ export function VoiceSettings() {
               </Text>
             </Box>
             <Switch
-              checked={notificationsEnabled}
+              checked={notificationsEnabled()}
               onChange={setNotificationsEnabled}
             />
           </Box>

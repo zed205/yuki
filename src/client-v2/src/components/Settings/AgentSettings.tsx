@@ -136,7 +136,7 @@ export function AgentSettings() {
               </Text>
             </Box>
             <Switch
-              checked={streaming}
+              checked={streaming()}
               onChange={setStreaming}
             />
           </Box>
@@ -148,7 +148,7 @@ export function AgentSettings() {
               </Text>
             </Box>
             <Switch
-              checked={enableReasoning}
+              checked={enableReasoning()}
               onChange={setEnableReasoning}
             />
           </Box>
@@ -160,7 +160,7 @@ export function AgentSettings() {
               </Text>
             </Box>
             <Switch
-              checked={enableToolUse}
+              checked={enableToolUse()}
               onChange={setEnableToolUse}
             />
           </Box>

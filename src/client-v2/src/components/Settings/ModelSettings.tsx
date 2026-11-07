@@ -88,7 +88,7 @@ export function ModelSettings() {
             </Text>
           </Box>
           <Switch
-            checked={useProxy}
+            checked={useProxy()}
             onChange={setUseProxy}
           />
         </Box>
