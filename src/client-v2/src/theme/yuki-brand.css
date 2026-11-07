@@ -1,0 +1,273 @@
+/* =============================================================================
+   Yuki Brand CSS Overrides
+   =============================================================================
+   Custom CSS variables and component-level overrides for Yuki's GitHub Dark
+   color palette. These rules sit on top of the Tailwind base layer and provide
+   message-bubble-specific, agent-bubble-specific, and scrollbar styling.
+   ============================================================================= */
+
+/* ---------------------------------------------------------------------------
+   Message Bubble Colors
+   --------------------------------------------------------------------------- */
+
+/*
+ * User message bubble background.
+ * Uses a slightly elevated surface tone so the bubble pops against the main
+ * background without introducing a new hue.
+ */
+:root {
+  --yuki-user-bubble-bg: hsl(217.2 32.6% 17.5%);
+  --yuki-user-bubble-border: hsl(217.2 32.6% 22.5%);
+  --yuki-user-bubble-text: hsl(0 0% 98%);
+}
+
+.dark .yuki-user-bubble,
+.yuki-user-bubble {
+  background-color: var(--yuki-user-bubble-bg);
+  border-color: var(--yuki-user-bubble-border);
+  color: var(--yuki-user-bubble-text);
+}
+
+/*
+ * Assistant message bubble background.
+ * Slightly lighter surface so assistant messages feel distinct from the
+ * page background.
+ */
+:root {
+  --yuki-asst-bubble-bg: hsl(222.2 47.4% 11.2%);
+  --yuki-asst-bubble-border: hsl(217.2 14.3% 21.6%);
+  --yuki-asst-bubble-text: hsl(210 40% 96%);
+}
+
+.yuki-asst-bubble {
+  background-color: var(--yuki-asst-bubble-bg);
+  border-color: var(--yuki-asst-bubble-border);
+  color: var(--yuki-asst-bubble-text);
+}
+
+/* ---------------------------------------------------------------------------
+   Agent Bubble Colors (sub-agent / tool-call)
+   --------------------------------------------------------------------------- */
+
+/*
+ * Agent status indicator — running state.
+ * Green pulse ring for active agents.
+ */
+:root {
+  --yuki-agent-running: hsl(145 72% 45%);
+  --yuki-agent-queued: hsl(45 90% 55%);
+  --yuki-agent-completed: hsl(145 72% 45%);
+  --yuki-agent-cancelled: hsl(0 84.6% 60.4%);
+  --yuki-agent-error: hsl(0 84.6% 60.4%);
+}
+
+/* ---------------------------------------------------------------------------
+   Thinking Block Overrides
+   --------------------------------------------------------------------------- */
+
+/*
+ * Thinking block (collapsible reasoning content) styling.
+ * Yellow accent border to match the existing thinking UX in app.js.
+ */
+:root {
+  --yuki-thinking-border: hsla(45 90% 55%, 0.2);
+  --yuki-thinking-bg: hsl(222.2 47.4% 6% / 0.5);
+  --yuki-thinking-text: hsl(215 20.2% 65.1%);
+  --yuki-thinking-accent: hsl(45 90% 55%);
+}
+
+.thinking-block {
+  background-color: var(--yuki-thinking-bg);
+  border-color: var(--yuki-thinking-border);
+  color: var(--yuki-thinking-text);
+}
+
+.thinking-block .text-yellow-400,
+.thinking-block [class*="text-yellow"] {
+  color: var(--yuki-thinking-accent);
+}
+
+/* ---------------------------------------------------------------------------
+   Custom Scrollbar Styling
+   --------------------------------------------------------------------------- */
+
+/*
+ * Thin scrollbar track — transparent so it blends with the page.
+ * Thumb uses the muted border color from the theme.
+ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(217.2 14% 32.6%);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(217.2 14% 42.6%);
+}
+
+/* Firefox scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(217.2 14% 32.6%) transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Markdown Content Overrides
+   --------------------------------------------------------------------------- */
+
+/*
+ * Assistant message markdown content — overrides Tailwind prose defaults.
+ * Colors match Yuki's current dark theme from app.js.
+ */
+.yuki-asst-bubble .prose {
+  --tw-prose-body: #c9d1d9;
+  --tw-prose-headings: #d4760a;
+  --tw-prose-bold: #58a6ff;
+  --tw-prose-links: #58a6ff;
+  --tw-prose-quotes: #c9d1d9;
+  --tw-prose-code: #c9d1d9;
+  --tw-prose-hr: #30363d;
+  --tw-prose-th-borders: #30363d;
+  --tw-prose-td-borders: #30363d;
+  --tw-prose-links-hover: #79c0ff;
+}
+
+.yuki-asst-bubble .prose strong {
+  font-weight: 550;
+}
+
+/* Headings use Yuki's signature orange */
+.yuki-asst-bubble .prose h1,
+.yuki-asst-bubble .prose h2,
+.yuki-asst-bubble .prose h3,
+.yuki-asst-bubble .prose h4,
+.yuki-asst-bubble .prose h5,
+.yuki-asst-bubble .prose h6 {
+  color: #d4760a;
+}
+
+.yuki-asst-bubble .prose h1 { font-size: 1.3rem; }
+.yuki-asst-bubble .prose h2 { font-size: 1.15rem; }
+.yuki-asst-bubble .prose h3 { font-size: 1.05rem; }
+.yuki-asst-bubble .prose h4 { font-size: 0.95rem; }
+
+.yuki-asst-bubble .prose strong {
+  color: #58a6ff;
+  font-weight: 550;
+}
+
+.yuki-asst-bubble .prose code {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.85em;
+  background: #21262d;
+  padding: 0.15em 0.4em;
+  border-radius: 0.25rem;
+}
+
+.yuki-asst-bubble .prose pre {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 0.375rem;
+}
+
+.yuki-asst-bubble .prose pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.yuki-asst-bubble .prose blockquote {
+  background: #161b22;
+  border-left: 3px solid #30363d;
+  padding-left: 1rem;
+}
+
+.yuki-asst-bubble .prose table {
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+
+.yuki-asst-bubble .prose th,
+.yuki-asst-bubble .prose td {
+  padding: 0.125rem 0.5rem;
+  border-color: inherit;
+}
+
+.yuki-asst-bubble .prose th {
+  background: #21262d;
+  font-weight: 550;
+}
+
+.yuki-asst-bubble .prose tr:nth-child(even) {
+  background: #161b22;
+}
+
+.yuki-asst-bubble .prose img {
+  max-width: 100%;
+  border-radius: 0.375rem;
+  margin: 0.35rem 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Tool Call Bubble Styling
+   --------------------------------------------------------------------------- */
+
+/*
+ * Tool call wrapper — uses the same muted surface tone as agent bubbles.
+ */
+:root {
+  --yuki-tool-bg: hsl(222.2 47.4% 6%);
+  --yuki-tool-border: hsl(217.2 14% 32.6%);
+}
+
+.tool-call-wrapper {
+  background-color: var(--yuki-tool-bg);
+  border-color: var(--yuki-tool-border);
+}
+
+/* ---------------------------------------------------------------------------
+   Compact / Opacity States
+   --------------------------------------------------------------------------- */
+
+/*
+ * Compacted messages — reduced opacity so completed sections feel
+ * secondary to the latest content.
+ */
+.yuki-compact {
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+}
+
+.yuki-compact:hover {
+  opacity: 0.7;
+}
+
+/* ---------------------------------------------------------------------------
+   Collapsible Thinking/Tool Group Styling
+   --------------------------------------------------------------------------- */
+
+/*
+ * Collapsed TT group header — dashed border, subtle interaction states.
+ */
+:root {
+  --yuki-tt-group-border: hsl(217.2 14% 32.6%);
+  --yuki-tt-group-hover-border: hsla(217.2 91.2%, 0.4);
+  --yuki-tt-group-bg: hsl(222.2 47.4% 6% / 0.5);
+}
+
+.tt-group-header {
+  border-color: var(--yuki-tt-group-border);
+}
+
+.tt-group-header:hover {
+  border-color: var(--yuki-tt-group-hover-border);
+}

@@ -28,6 +28,8 @@ import {
   createSession as dbCreateSession,
   loadSessions as dbLoadSessions,
   updateSessionField,
+  createForkSession,
+  getForksForSession,
 } from '../db';
 import * as fs from 'fs';
 import { normalizeLineEndings } from './utils/line-endings';
@@ -40,6 +42,29 @@ const PORT = parseInt(process.env.PORT || '3210', 10);
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Security headers for the SPA (applied to all responses)
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; " +
+    "font-src 'self' data:; " +
+    "connect-src 'self' ws://localhost:* wss://localhost:*; " +
+    "frame-ancestors 'none'; " +
+    "base-uri 'self'; " +
+    "form-action 'self'"
+  );
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+
+// Serve built client-v2 (Vite output) first (primary SPA), then legacy client for any remaining assets
+app.use(express.static(path.join(__dirname, '..', 'dist', 'client-v2')));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 
 const sessionDataDir = path.join(os.homedir(), '.config', 'yukiweb', 'sessions');
@@ -290,8 +315,7 @@ app.get('/api/sessions/search', (req, res) => {
             (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role != 'system') as msg_count
      FROM sessions s WHERE s.title IS NOT NULL AND lower(s.title) LIKE ?
      ORDER BY s.updated_at DESC`,
-    [`%${lowerQ}%`]
-  ).all() as Array<{
+  ).all(`%${lowerQ}%`) as Array<{
     id: string; title?: string; summary?: string; project_id?: string;
     created_at: number; updated_at: number; msg_count: number;
   }>;
@@ -303,8 +327,7 @@ app.get('/api/sessions/search', (req, res) => {
      JOIN sessions s ON m.session_id = s.id
      WHERE lower(m.content) LIKE ?
      ORDER BY s.updated_at DESC`,
-    [`%${lowerQ}%`]
-  ).all() as Array<{
+  ).all(`%${lowerQ}%`) as Array<{
     id: string; title?: string; summary?: string; project_id?: string;
     created_at: number; updated_at: number;
   }>;
@@ -331,7 +354,7 @@ app.get('/api/sessions/search', (req, res) => {
   for (const row of titleResults) addResult(row);
   for (const row of contentResults) addResult(row);
 
-  results.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  results.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   res.json(results);
 });
 
@@ -402,6 +425,66 @@ app.post('/api/sessions/:id/rename', (req, res) => {
   }
   updateSessionField(id, { title: { value: req.body.title } });
   res.json({ success: true });
+});
+
+// --- Fork API ---
+
+app.get('/api/sessions/:id/forks', (req, res) => {
+  const id = req.params.id;
+  if (!getSessionRow(id)) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const forks = getForksForSession(id);
+  res.json(forks);
+});
+
+app.post('/api/sessions/:id/fork', async (req, res) => {
+  const id = req.params.id;
+  const sessionId = id;
+  const messageIndex = parseInt(req.body.messageIndex, 10);
+
+  const parentSession = dbGetSession(sessionId);
+  if (!parentSession) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (isNaN(messageIndex) || messageIndex < 0 || messageIndex >= parentSession.messages.length) {
+    return res.status(400).json({ error: 'Invalid message index' });
+  }
+
+  const forkMessage = parentSession.messages[messageIndex];
+  if (forkMessage.role !== 'assistant') {
+    return res.status(400).json({ error: 'Can only fork from assistant messages' });
+  }
+
+  const projectId = parentSession.projectId || 'default';
+  try {
+    const forkSession = createForkSession(parentSession, forkMessage.id, projectId);
+
+    // Notify all connected clients about the new fork session
+    const forkPayload = {
+      sessionId: forkSession.id,
+      parentSessionId: parentSession.id,
+      parentMessageId: forkMessage.id,
+    };
+
+    for (const client of wss.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: 'session:forked', data: forkPayload }));
+      }
+    }
+
+    res.json({
+      id: forkSession.id,
+      sessionId: forkSession.id,
+      parentSessionId: parentSession.id,
+      parentMessageId: forkMessage.id,
+    });
+  } catch (err: any) {
+    console.error('[fork] failed to create fork:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Config API ---
@@ -568,7 +651,12 @@ app.get('/api/browser/screenshot', async (_req, res) => {
 });
 
 app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client', 'index.html'));
+  res.sendFile(path.join(__dirname, '..', 'dist', 'client-v2', 'index.html'));
+});
+
+// SPA fallback: serve index.html for all non-API, non-static routes
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'dist', 'client-v2', 'index.html'));
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -1108,6 +1196,72 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({
             type: 'session:moved',
             data: { sessionId, projectId },
+          }));
+        }
+      }
+
+      if (message.type === 'session:fork') {
+        const targetSessionId = message.data.sessionId;
+        const messageIndex = parseInt(message.data.messageIndex, 10);
+        const target = dbGetSession(targetSessionId);
+
+        if (!target) {
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: 'Session not found' },
+          }));
+          return;
+        }
+
+        if (isNaN(messageIndex) || messageIndex < 0 || messageIndex >= target.messages.length) {
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: 'Invalid message index' },
+          }));
+          return;
+        }
+
+        const forkMsg = target.messages[messageIndex];
+        if (forkMsg.role !== 'assistant') {
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: 'Can only fork from assistant messages' },
+          }));
+          return;
+        }
+
+        const projectId = target.projectId || 'default';
+        try {
+          const forkSession = createForkSession(target, forkMsg.id, projectId);
+
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: {
+              ok: true,
+              sessionId: forkSession.id,
+              parentSessionId: target.id,
+              parentMessageId: forkMsg.id,
+            },
+          }));
+
+          // Notify all clients about the fork
+          for (const client of wss.clients) {
+            if (client.readyState === 1) {
+              client.send(JSON.stringify({
+                type: 'session:forked',
+                data: {
+                  sessionId: forkSession.id,
+                  parentSessionId: target.id,
+                  parentMessageId: forkMsg.id,
+                },
+              }));
+            }
+          }
+        } catch (err: any) {
+          console.error('[fork] failed to create fork:', err);
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: err.message },
           }));
         }
       }

@@ -4,10 +4,12 @@
   "description": "Personal AI agent with speech-to-speech, browser automation, and desktop control",
   "main": "dist/server/index.js",
   "scripts": {
-    "build": "tsc && node scripts/copy-client.js",
-    "start": "node dist/server/index.js",
-    "dev": "npx ts-node src/server/index.ts",
-    "dev:watch": "npx nodemon --exec ts-node src/server/index.ts"
+    "build:client": "cd src/client-v2 && npm run build",
+    "build:server": "tsc",
+    "build": "npm run build:client && npm run build:server && node scripts/copy-client.js",
+    "dev:client": "cd src/client-v2 && npm run dev",
+    "dev:server": "npx ts-node src/server/index.ts",
+    "dev": "npx concurrently \"npm run dev:client\" \"npm run dev:server\""
   },
   "license": "MIT",
   "dependencies": {
@@ -24,15 +26,25 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@solidjs/meta": "^0.29.8",
+    "@solidjs/router": "^1.0.1",
+    "@tanstack/solid-query": "^5.107.1",
     "@types/cors": "^2.8.17",
     "@types/diff": "^7.0.2",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.5.0",
+    "clsx": "^2.1.1",
+    "concurrently": "^9.1.2",
     "nodemon": "^3.1.0",
+    "solid-js": "^1.9.18",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.5",
     "ts-node": "^10.9.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.9.3",
+    "vite": "^8.3.6",
+    "vite-plugin-solid": "^2.11.15"
   },
   "keywords": [],
   "author": "",

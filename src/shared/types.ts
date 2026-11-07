@@ -212,6 +212,10 @@ export interface Message {
   // Set when this turn has been folded into the compaction summary. The turn is
   // kept in the session log for reference, but is no longer replayed to the model.
   compacted?: boolean;
+  // ID of the session this message was forked from (set on forked sessions' copy).
+  forkedFrom?: string;
+  // Session ID of the parent session (the one this fork originated from).
+  parentSessionId?: string;
 }
 
 export interface ToolCall {
@@ -247,6 +251,10 @@ export interface Session {
   charsPerToken?: number;
   // Last prompt token count reported by the provider — the authoritative context size.
   lastPromptTokens?: number;
+  // ID of the session this one was forked from (fork children only).
+  forkedFrom?: string;
+  // ID of the message in the parent session where the fork originated.
+  parentMessageId?: string;
 }
 
 // WebSocket event types
@@ -339,6 +347,15 @@ export interface SessionClearedEvent extends WSEvent {
   type: 'session:cleared';
   data: {
     sessionId: string;
+  };
+}
+
+export interface SessionForkedEvent extends WSEvent {
+  type: 'session:forked';
+  data: {
+    sessionId: string;       // the new forked session ID
+    parentSessionId: string; // the original session
+    parentMessageId: string; // the message the fork was created from
   };
 }
 
