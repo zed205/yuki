@@ -25,12 +25,6 @@ removeDir('dist/client');
 copyDir('src/client', 'dist/client');
 console.log('Legacy client files copied to dist/client');
 
-// Copy legacy client-v2 (from src/client-v2/dist/) for backward compatibility
-// The Vite build now outputs directly to dist/client-v2/ in production mode,
-// so we only need this for development builds or when output path differs.
-const clientV2Src = path.join(__dirname, '..', 'src', 'client-v2', 'dist');
-if (fs.existsSync(clientV2Src) && fs.readdirSync(clientV2Src).length > 0) {
-  removeDir('dist/client-v2');
-  copyDir(clientV2Src, 'dist/client-v2');
-  console.log('Client-v2 build output copied to dist/client-v2');
-}
+// Vite build already outputs directly to dist/client-v2/ (from vite.config.ts outDir)
+// No copy needed — just ensure the directory exists.
+// This file is kept for legacy client only.
