@@ -1,11 +1,35 @@
 /**
- * SessionSync — Listens to server WebSocket messages and updates
- * SessionContext and ProjectContext with real-time data.
+ * SessionSync — Listens to server WebSocket messages and keeps
+ * SessionContext and ProjectContext in sync with server state.
+ *
+ * The server only sends project names on `session:connected`; the full
+ * session tree (titles, counts, ordering) comes from GET /api/tree, which
+ * we refresh on connect and whenever sessions change.
  */
-import { createEffect } from 'solid-js';
+import { createEffect, onMount } from 'solid-js';
 import { useWebSocket } from '../context/WebSocketContext';
-import { useSession } from '../context/SessionContext';
-import { useProject } from '../context/ProjectContext';
+import { useSession, type Session } from '../context/SessionContext';
+import { useProject, type ProjectData } from '../context/ProjectContext';
+
+interface TreeSession {
+  id: string;
+  title?: string | null;
+  summary?: string | null;
+  updatedAt: string;
+  messageCount?: number;
+  projectId: string;
+}
+
+interface TreeProject {
+  id: string;
+  name: string;
+  sessions: TreeSession[];
+}
+
+interface TreeResponse {
+  projects: TreeProject[];
+  activeProjectId?: string;
+}
 
 export function SessionSync() {
   const { messageRouter } = useWebSocket();
@@ -22,7 +46,59 @@ export function SessionSync() {
     setVoiceMode,
     setActiveSessionId,
   } = useSession();
-  const { setProjects } = useProject();
+  const { setProjects, currentProjectId } = useProject();
+
+  // -------------------------------------------------------------------------
+  // Session tree refresh
+  // -------------------------------------------------------------------------
+  let refreshInFlight = false;
+  async function refreshTree() {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    try {
+      const res = await fetch('/api/tree');
+      if (!res.ok) return;
+      const data = (await res.json()) as TreeResponse;
+
+      const sessions: Session[] = [];
+      const projects: ProjectData[] = [];
+
+      for (const p of data.projects || []) {
+        const projectSessions = (p.sessions || []).map((s) => {
+          const ts = new Date(s.updatedAt).getTime();
+          return {
+            id: s.id,
+            title: s.title || `${s.messageCount ?? 0} messages`,
+            projectId: s.projectId || p.id,
+            messages: [],
+            createdAt: ts,
+            updatedAt: ts,
+          } as Session;
+        });
+        sessions.push(...projectSessions);
+        projects.push({
+          id: p.id,
+          name: p.name,
+          sessions: projectSessions.map((s) => s.id),
+          sessionCount: projectSessions.length,
+        });
+      }
+
+      // Newest first
+      sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+
+      setSessions(sessions);
+      setProjects(projects);
+    } catch (err) {
+      console.error('[SessionSync] failed to load tree:', err);
+    } finally {
+      refreshInFlight = false;
+    }
+  }
+
+  onMount(() => {
+    refreshTree();
+  });
 
   createEffect(() => {
     // Session connected (initial connection)
@@ -46,6 +122,7 @@ export function SessionSync() {
 
       if (sd.sessionId) {
         setCurrentSessionId(sd.sessionId);
+        setActiveSessionId(sd.sessionId);
       }
       if (sd.activeProjectId) {
         setCurrentProjectId(sd.activeProjectId);
@@ -55,13 +132,6 @@ export function SessionSync() {
       }
       if (sd.models?.length) {
         setModels(sd.models);
-      }
-      if (sd.projects?.length) {
-        setProjects(sd.projects.map((p) => ({
-          id: p.id,
-          name: p.name,
-          sessionCount: 0,
-        })));
       }
       if (typeof sd.thinkingEnabled === 'boolean') {
         setThinkingEnabled(sd.thinkingEnabled);
@@ -78,7 +148,8 @@ export function SessionSync() {
           desktopNotifications: sd.config.desktopNotifications ?? true,
         });
       }
-      setMessages([]);
+
+      refreshTree();
     });
 
     // Session switched
@@ -91,7 +162,8 @@ export function SessionSync() {
       };
       if (sd.sessionId) {
         setCurrentSessionId(sd.sessionId);
-        setMessages([]); // Clear chat on switch
+        setActiveSessionId(sd.sessionId);
+        setMessages([]);
       }
       if (sd.projectId) {
         setCurrentProjectId(sd.projectId);
@@ -111,21 +183,15 @@ export function SessionSync() {
         sessionId: string;
         thinkingEnabled?: boolean;
         voiceMode?: boolean;
-        projects: Array<{ id: string; name: string }>;
+        projects?: Array<{ id: string; name: string }>;
       };
       if (pd.projectId) {
         setCurrentProjectId(pd.projectId);
       }
       if (pd.sessionId) {
         setCurrentSessionId(pd.sessionId);
+        setActiveSessionId(pd.sessionId);
         setMessages([]);
-      }
-      if (pd.projects?.length) {
-        setProjects(pd.projects.map((p) => ({
-          id: p.id,
-          name: p.name,
-          sessionCount: 0,
-        })));
       }
       if (typeof pd.thinkingEnabled === 'boolean') {
         setThinkingEnabled(pd.thinkingEnabled);
@@ -133,17 +199,14 @@ export function SessionSync() {
       if (typeof pd.voiceMode === 'boolean') {
         setVoiceMode(pd.voiceMode);
       }
+      refreshTree();
     });
 
     // Model switched
     const unsubModelSwitched = messageRouter.on('model:switched', (data: unknown) => {
       const md = data as {
         activeModel: string;
-        model?: string;
-        endpoint?: string;
-        contextWindow?: number;
         thinkingEnabled?: boolean;
-        preserveThinking?: boolean;
       };
       if (md.activeModel) {
         setActiveModel(md.activeModel);
@@ -153,15 +216,9 @@ export function SessionSync() {
       }
     });
 
-    // Context update (token usage)
-    const unsubContextUpdate = messageRouter.on('context:update', (data: unknown) => {
-      const cd = data as { promptTokens: number; maxTokens: number };
-      // Token usage is displayed in TopBar via MainLayout
-    });
-
     // Thinking toggled
     const unsubThinkingToggled = messageRouter.on('thinking:toggled', (data: unknown) => {
-      const td = data as { enabled: boolean; sessionId?: string };
+      const td = data as { enabled: boolean };
       if (typeof td.enabled === 'boolean') {
         setThinkingEnabled(td.enabled);
       }
@@ -177,39 +234,29 @@ export function SessionSync() {
 
     // Voice status
     const unsubVoiceStatus = messageRouter.on('voice:status', (data: unknown) => {
-      const vd = data as { enabled: boolean; sessionId?: string };
+      const vd = data as { enabled: boolean };
       if (typeof vd.enabled === 'boolean') {
         setVoiceMode(vd.enabled);
       }
     });
 
-    // Session renamed (manual or auto)
-    const unsubRenamed = messageRouter.on('session:renamed', (data: unknown) => {
-      const rd = data as { sessionId: string; title: string };
-      setSessions((prev) => prev.map((s) =>
-        s.id === rd.sessionId ? { ...s, title: rd.title } : s
-      ));
+    // Session renamed (manual rename or auto-title after first turn)
+    const unsubRenamed = messageRouter.on('session:renamed', () => {
+      refreshTree();
     });
 
-    // Session moved (different project)
-    const unsubMoved = messageRouter.on('session:moved', (data: unknown) => {
-      const md = data as { sessionId: string; projectId: string };
-      setSessions((prev) => prev.map((s) =>
-        s.id === md.sessionId ? { ...s, projectId: md.projectId } : s
-      ));
+    // Session moved between projects
+    const unsubMoved = messageRouter.on('session:moved', () => {
+      refreshTree();
     });
 
     // Session cleared
     const unsubCleared = messageRouter.on('session:cleared', () => {
       setMessages([]);
+      refreshTree();
     });
 
-    // Message reverted
-    const unsubReverted = messageRouter.on('message:reverted', () => {
-      setMessages((prev) => prev.filter(() => true));
-    });
-
-    // Session created (new session)
+    // Session created
     const unsubCreated = messageRouter.on('session:created', (data: unknown) => {
       const cd = data as { sessionId: string; projectId: string };
       if (cd.sessionId) {
@@ -219,12 +266,19 @@ export function SessionSync() {
       if (cd.projectId) {
         setCurrentProjectId(cd.projectId);
       }
+      refreshTree();
     });
 
     // Session deleted
     const unsubDeleted = messageRouter.on('session:deleted', (data: unknown) => {
       const dd = data as { sessionId: string };
       setSessions((prev) => prev.filter((s) => s.id !== dd.sessionId));
+      refreshTree();
+    });
+
+    // Turn finished — the server may have auto-generated a title/count
+    const unsubChatResponse = messageRouter.on('chat:response', () => {
+      refreshTree();
     });
 
     return () => {
@@ -232,16 +286,15 @@ export function SessionSync() {
       unsubSwitched();
       unsubProjectSwitched();
       unsubModelSwitched();
-      unsubContextUpdate();
       unsubThinkingToggled();
       unsubNotifToggled();
       unsubVoiceStatus();
       unsubRenamed();
       unsubMoved();
       unsubCleared();
-      unsubReverted();
       unsubCreated();
       unsubDeleted();
+      unsubChatResponse();
     };
   });
 

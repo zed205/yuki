@@ -26,7 +26,7 @@ export function MainLayout(props: MainLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
 
   const { connectionState, send } = useWebSocket();
-  const { sessions, setActiveSessionId, setModels, setActiveModel, models, setMessages, setCurrentSessionId, setCurrentProjectId, setThinkingEnabled, setNotificationsEnabled, setConfig, setVoiceMode } = useSession();
+  const { sessions, setActiveSessionId, setModels, setActiveModel, models, activeModel, setMessages, setCurrentSessionId, setCurrentProjectId, setThinkingEnabled, setNotificationsEnabled, setConfig, setVoiceMode } = useSession();
   const { projects } = useProject();
   const { voiceMode, voiceListening } = useAudio();
 
@@ -54,11 +54,6 @@ export function MainLayout(props: MainLayoutProps) {
 
   // Register WebSocket message handlers for connection state
   createEffect(() => {
-    const unsubConnected = send('noop' as any, undefined) && (() => {
-      // We'll use the send function's return to register handlers
-      return null;
-    })();
-
     // We need to access messageRouter from useWebSocket
     const wsCtx = useWebSocket();
 
@@ -315,7 +310,7 @@ export function MainLayout(props: MainLayoutProps) {
       <div class="flex-1 flex flex-col min-w-0">
         {/* Top bar */}
         <TopBar
-          activeModel={() => sessions().length > 0 ? models()[0]?.name || '' : ''}
+          activeModel={activeModel}
           models={() => models()}
           tokenPct={tokenPct}
         />

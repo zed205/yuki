@@ -5,7 +5,7 @@ import {
   createEffect,
   type JSX,
 } from 'solid-js';
-import { useSession, type Project } from './SessionContext';
+import type { Project } from './SessionContext';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,26 +43,8 @@ export interface ProjectContextValue extends ProjectContextState, ProjectContext
 const ProjectContext = createContext<ProjectContextValue>();
 
 export function ProjectProvider(props: { children: JSX.Element }) {
-  const { tree } = useSession();
-
   const [projects, setProjects] = createSignal<ProjectData[]>([]);
   const [currentProjectId, setCurrentProjectId] = createSignal('default');
-
-  // Expose setProjects externally for SessionSync
-  // (setProjects is already exported in the value below)
-
-  // Sync projects from session tree
-  createEffect(() => {
-    const t = tree();
-    if (t?.projects) {
-      setProjects(
-        t.projects.map((p) => ({
-          ...p,
-          sessionCount: p.sessions.length,
-        }))
-      );
-    }
-  });
 
   // Persist current project to localStorage
   createEffect(() => {

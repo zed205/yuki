@@ -3,6 +3,7 @@ import { IconButton } from '../ui/IconButton';
 import { Text } from '../ui/Box';
 import { cn } from '../../lib/utils';
 import { useSession } from '../../context/SessionContext';
+import { useProject } from '../../context/ProjectContext';
 import { useWebSocket } from '../../context/WebSocketContext';
 
 interface SessionTreeProps {
@@ -30,6 +31,7 @@ interface SessionGroup {
 export function SessionTree(props: SessionTreeProps) {
   const { onSessionSelect, onSessionRename, onSessionDelete, className } = props;
   const { sessions } = useSession();
+  const { projects } = useProject();
   const { send, messageRouter } = useWebSocket();
 
   const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
@@ -70,10 +72,12 @@ export function SessionTree(props: SessionTreeProps) {
       });
     });
 
+    const nameById = new Map(projects().map((p) => [p.id, p.name]));
+
     projectMap.forEach((groupSessions, projectId) => {
       groups.push({
         projectId,
-        projectName: projectId,
+        projectName: nameById.get(projectId) || (projectId === 'default' ? 'Default' : projectId),
         sessions: groupSessions.sort(
           (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
         ),
