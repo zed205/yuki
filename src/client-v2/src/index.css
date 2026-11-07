@@ -25,6 +25,8 @@
     --ring: 212.7 26.8% 83.9%;
     --success: 142 76% 36%;
     --warning: 38 92% 50%;
+    --surface: var(--background);
+    --surface2: var(--secondary);
   }
 
   .dark {
@@ -49,6 +51,8 @@
     --ring: 212.7 26.8% 83.9%;
     --success: 142 76% 36%;
     --warning: 38 92% 50%;
+    --surface: var(--background);
+    --surface2: var(--secondary);
   }
 }
 
