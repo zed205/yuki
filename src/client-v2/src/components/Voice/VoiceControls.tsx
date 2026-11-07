@@ -1,5 +1,5 @@
 import { splitProps, Show, For } from 'solid-js';
-import { useAudio } from '../../context/AudioContext';
+import { useAudio } from '../../hooks/useAudio';
 import { Slider } from '../ui/Slider';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
@@ -53,11 +53,11 @@ export function VoiceControls(props: VoiceControlsProps) {
             <span class="text-xs text-text">Volume</span>
           </div>
           <span class="text-xs text-muted-foreground font-mono">
-            {Math.round(audio.volume() * 100)}%
+            {Math.round(audio.state.volume * 100)}%
           </span>
         </div>
         <Slider
-          value={Math.round(audio.volume() * 100)}
+          value={Math.round(audio.state.volume * 100)}
           min={0}
           max={100}
           step={1}
@@ -74,11 +74,11 @@ export function VoiceControls(props: VoiceControlsProps) {
             <span class="text-xs text-text">Speed</span>
           </div>
           <span class="text-xs text-muted-foreground font-mono">
-            {audio.speed().toFixed(1)}x
+            {audio.state.speed.toFixed(1)}x
           </span>
         </div>
         <Slider
-          value={Math.round(audio.speed() * 100)}
+          value={Math.round(audio.state.speed * 100)}
           min={50}
           max={200}
           step={10}
@@ -100,7 +100,7 @@ export function VoiceControls(props: VoiceControlsProps) {
             {(option) => (
               <Button
                 variant={
-                  audio.selectedVoice() === option.value
+                  audio.state.selectedVoice === option.value
                     ? 'primary'
                     : 'ghost'
                 }

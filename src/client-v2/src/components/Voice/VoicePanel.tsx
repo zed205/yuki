@@ -1,5 +1,5 @@
 import { splitProps, Show, For } from 'solid-js';
-import { useAudio } from '../../context/AudioContext';
+import { useAudio } from '../../hooks/useAudio';
 import { useVoiceStatus } from '../../hooks/useVoiceStatus';
 import { Switch } from '../ui/Switch';
 import { ActivityRing } from '../ui/ActivityRing';
