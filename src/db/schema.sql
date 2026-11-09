@@ -46,17 +46,8 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments         TEXT,           -- JSON array of attachment objects
     pruned              INTEGER DEFAULT 0,
     compacted           INTEGER DEFAULT 0,
+    synthetic_prefix    TEXT,           -- request-time text prepended to this message (plan snapshot); persisted so replays stay byte-identical
     FOREIGN KEY (session_id) REFERENCES sessions(id)
-);
-
--- --------------------------------------------------------------------------
--- config
--- The entire application configuration stored as a single JSON blob.
--- Key is always 'config'.
--- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS config (
-    key   TEXT PRIMARY KEY,   -- always 'config'
-    value TEXT NOT NULL        -- full JSON config blob
 );
 
 -- --------------------------------------------------------------------------

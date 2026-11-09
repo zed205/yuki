@@ -23,11 +23,6 @@ function getDbInstance(): Database.Database {
 
     // Initialize schema
     _db.exec(`
-      CREATE TABLE IF NOT EXISTS config (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
       CREATE TABLE IF NOT EXISTS projects (
         id         TEXT PRIMARY KEY,
         name       TEXT NOT NULL,
@@ -81,6 +76,7 @@ function getDbInstance(): Database.Database {
         attachments         TEXT,
         pruned              INTEGER DEFAULT 0,
         compacted           INTEGER DEFAULT 0,
+        synthetic_prefix    TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
 
@@ -126,6 +122,13 @@ function getDbInstance(): Database.Database {
 
       CREATE INDEX IF NOT EXISTS idx_llm_logs_session_id_timestamp ON llm_logs(session_id, timestamp);
     `);
+
+    // Additive migrations for databases created by older versions. CREATE TABLE
+    // IF NOT EXISTS does not add columns to an existing table.
+    const messageColumns = _db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+    if (!messageColumns.some(c => c.name === 'synthetic_prefix')) {
+      _db.exec('ALTER TABLE messages ADD COLUMN synthetic_prefix TEXT');
+    }
   }
 
   return _db;
@@ -204,6 +207,7 @@ export interface MessageRow {
   attachments?: string;
   pruned: number;
   compacted: number;
+  synthetic_prefix?: string | null;
 }
 
 /**
@@ -295,9 +299,19 @@ export function updateSessionField(
  * Get all messages for a session, ordered by timestamp.
  */
 export function getMessages(sessionId: string): MessageRow[] {
-  return getDb().prepare(
+  const rows = getDb().prepare(
     'SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC'
   ).all(sessionId) as MessageRow[];
+  // Normalise line endings at the context boundary. Messages may have been
+  // written with CRLF (e.g. user text pasted from a Windows app), and the
+  // model context must be LF for consistency.
+  for (const row of rows) {
+    if (row.content) row.content = normalizeLineEndings(row.content);
+    if (row.tool_calls) row.tool_calls = normalizeLineEndings(row.tool_calls);
+    if (row.reasoning_content) row.reasoning_content = normalizeLineEndings(row.reasoning_content);
+    if (row.synthetic_prefix) row.synthetic_prefix = normalizeLineEndings(row.synthetic_prefix);
+  }
+  return rows;
 }
 
 /**
@@ -315,13 +329,14 @@ export function upsertMessage(
   attachments: string | null,
   pruned: boolean,
   compacted: boolean,
+  syntheticPrefix: string | null = null,
 ): void {
   getDb().prepare(`
     INSERT INTO messages (
       id, session_id, role, content, timestamp,
       tool_calls, reasoning_content, images, attachments,
-      pruned, compacted
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      pruned, compacted, synthetic_prefix
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       role = excluded.role,
       content = excluded.content,
@@ -331,11 +346,12 @@ export function upsertMessage(
       images = excluded.images,
       attachments = excluded.attachments,
       pruned = excluded.pruned,
-      compacted = excluded.compacted
+      compacted = excluded.compacted,
+      synthetic_prefix = excluded.synthetic_prefix
   `).run(
     id, sessionId, role, content, timestamp,
     toolCalls, reasoningContent, images, attachments,
-    pruned ? 1 : 0, compacted ? 1 : 0,
+    pruned ? 1 : 0, compacted ? 1 : 0, syntheticPrefix,
   );
 }
 
@@ -395,6 +411,7 @@ export function saveSession(session: Session): void {
         msg.attachments ? JSON.stringify(msg.attachments) : null,
         !!msg.pruned,
         !!msg.compacted,
+        msg.syntheticPrefix || null,
       );
     }
   });
@@ -435,6 +452,7 @@ export function getSession(sessionId: string): Session | undefined {
       attachments: r.attachments ? JSON.parse(r.attachments) : undefined,
       pruned: !!r.pruned,
       compacted: !!r.compacted,
+      syntheticPrefix: r.synthetic_prefix || undefined,
     })),
   };
 }

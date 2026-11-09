@@ -212,6 +212,11 @@ export interface Message {
   // Set when this turn has been folded into the compaction summary. The turn is
   // kept in the session log for reference, but is no longer replayed to the model.
   compacted?: boolean;
+  // Synthetic text prepended to this message at request-build time (currently the
+  // live plan snapshot + delegation note on user messages). Persisted so that
+  // replaying the message later reproduces the exact bytes that were sent — the
+  // prompt prefix must stay byte-identical or the server re-processes the suffix.
+  syntheticPrefix?: string;
 }
 
 export interface ToolCall {

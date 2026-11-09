@@ -1,10 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type Database from 'better-sqlite3';
 import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, SearchConfig } from '../shared/types';
-import { splitLines } from './utils/line-endings';
-import { getDb } from '../db';
+import { splitLines, normalizeLineEndings } from './utils/line-endings';
 
 const configDir = path.join(os.homedir(), '.config', 'yukiweb');
 const configPath = path.join(configDir, 'config.json');
@@ -115,53 +113,6 @@ let config: Config = { ...defaultConfig };
 let activeModelName: string | undefined;
 let thinkingOverride: boolean | undefined = undefined;
 
-const DB_CONFIG_KEY = 'config';
-
-/**
- * Get the config from the database, or null if not found.
- */
-function loadConfigFromDb(): Config | null {
-  try {
-    const db: Database.Database = getDb();
-    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(DB_CONFIG_KEY) as { value: string } | undefined;
-    if (!row) return null;
-
-    const loaded = JSON.parse(row.value);
-    migrateReasoningEffort(loaded);
-
-    return {
-      ...defaultConfig,
-      ...loaded,
-      models: Array.isArray(loaded.models) ? loaded.models : defaultConfig.models,
-      stt: { ...defaultConfig.stt, ...(loaded.stt || {}) },
-      tts: { ...defaultConfig.tts, ...(loaded.tts || {}) },
-      ui: { ...defaultConfig.ui, ...(loaded.ui || {}) },
-      desktop: { ...defaultConfig.desktop, ...(loaded.desktop || {}) },
-      contextManagement: { ...defaultConfig.contextManagement, ...(loaded.contextManagement || {}) },
-      rawLLMLog: { ...defaultConfig.rawLLMLog, ...(loaded.rawLLMLog || {}) },
-      subAgents: { ...defaultConfig.subAgents, ...(loaded.subAgents || {}) },
-      observer: { ...defaultConfig.observer, ...(loaded.observer || {}) },
-      uiAutomation: { ...defaultConfig.uiAutomation, ...(loaded.uiAutomation || {}) },
-      shell: { ...defaultConfig.shell, ...(loaded.shell || {}) },
-    };
-  } catch (err) {
-    console.error('Failed to load config from database:', err);
-    return null;
-  }
-}
-
-/**
- * Save the config to the database as a JSON blob.
- */
-function saveConfigToDb(cfg: Config): void {
-  try {
-    const db: Database.Database = getDb();
-    db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(DB_CONFIG_KEY, JSON.stringify(cfg));
-  } catch (err) {
-    console.error('Failed to save config to database:', err);
-  }
-}
-
 export function loadEnvFile(): void {
   try {
     const envPath = path.join(process.cwd(), '.env');
@@ -268,26 +219,6 @@ function migrateReasoningEffort(loaded: any): void {
 
 export function loadConfig(): Config {
   try {
-    // Try database first
-    const dbConfig = loadConfigFromDb();
-    if (dbConfig) {
-      config = dbConfig;
-      if (!activeModelName) {
-        activeModelName = config.activeModel || getNamedModels()[0]?.name;
-      }
-      // Only seed the override from disk on first load. Runtime re-loads must
-      // not clobber a live value set by the UI toggle.
-      if (thinkingOverride === undefined && config.thinkingEnabled !== undefined) {
-        thinkingOverride = config.thinkingEnabled;
-      }
-      return config;
-    }
-  } catch (err) {
-    console.error('Failed to load config from database:', err);
-  }
-
-  // Fallback: try legacy file-based config
-  try {
     if (fs.existsSync(configPath)) {
       let raw = fs.readFileSync(configPath, 'utf-8');
       if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
@@ -334,7 +265,10 @@ export function loadConfig(): Config {
 export function saveConfig(newConfig: Config): void {
   config = newConfig;
   try {
-    saveConfigToDb(newConfig);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+    fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
   } catch (err) {
     console.error('Failed to save config:', err);
   }
@@ -352,7 +286,9 @@ export function getConfigPath(): string {
 export function loadSystemPrompt(): string {
   try {
     if (fs.existsSync(systemPromptPath)) {
-      return fs.readFileSync(systemPromptPath, 'utf-8');
+      // Normalise to LF so the prompt in the model context is consistent
+      // regardless of the file's on-disk line endings (CRLF on Windows).
+      return normalizeLineEndings(fs.readFileSync(systemPromptPath, 'utf-8'));
     }
   } catch (err) {
     console.error('Failed to load system prompt:', err);
@@ -382,7 +318,7 @@ When you need to find information online, ALWAYS use web_search first. Only use 
 export function loadVoiceSystemPrompt(): string {
   try {
     if (fs.existsSync(voiceSystemPromptPath)) {
-      return fs.readFileSync(voiceSystemPromptPath, 'utf-8');
+      return normalizeLineEndings(fs.readFileSync(voiceSystemPromptPath, 'utf-8'));
     }
   } catch (err) {
     console.error('Failed to load voice system prompt:', err);

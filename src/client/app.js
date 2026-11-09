@@ -1296,7 +1296,7 @@
     }
 
     messagesEl.appendChild(msgEl);
-    scrollToBottom();
+    scrollToBottom(role === 'user');
     updateContextUsage();
     return msgEl;
   }
@@ -2026,8 +2026,31 @@
     });
   }
 
-function scrollToBottom() {
-  scrollContainer.scrollTop = scrollContainer.scrollHeight;
+// --- Smart transcript auto-scroll ----------------------------------------
+// Only follow the stream (pin the view to the bottom) while the user is at
+// the bottom of the transcript. If they scroll up to read history, new
+// content won't yank the view down; scrolling back to the bottom re-engages
+// follow. Pass force=true to jump unconditionally (e.g. the user just sent
+// a message, or a session feed was just rebuilt).
+const SCROLL_FOLLOW_THRESHOLD_PX = 80;
+let followScroll = true;
+
+function isAtBottom() {
+  const gap = scrollContainer.scrollHeight - (scrollContainer.scrollTop + scrollContainer.clientHeight);
+  return gap <= SCROLL_FOLLOW_THRESHOLD_PX;
+}
+
+if (scrollContainer) {
+  scrollContainer.addEventListener('scroll', () => {
+    followScroll = isAtBottom();
+  });
+}
+
+function scrollToBottom(force = false) {
+  if (force || followScroll) {
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    followScroll = true;
+  }
 }
 
   function setIsWaiting(waiting) {
@@ -2065,6 +2088,7 @@ function scrollToBottom() {
 
   function clearChatDisplay() {
     messagesEl.innerHTML = '';
+    followScroll = true;
     lastAssistantMessage = '';
     lastAssistantBubble = null;
     thinkingBubble = null;
@@ -2493,7 +2517,7 @@ function scrollToBottom() {
       const snap = subAgentSnapshots.get(id);
       applySubAgentList(snap || { slots: 0, running: 0, queued: 0, agents: [], sessionId: id });
       updateContextUsage();
-      scrollToBottom();
+      scrollToBottom(true);
     } catch (err) {
       console.error('Failed to load session:', err);
     }

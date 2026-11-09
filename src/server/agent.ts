@@ -361,10 +361,10 @@ export class Agent {
     let block = '\n\n## Observer Feedback\n';
     block += `**Assessment**: ${feedback.status}\n`;
     if (feedback.concern) {
-      block += `**Concern**: ${feedback.concern}\n`;
+      block += `**Concern**: ${normalizeLineEndings(feedback.concern)}\n`;
     }
     if (feedback.suggestion) {
-      block += `**Suggestion**: ${feedback.suggestion}\n`;
+      block += `**Suggestion**: ${normalizeLineEndings(feedback.suggestion)}\n`;
     }
     block += `Accept this feedback and adjust your approach accordingly.\n`;
     return block;
@@ -466,15 +466,17 @@ export class Agent {
       if (this.pendingSteers.length > 0) {
         const steerText = this.pendingSteers.join('\n\n');
         this.pendingSteers = [];
+        const steerPrefix = normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n`);
         const steerMsg: Message = {
           id: this.generateId(),
           role: 'user',
           content: steerText,
           timestamp: new Date(),
           sessionId: session.id,
+          syntheticPrefix: steerPrefix,
         };
         session.messages.push(steerMsg);
-        messages.push({ role: 'user', content: `## Current Plan\n${getPlanSummary(session.id)}\n\n${steerText}` });
+        messages.push({ role: 'user', content: steerPrefix + steerText });
         turnUserMessage = steerText;
         turnImages = [];
         console.log(`[agent] steer injected into turn (${steerText.length} chars)`);
@@ -713,15 +715,17 @@ export class Agent {
           this.pendingSteers = [];
 
           messages.push({ role: 'assistant', content: content || reasoning || '[empty response]' });
+          const steerPrefix = normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n`);
           const steerMsg: Message = {
             id: this.generateId(),
             role: 'user',
             content: steerText,
             timestamp: new Date(),
             sessionId: session.id,
+            syntheticPrefix: steerPrefix,
           };
           session.messages.push(steerMsg);
-          messages.push({ role: 'user', content: `## Current Plan\n${getPlanSummary(session.id)}\n\n${steerText}` });
+          messages.push({ role: 'user', content: steerPrefix + steerText });
           turnUserMessage = steerText;
           turnImages = [];
 
@@ -1962,14 +1966,18 @@ export class Agent {
     // Only go back to the start, or to the last compaction summary. Anything
     // older than the anchor has been folded into it and is no longer replayed.
     const anchorIndex = anchored ? session.messages.indexOf(anchored) : -1;
-    const historyMessages = session.messages
-      .filter((m, idx) => m.role !== 'system' && !m.pruned && !m.compacted && idx > anchorIndex)
-      .slice(0, -1); // last message is the current user msg (re-added below with images)
+    const eligibleMessages = session.messages
+      .filter((m, idx) => m.role !== 'system' && !m.pruned && !m.compacted && idx > anchorIndex);
+    const historyMessages = eligibleMessages.slice(0, -1); // last message is the current user msg (re-added below with images)
 
     for (const msg of historyMessages) {
       const entry: Record<string, any> = {
         role: msg.role,
-        content: msg.content,
+        // Replay the exact bytes that were sent originally. The plan snapshot is
+        // prepended at request-build time; if it were dropped here the message
+        // would differ from the cached prompt at this position, invalidating the
+        // cache from here to the end of the context.
+        content: msg.syntheticPrefix ? msg.syntheticPrefix + msg.content : msg.content,
       };
       if (msg.reasoningContent) {
         entry.reasoning_content = msg.reasoningContent;
@@ -2011,7 +2019,16 @@ export class Agent {
           ? 'It returns an agent id immediately and its report is delivered automatically when it finishes — continue working instead of polling. Use agent_result to collect one explicitly or agent_list to check capacity. Every finished agent alerts you, so review and validate its work (check the files, rerun the command/test) before relying on or reporting it.'
           : `To run sub-agents in parallel, emit their spawn_agent calls together in one response (at most ${subAgentsForNote}).`}\n\n`
       : '';
-    const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`;
+    // Persist the exact prefix on the message it rides on. On the initial build
+    // this is the user message that started the turn; on a mid-turn rebuild
+    // (compaction) it is that same message further back in history. Reusing a
+    // stored prefix keeps rebuilds byte-identical to the original request.
+    const tailUserMsg = [...eligibleMessages].reverse().find(m => m.role === 'user' && m.content === userMessage);
+    const planNote = tailUserMsg?.syntheticPrefix
+      ?? normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`);
+    if (tailUserMsg && !tailUserMsg.syntheticPrefix) {
+      tailUserMsg.syntheticPrefix = planNote;
+    }
     if (typeof currentUserContent === 'string') {
       messages.push({ role: 'user', content: planNote + currentUserContent });
     } else {
@@ -2182,7 +2199,12 @@ export class Agent {
     const summaryMsg = session.messages.find(m => this.isSummaryMessage(m));
     const systemMsg = session.messages.find(m => m.role === 'system' && m !== summaryMsg);
 
-    const rest = session.messages.filter(m => m !== systemMsg && m !== summaryMsg);
+    // Already-compacted turns are kept in the log but are NOT re-fed to the
+    // summarizer: their substance is already inside the previous anchor
+    // (passed via prevSummary). Including them would make every compaction
+    // re-read the entire transcript, so the summarizer prompt grows toward the
+    // staged budget and each compaction pays a full prefill on the model.
+    const rest = session.messages.filter(m => m !== systemMsg && m !== summaryMsg && !m.compacted);
     if (rest.length < 1) return 'There is no conversation to compact.';
 
     // Never summarize away the message currently being answered.
@@ -2451,7 +2473,9 @@ function buildUserContent(text: string, images: string[], attachments: Attachmen
     let textFile = '';
     if (TEXT_MIME_HINTS.test(`${att.name}`)) {
       try {
-        textFile = fs.readFileSync(att.path, 'utf-8').slice(0, 40000);
+        // Normalise line endings so CRLF text attachments don't leak \r
+        // into the model context.
+        textFile = normalizeLineEndings(fs.readFileSync(att.path, 'utf-8')).slice(0, 40000);
       } catch { /* ignore */ }
     }
 

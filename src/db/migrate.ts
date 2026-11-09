@@ -15,7 +15,8 @@ import * as path from 'path';
 import * as os from 'os';
 import Database from 'better-sqlite3';
 
-import { initDb, run, get } from './index';
+import { initDb, get } from './index';
+import { normalizeLineEndings } from '../server/utils/line-endings';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -386,26 +387,6 @@ function importPlans(
 }
 
 /**
- * Import config as a single JSON blob.
- */
-function importConfig(
-  db: Database.Database,
-  log: ProgressCallback,
-): void {
-  log('import-config', 'Reading application config…');
-
-  const configData = readJsonFile<any>(CONFIG_FILE);
-  if (!configData) {
-    log('import-config', 'No config.json found');
-    return;
-  }
-
-  // Store entire config as a single JSON blob under key 'config'
-  run('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', ['config', JSON.stringify(configData)]);
-  log('import-config', 'Config imported');
-}
-
-/**
  * Import memories from memories.json (key-value store).
  */
 function importMemories(
@@ -461,7 +442,9 @@ function importSkills(
   let count = 0;
   for (const file of skillFiles) {
     try {
-      const content = fs.readFileSync(file, 'utf-8');
+      // Normalise line endings so stored skill text is canonical LF,
+      // regardless of the source file's on-disk style.
+      const content = normalizeLineEndings(fs.readFileSync(file, 'utf-8'));
       const name = path.basename(file, '.md');
 
       // Parse skill metadata from the markdown content
@@ -747,7 +730,6 @@ export function runMigration(onProgress?: ProgressCallback): {
   sessions: number;
   messages: number;
   plans: number;
-  config: boolean;
   memories: number;
   skills: number;
   mcpServers: number;
@@ -802,14 +784,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `Plan import failed: ${err.message}`);
   }
 
-  // 4. Config
-  try {
-    importConfig(db, log);
-  } catch (err: any) {
-    log('error', `Config import failed: ${err.message}`);
-  }
-
-  // 5. Memories
+  // 4. Memories
   try {
     importMemories(db, log);
     memoryCount = (db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number }).count;
@@ -817,7 +792,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `Memory import failed: ${err.message}`);
   }
 
-  // 6. Skills
+  // 5. Skills
   try {
     importSkills(db, log);
     skillCount = (db.prepare('SELECT COUNT(*) as count FROM skills').get() as { count: number }).count;
@@ -825,7 +800,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `Skill import failed: ${err.message}`);
   }
 
-  // 7. MCP servers
+  // 6. MCP servers
   try {
     importMcpServers(db, log);
     mcpCount = (db.prepare('SELECT COUNT(*) as count FROM mcp_servers').get() as { count: number }).count;
@@ -833,7 +808,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `MCP server import failed: ${err.message}`);
   }
 
-  // 8. LLM logs
+  // 7. LLM logs
   try {
     importLlmLogs(db, log);
     llmLogCount = (db.prepare('SELECT COUNT(*) as count FROM llm_logs').get() as { count: number }).count;
@@ -863,7 +838,6 @@ export function runMigration(onProgress?: ProgressCallback): {
     sessions: sessionCount,
     messages: messageCount,
     plans: planCount,
-    config: true,
     memories: memoryCount,
     skills: skillCount,
     mcpServers: mcpCount,
