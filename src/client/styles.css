@@ -694,10 +694,6 @@ body > * {
   #utility-summary {
     padding: 0.5rem !important;
   }
-  #model-select {
-    font-size: 0.8rem !important;
-    padding: 0.375rem 0.5rem !important;
-  }
   #util-context-text {
     font-size: 0.75rem !important;
   }

@@ -51,7 +51,6 @@ export interface Config {
   models?: ModelConfig[];
   // References into the models[] array by name
   activeModel?: string;
-  backupModel?: string;
   // Core config
   maxToolIterations: number;
   imageTokensPerImage: number;

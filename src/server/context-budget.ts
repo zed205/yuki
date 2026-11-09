@@ -158,16 +158,6 @@ export function calibrateFromUsage(
   session.lastPromptTokens = actualPromptTokens;
 }
 
-/**
- * Context size to trust for a request: the larger of the live estimate and the
- * last provider-confirmed count (grown by a safety margin). Growth inside a
- * single tool loop happens faster than any estimator can track.
- */
-export function projectedPromptTokens(session: Session, estimate: number, margin = 1.15): number {
-  const last = session.lastPromptTokens || 0;
-  return Math.max(estimate, last > 0 ? Math.ceil(last * margin) : 0);
-}
-
 const READ_SHOWING_RE = /\[Showing lines (\d+)-(\d+) of (\d+)\]\s*$/;
 const IMAGE_RESULT_PREFIXES = ['data:image/', 'iVBORw0KGgo', '/9j/'];
 

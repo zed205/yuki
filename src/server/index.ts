@@ -1,7 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig } from './config';
+import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig, getStructuredModels, addModel, updateModel, deleteModel, addVariant, updateVariant, deleteVariant } from './config';
 import { Agent } from './agent';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -426,6 +426,104 @@ app.get('/api/config', (_req, res) => {
   res.json(sanitized);
 });
 
+// --- Models API (SQLite-backed; variants are generation presets) ---
+// The DB is the source of truth for model definitions. These endpoints drive the
+// settings UI; every mutation re-persists the (possibly re-normalised) active
+// selection and broadcasts the new list to all connected clients.
+
+function modelsPayload() {
+  const active = getActiveModelName();
+  const activeCfg = getAgentModel(active);
+  return {
+    models: getStructuredModels(),
+    activeModel: active,
+    activeConfig: {
+      model: activeCfg.model,
+      endpoint: activeCfg.endpoint,
+      contextWindow: activeCfg.contextWindow,
+    },
+  };
+}
+
+function broadcastModelsUpdated(): void {
+  const payload = JSON.stringify({ type: 'models:updated', data: modelsPayload() });
+  for (const client of wss.clients) {
+    if (client.readyState === 1) client.send(payload);
+  }
+}
+
+/** Re-persist the (normalised) active selection after a structural change. */
+function afterModelsMutation(): void {
+  try { setActiveModelName(getActiveModelName()); } catch { /* non-fatal */ }
+  // Endpoint/key edits invalidate any cached OpenAI clients.
+  try { agent.resetClient(); } catch { /* non-fatal */ }
+  broadcastModelsUpdated();
+}
+
+app.get('/api/models', (_req, res) => {
+  res.json(modelsPayload());
+});
+
+app.post('/api/models', (req, res) => {
+  const r = addModel(req.body || {}, req.body?.variant);
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true, modelId: r.modelId });
+});
+
+// NOTE: register before /api/models/:id so 'active' isn't treated as an id.
+app.put('/api/models/active', (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const cfg = setActiveModelName(name);
+  if (!cfg) { res.status(400).json({ error: 'Unknown model' }); return; }
+  const activeCfg = getAgentModel(name);
+  broadcastModelsUpdated();
+  res.json({
+    success: true,
+    activeModel: name,
+    model: activeCfg.model,
+    endpoint: activeCfg.endpoint,
+    contextWindow: activeCfg.contextWindow,
+    thinkingEnabled: getEffectiveThinking(),
+    preserveThinking: activeCfg.preserveThinking ?? true,
+  });
+});
+
+app.put('/api/models/:id', (req, res) => {
+  const r = updateModel(req.params.id, req.body || {});
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
+app.delete('/api/models/:id', (req, res) => {
+  const r = deleteModel(req.params.id);
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
+app.post('/api/models/:id/variants', (req, res) => {
+  const r = addVariant(req.params.id, req.body || {});
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true, variantId: r.variantId });
+});
+
+app.put('/api/models/:id/variants/:vid', (req, res) => {
+  const r = updateVariant(req.params.vid, req.body || {});
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
+app.delete('/api/models/:id/variants/:vid', (req, res) => {
+  const r = deleteVariant(req.params.vid);
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
 // --- Project API ---
 app.get('/api/projects', (_req, res) => {
   res.json(getProjects().map(p => ({
@@ -725,6 +823,7 @@ wss.on('connection', (ws) => {
       },
       models: allModels,
       activeModel: getActiveModelName(),
+      structuredModels: getStructuredModels(),
     },
   }));
 
@@ -1061,7 +1160,8 @@ wss.on('connection', (ws) => {
           agent.resetClient();
           agent.currentModelName = modelName;
           const agentCfg = getAgentModel(modelName);
-          ws.send(JSON.stringify({
+          // Broadcast to all clients so every open window stays in sync.
+          const switched = JSON.stringify({
             type: 'model:switched',
             data: {
               activeModel: modelName,
@@ -1071,7 +1171,10 @@ wss.on('connection', (ws) => {
               thinkingEnabled: getEffectiveThinking(),
               preserveThinking: agentCfg.preserveThinking ?? true,
             },
-          }));
+          });
+          for (const client of wss.clients) {
+            if (client.readyState === 1) client.send(switched);
+          }
           sendContextUpdate(ws, session);
         }
       }

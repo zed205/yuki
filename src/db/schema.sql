@@ -137,6 +137,52 @@ CREATE TABLE IF NOT EXISTS llm_logs (
     error             TEXT
 );
 
+-- --------------------------------------------------------------------------
+-- models
+-- Connection identity for a model: what to call, where, with what key, and
+-- the envelope (context window / max tokens). Generation params live on
+-- model_variants.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS models (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL UNIQUE,   -- display name, e.g. 'Qwen3.6 35B (debby)'
+    model          TEXT NOT NULL,          -- API model id string
+    endpoint       TEXT NOT NULL,
+    api_key        TEXT,
+    context_window INTEGER,
+    max_tokens     INTEGER,                -- -1 = provider default
+    sort_order     INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+
+-- --------------------------------------------------------------------------
+-- model_variants
+-- A generation "preset" for a model (temperature / thinking / reasoning).
+-- The default variant of a model is selected when the model itself is chosen.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_variants (
+    id                TEXT PRIMARY KEY,
+    model_id          TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,       -- preset label, e.g. 'Default', 'Fast'
+    temperature       REAL,                -- NULL = provider default
+    thinking_enabled  INTEGER,             -- NULL = inherit global/override
+    preserve_thinking INTEGER,             -- NULL = default (true)
+    reasoning_effort  TEXT,                -- low|medium|high|xhigh; NULL = default
+    is_default        INTEGER NOT NULL DEFAULT 0,
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (model_id, name)
+);
+
+-- --------------------------------------------------------------------------
+-- settings
+-- Key-value store for model-related scalar state (active/backup selection).
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- ============================================================================
 -- Indexes for query performance
 -- ============================================================================
@@ -160,3 +206,7 @@ CREATE INDEX IF NOT EXISTS idx_attachments_session_id
 -- LLM logs: session-based queries with time ordering
 CREATE INDEX IF NOT EXISTS idx_llm_logs_session_timestamp
     ON llm_logs(session_id, timestamp);
+
+-- Model variants: fast lookup by owning model
+CREATE INDEX IF NOT EXISTS idx_model_variants_model_id
+    ON model_variants(model_id);

@@ -7,7 +7,7 @@ import { getConfig } from './config';
 import { tools, toolDefinitions, toolNames, planToolNames, subAgentToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
-import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getModelReasoningEffort } from './config';
+import { getAgentModel, getActiveModelName, setActiveModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getModelReasoningEffort } from './config';
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -21,12 +21,12 @@ import {
   estimateRequestTokens,
   estimateSessionTokens,
   isImageResult,
-  projectedPromptTokens,
   requestChars,
   resolveCharsPerToken,
   textTokens,
 } from './context-budget';
 import { normalizeLineEndings, trimLineEndings } from './utils/line-endings';
+import { persistMessage, replaceSessionMessages, touchSession } from '../db';
 import {
   SubAgentJob,
   cancelAllSubAgents,
@@ -226,6 +226,10 @@ export class Agent {
   private clients: Map<string, OpenAI> = new Map();
   private lastRequestChars = 0;
   private toolDefsChars: number | null = null;
+  /** Actual prompt tokens of the most recent completed LLM request in this turn (0 = none yet). */
+  private lastActualTokens = 0;
+  /** Number of messages in `messages` when that request was sent; base index for delta prediction. */
+  private baseMsgCount = 0;
   private currentWs: WebSocket | null = null;
   private currentSessionId: string | null = null;
   /** Live socket per session, so background agents survive reconnects/switches. */
@@ -337,14 +341,16 @@ export class Agent {
         content: feedbackText,
       };
       messages.push(feedbackMsg);
-      session.messages.push({
+      const obsStoredMsg: Message = {
         id: `obs_${session.id}_${iterations}`,
         role: 'system',
         content: feedbackText,
         timestamp: new Date(),
         sessionId: session.id,
         pruned: true, // Mark as pruned so it doesn't accumulate in history
-      });
+      };
+      session.messages.push(obsStoredMsg);
+      this.persistSessionMessages(session, [obsStoredMsg]);
 
       console.log(`[observer] feedback injected: ${feedback.status} (confidence: ${feedback.confidence})`);
       return true;
@@ -400,6 +406,10 @@ export class Agent {
     this.currentSessionId = session.id;
     this.bindClient(session.id, ws);
     this.abortController = new AbortController();
+    // A new turn: the in-flight token base from the previous turn does not apply.
+    // Turn-start prediction anchors on the persisted session.lastPromptTokens instead.
+    this.lastActualTokens = 0;
+    this.baseMsgCount = 0;
     const config = { ...getConfig() };
     let systemPrompt = session.messages.find(m => m.role === 'system' && !this.isSummaryMessage(m))?.content || '';
     if (session.voiceMode) {
@@ -409,13 +419,24 @@ export class Agent {
     const project = getProject(session.projectId || 'default');
     this.currentProjectPath = project?.path || '';
 
-    // Compact if conversation exceeds threshold
+    // Build the request first so turn-start compaction can predict from the real
+    // message array (last actual tokens + the freshly appended user message).
+    let messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
+    // The previous turn's final request covered everything except this tail user
+    // message, so `messages[baseMsgCount:]` is the delta on top of the last
+    // confirmed count. Anything injected later (sub-agent reports, steers, tool
+    // results) is appended past this boundary and included automatically.
+    this.baseMsgCount = Math.max(0, messages.length - 1);
+
     const cm = config.contextManagement;
     if (cm?.enabled) {
-      await this.compactIfOverBudget(session, config, ws);
+      const compacted = await this.compactIfOverBudget(session, config, ws, messages);
+      if (compacted) {
+        // The session was rewritten (compactConversation reset the token base);
+        // rebuild the request from the shortened history.
+        messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
+      }
     }
-
-    let messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
 
     let iterations = 0;
     let hasToolCalls = true;
@@ -476,6 +497,7 @@ export class Agent {
           syntheticPrefix: steerPrefix,
         };
         session.messages.push(steerMsg);
+        this.persistSessionMessages(session, [steerMsg]);
         messages.push({ role: 'user', content: steerPrefix + steerText });
         turnUserMessage = steerText;
         turnImages = [];
@@ -514,21 +536,19 @@ export class Agent {
           undefined, session.id, session.disabledTools,
         );
       } catch (llmErr: any) {
-        const backupName = getBackupModelName();
-        if (backupName && backupName !== getActiveModelName()) {
-          console.log(`[agent] primary model failed, falling back to backup: ${backupName}`);
-          setActiveModelName(backupName);
-          response = await this.callLLM(messages, config, this.abortController?.signal,
-            (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
-            (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
-            undefined, session.id, session.disabledTools,
-          );
-        } else {
-          response = { content: `Error calling LLM: ${llmErr.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
-        }
+        console.error(`[agent] LLM call failed: ${llmErr?.message}`);
+        response = { content: `Error calling LLM: ${llmErr?.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
       }
 
       console.log(`[agent] iter=${iterations} hasToolCalls=${!!(response.toolCalls && response.toolCalls.length > 0)} contentLen=${response.content?.length || 0} toolCount=${response.toolCalls?.length || 0}`);
+
+      // Record the actual prompt size and message boundary so the next context
+      // prediction is "last actual + the messages appended since", never a fresh
+      // full-context re-estimate.
+      this.baseMsgCount = messages.length;
+      if (response.usage?.promptTokens) {
+        this.lastActualTokens = response.usage.promptTokens;
+      }
 
       if (response.usage?.promptTokens) {
         const before = session.charsPerToken;
@@ -623,7 +643,9 @@ export class Agent {
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         }
 
-        session.messages.push(this.forStorage(assistantMsg, config));
+        const storedAssistantMsg = this.forStorage(assistantMsg, config);
+        session.messages.push(storedAssistantMsg);
+        this.persistSessionMessages(session, [storedAssistantMsg]);
         this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
 
         // Run observer evaluation if enabled
@@ -658,13 +680,15 @@ export class Agent {
             sessionId: session.id,
             continuing: steerPending,
           });
-          session.messages.push({
+          const emptyResponseMsg: Message = {
             id: streamMsgId,
             role: 'assistant',
             content: '[Empty response â€” likely ran out of token budget during thinking.]',
             timestamp: new Date(),
             sessionId: session.id,
-          });
+          };
+          session.messages.push(emptyResponseMsg);
+          this.persistSessionMessages(session, [emptyResponseMsg]);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         } else if (!content && reasoning) {
           this.sendToClient(ws, 'chat:response', {
@@ -675,14 +699,16 @@ export class Agent {
             sessionId: session.id,
             continuing: steerPending,
           });
-          session.messages.push({
+          const reasoningOnlyMsg: Message = {
             id: streamMsgId,
             role: 'assistant',
             content: reasoning,
             reasoningContent: reasoning,
             timestamp: new Date(),
             sessionId: session.id,
-          });
+          };
+          session.messages.push(reasoningOnlyMsg);
+          this.persistSessionMessages(session, [reasoningOnlyMsg]);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         } else {
           const assistantMsg: Message = {
@@ -704,6 +730,7 @@ export class Agent {
           });
 
           session.messages.push(assistantMsg);
+          this.persistSessionMessages(session, [assistantMsg]);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         }
         // Steering: if the user sent a message while we were composing this
@@ -725,6 +752,7 @@ export class Agent {
             syntheticPrefix: steerPrefix,
           };
           session.messages.push(steerMsg);
+          this.persistSessionMessages(session, [steerMsg]);
           messages.push({ role: 'user', content: steerPrefix + steerText });
           turnUserMessage = steerText;
           turnImages = [];
@@ -800,11 +828,17 @@ export class Agent {
       sessionId: sessionId || undefined,
     };
     const createParams: Record<string, any> = {
-      model: agentCfg.model,
+      // Empty Model ID (e.g. single-model llama.cpp servers) -> placeholder;
+      // the loaded model is served regardless of this value.
+      model: agentCfg.model || 'default',
       messages: messages as any,
       max_tokens: maxOutputTokens ?? (agentCfg.maxTokens === -1 ? undefined : (agentCfg.maxTokens || 8000)),
       ...(agentCfg.temperature !== undefined ? { temperature: agentCfg.temperature } : {}),
       stream: true,
+      // Guarantee the engine reports usage on every response (vLLM etc. only
+      // send it when asked), since context prediction now anchors on the
+      // provider-confirmed prompt token count.
+      stream_options: { include_usage: true },
     };
 
     if (toolDefinitions.length > 0) {
@@ -1599,6 +1633,10 @@ export class Agent {
     const hardStopThreshold = cm?.hardStopThreshold ?? 0.95;
     const safetyMargin = cm?.estimateSafetyMargin ?? 1.15;
     let lastActualPromptTokens = 0;
+    // Number of messages in `messages` when the last request was sent; the
+    // prediction only estimates what was appended since (same base+delta model
+    // as the main agent).
+    let subAgentBaseMsgCount = 0;
     let finalContent = '';
     let iterations = 0;
 
@@ -1606,12 +1644,15 @@ export class Agent {
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
       iterations++;
 
-      // Token estimation — same function as the main agent, no heuristics.
-      const liveEstimate = estimateRequestTokens(messages, undefined, childConfig);
-      // Project forward using last provider-confirmed count (when available).
-      const projected = lastActualPromptTokens > 0
-        ? Math.max(liveEstimate, Math.ceil(lastActualPromptTokens * safetyMargin))
-        : liveEstimate;
+      // Predict as "last confirmed prompt tokens + the delta appended since":
+      // the base is exact, only the small increment is estimated. Falls back to
+      // a fresh full estimate for the first call or after a compaction splice.
+      const projected = Math.ceil(
+        (lastActualPromptTokens > 0
+          ? lastActualPromptTokens + estimateRequestTokens(messages.slice(subAgentBaseMsgCount), undefined, childConfig)
+          : estimateRequestTokens(messages, undefined, childConfig))
+        * safetyMargin,
+      );
 
       const overThreshold = projected > ctxWindow * compactionThreshold;
       const atWall = projected > ctxWindow * hardStopThreshold;
@@ -1638,6 +1679,9 @@ export class Agent {
           console.warn(`[subagent] ${agentId}: compaction did not reclaim enough`);
           return '[Sub-agent stopped: could not compact further.]';
         }
+        // The transcript was spliced in place; no prior base survives.
+        lastActualPromptTokens = 0;
+        subAgentBaseMsgCount = 0;
       }
 
       const response = await this.callLLM(
@@ -1653,10 +1697,12 @@ export class Agent {
         childMaxOutput,
       );
 
-      // Calibrate estimate from the provider's actual count.
+      // Record the provider-confirmed count and the message boundary it covered,
+      // so the next prediction only estimates the increment added since.
       if (response.usage?.promptTokens) {
         lastActualPromptTokens = response.usage.promptTokens;
       }
+      subAgentBaseMsgCount = messages.length;
 
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
 
@@ -2028,6 +2074,9 @@ export class Agent {
       ?? normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`);
     if (tailUserMsg && !tailUserMsg.syntheticPrefix) {
       tailUserMsg.syntheticPrefix = planNote;
+      // Persist the prefix immediately so a replay after a mid-turn restart
+      // still reproduces the exact bytes that were sent for this message.
+      this.persistSessionMessages(session, [tailUserMsg]);
     }
     if (typeof currentUserContent === 'string') {
       messages.push({ role: 'user', content: planNote + currentUserContent });
@@ -2093,23 +2142,97 @@ export class Agent {
     return capped ? { ...msg, toolCalls } : msg;
   }
 
+  /**
+   * Incrementally persist newly-created session messages so an interrupted turn
+   * (stop button, server restart, crash) never loses the work done so far. The
+   * full-session save in index.ts only runs after the whole turn completes.
+   * A failed write is logged but never allowed to kill the agent loop.
+   */
+  private persistSessionMessages(session: Session, msgs: Message[]): void {
+    if (!msgs.length) return;
+    try {
+      for (const m of msgs) persistMessage(m);
+      session.updatedAt = new Date();
+      touchSession(session.id);
+    } catch (err) {
+      console.error('[agent] failed to persist session message:', err);
+    }
+  }
+
+  /**
+   * Persist an in-place rewrite of session.messages (mid-turn compaction that
+   * marks turns compacted, drops the old anchor and inserts a new summary).
+   * The whole array is replaced so rows removed in memory cannot linger in DB.
+   */
+  private persistSessionRewrite(session: Session): void {
+    try {
+      replaceSessionMessages(session.id, session.messages);
+      session.updatedAt = new Date();
+      touchSession(session.id);
+    } catch (err) {
+      console.error('[agent] failed to persist session rewrite:', err);
+    }
+  }
+
   private estimateSessionTokens(session: Session, config: any): number {
     return estimateSessionTokens(session, config, this.toolDefsOverheadChars());
   }
 
-  /** Turn-start compaction: cheap, runs once before the tool loop. */
-  private async compactIfOverBudget(session: Session, config: any, ws: WebSocket): Promise<void> {
-    const cm = config.contextManagement;
-    if (!cm?.enabled) return;
-    const ctxWindow = getAgentModel().contextWindow || 64000;
-    const projected = projectedPromptTokens(
-      session,
-      this.estimateSessionTokens(session, config),
-      cm.estimateSafetyMargin ?? 1.15,
-    );
-    if (projected > ctxWindow * (cm.compactionThreshold ?? 0.85)) {
-      await this.compactConversation(session, config, ws);
+  /**
+   * Predict the next request's prompt size as "last actual tokens + the small
+   * delta appended since", instead of re-estimating the whole context from chars.
+   *
+   * The base is the most recent provider-confirmed prompt count — this turn's
+   * (`lastActualTokens`, mid-turn) or the previous turn's (`session.lastPromptTokens`,
+   * turn start) — and the delta is `messages[baseMsgCount:]`, i.e. only the
+   * messages appended since that request (tool results, steers, the new user
+   * message). The base already reflects whatever the template actually rendered
+   * (including preserve_thinking stripping), so it can never drift. Only the
+   * small, fully-rendered increment is estimated.
+   *
+   * When no confirmed base exists (first request of a session, or right after a
+   * compaction rewrote the context), fall back to a fresh char-based estimate of
+   * the whole array plus tool-definition overhead.
+   */
+  private projectedNextTokens(
+    messages: Array<Record<string, any>>,
+    session: Session,
+    config: any,
+  ): number {
+    const cm = config.contextManagement || {};
+    const margin = cm.estimateSafetyMargin ?? 1.15;
+    const base = this.lastActualTokens > 0 ? this.lastActualTokens : (session.lastPromptTokens ?? 0);
+    let predicted: number;
+    if (base > 0) {
+      predicted = base + estimateRequestTokens(messages.slice(this.baseMsgCount), session, config);
+    } else {
+      const cpt = resolveCharsPerToken(session, cm);
+      predicted = estimateRequestTokens(messages, session, config)
+        + Math.ceil(this.toolDefsOverheadChars() / cpt);
     }
+    return Math.ceil(predicted * margin);
+  }
+
+  /**
+   * Turn-start compaction: cheap, runs once before the tool loop.
+   * Returns true when the session was actually rewritten (caller must rebuild
+   * its message array), false when nothing changed.
+   */
+  private async compactIfOverBudget(
+    session: Session,
+    config: any,
+    ws: WebSocket,
+    messages: Array<Record<string, any>>,
+  ): Promise<boolean> {
+    const cm = config.contextManagement;
+    if (!cm?.enabled) return false;
+    const ctxWindow = getAgentModel().contextWindow || 64000;
+    const projected = this.projectedNextTokens(messages, session, config);
+    if (projected > ctxWindow * (cm.compactionThreshold ?? 0.85)) {
+      const reason = await this.compactConversation(session, config, ws);
+      return reason === '';
+    }
+    return false;
   }
 
   /**
@@ -2131,21 +2254,19 @@ export class Agent {
     if (!cm?.enabled) return 'ok';
 
     const ctxWindow = getAgentModel().contextWindow || 64000;
-    const cpt = resolveCharsPerToken(session, cm);
-    const liveEstimate = estimateRequestTokens(messages, session, config)
-      + Math.ceil(this.toolDefsOverheadChars() / cpt);
-    const projected = projectedPromptTokens(session, liveEstimate, cm.estimateSafetyMargin ?? 1.15);
+    const projected = this.projectedNextTokens(messages, session, config);
 
     if (projected <= ctxWindow * (cm.compactionThreshold ?? 0.85)) return 'ok';
 
     const atWall = projected > ctxWindow * (cm.hardStopThreshold ?? 0.95);
     console.log(
       `[agent] budget guard: projected=${projected}/${ctxWindow} ` +
-      `(live=${liveEstimate}, lastActual=${session.lastPromptTokens || 0}, cpt=${cpt.toFixed(2)})`,
+      `(base=${this.lastActualTokens || session.lastPromptTokens || 0}, cpt=${resolveCharsPerToken(session, cm).toFixed(2)})`,
     );
 
     const compacted = await this.compactConversation(session, config, ws);
-    if (compacted) return 'compacted';
+    // Success returns '' (the session was rewritten) — tell the caller to rebuild.
+    if (compacted === '') return 'compacted';
 
     // Nothing could be reclaimed â€” either the turn is tiny or compaction failed.
     if (atWall) {
@@ -2253,12 +2374,22 @@ export class Agent {
       }
       session.updatedAt = new Date();
 
+      // Persist the rewritten transcript atomically so a mid-turn interrupt or
+      // reload shows the compacted state instead of the stale pre-compaction one.
+      this.persistSessionRewrite(session);
+
       const afterTokens = this.estimateSessionTokens(session, config);
       this.sendToClient(ws, 'context:compacted', {
         savedTokens: Math.max(0, beforeTokens - afterTokens),
         messagesCompacted: toSummarize.length,
         sessionId: session.id,
       });
+
+      // A successful compaction rewrites the context, so every previous token
+      // baseline (persisted and in-flight) is invalid until the next request.
+      session.lastPromptTokens = 0;
+      this.lastActualTokens = 0;
+      this.baseMsgCount = 0;
       return '';
     } catch (err) {
       return `Compaction failed with an error: ${err instanceof Error ? err.message : String(err)}`;
