@@ -1,9 +1,9 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { getShellInvocation, stripAnsi } from './shell';
 import { splitLines } from './utils/line-endings';
+import { jobsDir } from './paths';
 
 // Background shell jobs: long-running commands started via shell(background: true).
 // Jobs are ephemeral — they are child processes of this server and die with it,
@@ -27,7 +27,7 @@ export interface JobInfo {
   killRequested?: boolean;
 }
 
-const jobsDir = path.join(os.homedir(), '.config', 'yukiweb', 'jobs');
+
 const jobs = new Map<string, JobInfo>();
 const procs = new Map<string, ChildProcess>();
 let seq = 1;

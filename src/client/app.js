@@ -60,6 +60,10 @@
   const addProjectPathWrap = document.getElementById('add-project-path-wrap');
   const addProjectPathInput = document.getElementById('add-project-path-input');
   const addProjectPathBrowseBtn = document.getElementById('add-project-path-browse-btn');
+  const addProjectBrowseWrap = document.getElementById('add-project-browse-wrap');
+  const addProjectBrowseCurrent = document.getElementById('add-project-browse-current');
+  const addProjectBrowseList = document.getElementById('add-project-browse-list');
+  const addProjectBrowseUseBtn = document.getElementById('add-project-browse-use-btn');
   const addProjectCancelBtn = document.getElementById('add-project-cancel-btn');
   const addProjectSaveBtn = document.getElementById('add-project-save-btn');
   const searchBtn = document.getElementById('search-btn');
@@ -3971,32 +3975,89 @@ function scrollToBottom(force = false) {
 
   function closeAddProjectModal() {
     addProjectPathWrap.classList.add('hidden');
+    addProjectBrowseWrap.classList.add('hidden');
     addProjectModal.classList.add('hidden');
+  }
+
+  // --- Project folder browser (server-side) ---
+  let projectBrowseDir = null;
+
+  async function renderProjectBrowse(dir) {
+    try {
+      const url = '/api/fs/browse' + (dir ? `?dir=${encodeURIComponent(dir)}` : '');
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      projectBrowseDir = data.current;
+      addProjectBrowseCurrent.textContent = data.current;
+      addProjectBrowseList.innerHTML = '';
+      const addItem = (label, target, isParent) => {
+        const el = document.createElement('div');
+        el.textContent = (isParent ? '↑ ' : '▸ ') + label;
+        el.className = 'px-2 py-1 cursor-pointer hover:bg-surface transition-colors';
+        el.addEventListener('click', () => renderProjectBrowse(target));
+        addProjectBrowseList.appendChild(el);
+      };
+      if (data.parent) addItem('.. (up)', data.parent, true);
+      for (const name of data.entries) {
+        addItem(name, `${data.current}/${name}`.replace(/\\/g, '/'), false);
+      }
+      if (!data.parent && data.entries.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = '(empty)';
+        empty.className = 'px-2 py-1 text-muted';
+        addProjectBrowseList.appendChild(empty);
+      }
+    } catch (err) {
+      addProjectBrowseList.innerHTML = '';
+      const errEl = document.createElement('div');
+      errEl.textContent = `Error: ${err.message}`;
+      errEl.className = 'px-2 py-1 text-red-400';
+      addProjectBrowseList.appendChild(errEl);
+    }
+  }
+
+  if (addProjectBrowseUseBtn) {
+    addProjectBrowseUseBtn.addEventListener('click', () => {
+      if (projectBrowseDir) addProjectPathInput.value = projectBrowseDir;
+      updateAddProjectSaveState();
+      addProjectBrowseWrap.classList.add('hidden');
+      addProjectPathInput.focus();
+    });
   }
 
   addProjectBtn.addEventListener('click', openAddProjectModal);
   addProjectCancelBtn.addEventListener('click', closeAddProjectModal);
-  addProjectInput.addEventListener('input', () => {
-    addProjectSaveBtn.disabled = !addProjectInput.value.trim();
-  });
+  addProjectInput.addEventListener('input', updateAddProjectSaveState);
+  addProjectPathInput.addEventListener('input', updateAddProjectSaveState);
   addProjectInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') addProjectSaveBtn.click();
     if (e.key === 'Escape') closeAddProjectModal();
   });
+  function updateAddProjectSaveState() {
+    addProjectSaveBtn.disabled = !addProjectInput.value.trim() || !addProjectPathInput.value.trim();
+  }
+
   addProjectSaveBtn.addEventListener('click', async () => {
     const name = addProjectInput.value.trim();
-    if (!name) return;
-    const path = addProjectPathInput.value.trim() || undefined;
+    const path = addProjectPathInput.value.trim();
+    if (!name || !path) return;
     closeAddProjectModal();
     try {
-      await fetch('/api/projects', {
+      const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, path }),
       });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Failed to create project: ${data.error || res.statusText}`);
+        return;
+      }
       loadTree();
     } catch (err) {
       console.error('Failed to create project:', err);
+      alert(`Failed to create project: ${err.message}`);
     }
   });
   addProjectModal.addEventListener('click', (e) => {
@@ -4061,35 +4122,16 @@ function scrollToBottom(force = false) {
     });
   }
 
-  // Add project path browse button
+  // Add project path browse button — server-side folder browser
   if (addProjectPathBrowseBtn) {
-    addProjectPathBrowseBtn.addEventListener('click', async () => {
-      try {
-        // Try showDirectoryPicker first (Chrome/Edge 86+)
-        if (window.showDirectoryPicker) {
-          const dirHandle = await window.showDirectoryPicker({ mode: 'readonly' });
-          addProjectPathInput.value = dirHandle.path || dirHandle.name;
-          return;
-        }
-        // Fallback: use hidden file input with webkitdirectory
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.webkitdirectory = true;
-        input.mozdirectory = true;
-        input.addEventListener('change', (e) => {
-          if (e.target.files && e.target.files.length > 0) {
-            // Get the first file's path and extract the directory name
-            const firstFile = e.target.files[0];
-            const fullPath = firstFile.webkitRelativePath || firstFile.name;
-            const dirName = fullPath.split('/')[0];
-            addProjectPathInput.value = dirName;
-          }
-          input.remove();
-        });
-        input.click();
-      } catch (err) {
-        console.error('Directory picker error:', err.message || err);
+    addProjectPathBrowseBtn.addEventListener('click', () => {
+      if (!addProjectBrowseWrap.classList.contains('hidden')) {
+        addProjectBrowseWrap.classList.add('hidden');
+        return;
       }
+      addProjectBrowseWrap.classList.remove('hidden');
+      const start = addProjectPathInput.value.trim() || (projectBrowseDir ?? undefined);
+      renderProjectBrowse(start);
     });
   }
 

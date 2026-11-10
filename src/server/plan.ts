@@ -1,12 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type Database from 'better-sqlite3';
 import { Plan, PlanStep } from '../shared/types';
 import { getDb } from '../db';
 import { normalizeLineEndings } from './utils/line-endings';
-
-const plansDir = path.join(os.homedir(), '.config', 'yukiweb', 'plans');
+import { plansDir } from './paths';
 
 function ensureDir(): void {
   if (!fs.existsSync(plansDir)) {

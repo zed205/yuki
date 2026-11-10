@@ -4,10 +4,13 @@
   "description": "Personal AI agent with speech-to-speech, browser automation, and desktop control",
   "main": "dist/server/index.js",
   "scripts": {
-    "build": "tsc && node scripts/copy-client.js",
+    "build": "tsc && node scripts/copy-client.js && node scripts/write-version.js",
     "start": "node dist/server/index.js",
     "dev": "npx ts-node src/server/index.ts",
-    "dev:watch": "npx nodemon --exec ts-node src/server/index.ts"
+    "dev:watch": "npx nodemon --exec ts-node src/server/index.ts",
+    "deploy": "pwsh -NoProfile -File scripts/deploy.ps1",
+    "deploy:latest": "pwsh -NoProfile -File scripts/deploy.ps1 -Ref main",
+    "deploy:rollback": "pwsh -NoProfile -File scripts/deploy.ps1 -Rollback"
   },
   "license": "MIT",
   "dependencies": {

@@ -1,11 +1,11 @@
 import * as path from 'path';
-import * as os from 'os';
 import Database from 'better-sqlite3';
 import type { Statement, RunResult } from 'better-sqlite3';
 import type { Session, Message } from '../shared/types';
 import { normalizeLineEndings } from '../server/utils/line-endings';
+import { dataDir } from '../server/paths';
 
-const configDir = path.join(os.homedir(), '.config', 'yukiweb');
+const configDir = dataDir;
 const dbPath = path.join(configDir, 'yukiweb.db');
 
 let _db: Database.Database | null = null;

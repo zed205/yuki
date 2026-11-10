@@ -1,9 +1,9 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { Config, ContextManagementConfig, ModelConfig, SubAgentConfig, ObserverConfig, UIAutomationConfig, ShellConfig, SearchConfig } from '../shared/types';
 import { splitLines, normalizeLineEndings } from './utils/line-endings';
+import { dataDir } from './paths';
 import {
   listModelRows, listVariantRows, upsertModel, upsertVariant,
   deleteModelRow, deleteVariantRow, clearVariantDefaults,
@@ -11,7 +11,7 @@ import {
   ModelRow, ModelVariantRow,
 } from '../db';
 
-const configDir = path.join(os.homedir(), '.config', 'yukiweb');
+const configDir = dataDir;
 const configPath = path.join(configDir, 'config.json');
 const systemPromptPath = path.join(configDir, 'system_prompt.txt');
 const voiceSystemPromptPath = path.join(configDir, 'voice_system_prompt.txt');
