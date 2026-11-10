@@ -7,6 +7,9 @@
 !/scripts/copy-client.js
 !/scripts/tray.ps1
 !/scripts/yukiweb-tray.bat
+!/scripts/deploy.ps1
+!/scripts/write-version.js
+!/paths.json.example
 !/package.json
 !/package-lock.json
 !/tsconfig.json
@@ -17,3 +20,5 @@ node_modules/
 dist/
 .env
 *.log
+paths.json
+.yukiweb-dev/

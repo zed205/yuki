@@ -1,0 +1,4 @@
+{
+  "port": 3211,
+  "dataDir": ".yukiweb-dev"
+}

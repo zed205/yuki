@@ -1,10 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { getConfig } from './config';
 import { normalizeLineEndings } from './utils/line-endings';
+import { logsDir } from './paths';
 
-const LOG_DIR = path.join(os.homedir(), '.config', 'yukiweb', 'logs');
+const LOG_DIR = logsDir;
 const LOG_FILE = path.join(LOG_DIR, 'llm-raw.log');
 const SEP = '\n' + '='.repeat(80) + '\n';
 

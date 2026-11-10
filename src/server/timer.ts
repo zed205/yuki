@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { normalizeLineEndings } from './utils/line-endings';
+import { timersPath } from './paths';
 
 // Timer service: time-based wakes for the agent. Timers persist across server
 // restarts (unlike jobs). Kinds:
@@ -42,7 +42,7 @@ export interface FiredRecord {
   missed: boolean;
 }
 
-const timersPath = path.join(os.homedir(), '.config', 'yukiweb', 'timers.json');
+
 const timers = new Map<string, Timer>();
 let firedHistory: FiredRecord[] = [];
 let seq = 1;

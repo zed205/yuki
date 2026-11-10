@@ -1,17 +1,43 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type Database from 'better-sqlite3';
 import { Project } from '../shared/types';
 import { getDb } from '../db';
+import { dataDir, projectsDataDir, appRoot } from './paths';
 
-const configDir = path.join(os.homedir(), '.config', 'yukiweb', 'projects');
-const projectsRoot = path.join(__dirname, '..', '..', 'Projects');
+const configDir = projectsDataDir;
+
+/**
+ * Folder where projects land when no explicit path is given (e.g. auto-created
+ * projects such as "Voice"). Lives inside this instance's data dir so dev and
+ * live instances don't collide.
+ */
+function defaultProjectDir(name: string): string {
+  return path.join(projectsDataDir, slugify(name));
+}
 
 function ensureConfigDir(): void {
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }
+}
+
+/**
+ * Validate a user-supplied project folder. Must be an absolute path outside
+ * of this instance's data dir and install root (project folders are real
+ * user files, not app data).
+ */
+function validateProjectFolder(folder: string): string {
+  const resolved = path.resolve(folder);
+  if (!path.isAbsolute(resolved)) {
+    throw new Error('Project folder must be an absolute path');
+  }
+  const insideDataDir = resolved === dataDir || resolved.startsWith(dataDir + path.sep);
+  const insideAppRoot = resolved === appRoot || resolved.startsWith(appRoot + path.sep);
+  if (insideDataDir || insideAppRoot) {
+    throw new Error('Project folder must be outside the YukiWeb data and install directories');
+  }
+  return resolved;
 }
 
 function slugify(name: string): string {
@@ -36,7 +62,7 @@ export function loadProjects(): void {
   const count = db.prepare('SELECT COUNT(*) as count FROM projects').get() as { count: number };
   if (Number(count.count) === 0) {
     // Seed default project
-    const defaultDir = path.join(projectsRoot, 'Default');
+    const defaultDir = path.join(projectsDataDir, 'Default');
     if (!fs.existsSync(defaultDir)) {
       fs.mkdirSync(defaultDir, { recursive: true });
     }
@@ -53,7 +79,7 @@ export function loadProjects(): void {
   for (const row of rows) {
     if (!path.isAbsolute(row.path)) {
       const slug = row.id === 'default' ? 'Default' : (slugify(row.name) || row.path);
-      row.path = path.join(projectsRoot, slug);
+      row.path = path.join(projectsDataDir, slug);
       if (!fs.existsSync(row.path)) {
         fs.mkdirSync(row.path, { recursive: true });
       }
@@ -79,9 +105,10 @@ export function getProject(id: string): Project | undefined {
   return row ? toProject(row) : undefined;
 }
 
-export function createProject(name: string): Project {
-  const slug = slugify(name);
-  const dir = path.join(projectsRoot, slug);
+export function createProject(name: string, folderPath?: string): Project {
+  const dir = folderPath
+    ? validateProjectFolder(folderPath)
+    : defaultProjectDir(name);
 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

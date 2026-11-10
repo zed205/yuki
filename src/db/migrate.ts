@@ -12,18 +12,18 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 
 import { initDb, get } from './index';
 import { normalizeLineEndings } from '../server/utils/line-endings';
+import { dataDir } from '../server/paths';
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'yukiweb');
+const CONFIG_DIR = dataDir;
 const SESSIONS_DIR = path.join(CONFIG_DIR, 'sessions');
 const PROJECTS_FILE = path.join(CONFIG_DIR, 'projects', 'projects.json');
 const PLANS_DIR = path.join(CONFIG_DIR, 'plans');

@@ -32,18 +32,19 @@ import {
 import * as fs from 'fs';
 import { normalizeLineEndings } from './utils/line-endings';
 import * as os from 'os';
+import { port as configuredPort, sessionsDir, attachmentsDir as pathsAttachmentsDir } from './paths';
 
 loadEnvFile();
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '3210', 10);
+const PORT = configuredPort;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 
-const sessionDataDir = path.join(os.homedir(), '.config', 'yukiweb', 'sessions');
-const attachmentsDir = path.join(os.homedir(), '.config', 'yukiweb', 'attachments');
+const sessionDataDir = sessionsDir;
+const attachmentsDir = pathsAttachmentsDir;
 
 // Decode data URLs for dropped files, write them to disk, and return attachment
 // metadata to store on the user message.
@@ -537,8 +538,36 @@ app.get('/api/projects', (_req, res) => {
 
 app.post('/api/projects', (req, res) => {
   try {
-    const project = createProject(req.body.name);
-    res.json({ id: project.id, name: project.name });
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Project name is required' });
+    const folder = typeof req.body?.path === 'string' && req.body.path.trim() ? req.body.path.trim() : undefined;
+    const project = createProject(name, folder);
+    res.json({ id: project.id, name: project.name, path: project.path });
+  } catch (err: any) {
+    const status = /^Project folder/.test(err.message) ? 400 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Folder browser for the "add project" dialog: list subdirectories of a folder.
+app.get('/api/fs/browse', (req, res) => {
+  try {
+    const requested = typeof req.query.dir === 'string' && req.query.dir.trim() ? req.query.dir.trim() : undefined;
+    let dir = requested
+      ? path.resolve(requested)
+      : path.join(os.homedir());
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      return res.status(400).json({ error: `Not a directory: ${dir}` });
+    }
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    res.json({
+      current: dir,
+      parent: path.dirname(dir) !== dir ? path.dirname(dir) : null,
+      entries,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -668,6 +697,18 @@ app.get('/api/browser/screenshot', async (_req, res) => {
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client', 'index.html'));
 });
+
+// Version stamp (written by scripts/write-version.js at build time) so the
+// log/UI can answer "what is this instance actually running?".
+try {
+  const versionFile = path.join(__dirname, '..', 'version.json');
+  if (fs.existsSync(versionFile)) {
+    const v = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+    console.log(`YukiWeb version ${v.version || 'unknown'} (commit ${v.commit || 'unknown'}, built ${v.builtAt || 'unknown'})`);
+  }
+} catch (err) {
+  console.error('Failed to read version.json:', err);
+}
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`YukiWeb server running at http://0.0.0.0:${PORT}`);
