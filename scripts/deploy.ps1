@@ -128,6 +128,6 @@ if (-not $ok) {
 }
 
 $stamp = (Get-Content (Join-Path $live 'dist\version.json') -Raw -ErrorAction SilentlyContinue)
-Write-Host "Deployed to $live:"
+Write-Host "Deployed to ${live}:"
 Write-Host $stamp
 Write-Host "Live is serving on :$port (rollback: pwsh scripts/deploy.ps1 -Rollback)"
