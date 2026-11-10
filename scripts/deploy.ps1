@@ -92,6 +92,14 @@ try {
   Pop-Location
 }
 
+# --- 2b. Prune repo-only files so the install is lean ---
+# Runtime only needs dist/ + node_modules/ + package files + scripts/.
+foreach ($p in @('src', 'docs', 'tests', '.gitignore', 'SPEC.md', 'tsconfig.json', 'paths.json.example')) {
+  $full = Join-Path $stage $p
+  if (Test-Path $full) { Remove-Item $full -Recurse -Force }
+}
+Write-Host 'Pruned repo-only files from staging.'
+
 # --- 3. Stop live ---
 Stop-LiveServer
 
