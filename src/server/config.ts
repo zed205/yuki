@@ -67,7 +67,6 @@ const defaultConfig: Config = {
   maxToolOutputChars: 20000,
   maxReadLines: 200,
   maxReadChars: 20000,
-  readNumbered: true,
   disabledTools: [
     'desktop_viewport', 'desktop_screenshot', 'desktop_snapshot_region', 'desktop_click', 'desktop_type', 'desktop_move', 'desktop_drag', 'desktop_scroll', 'desktop_keypress',
   ],

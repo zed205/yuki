@@ -74,11 +74,10 @@ export interface Config {
    * so the model can always page through file contents inline.
    *   maxReadLines: max lines returned per read call (0 = no line cap).
    *   maxReadChars: max characters returned per read call (0 = no char cap).
-   *   readNumbered: prefix each returned line with its line number (default true).
+   * Each returned line is always prefixed with its line number.
    */
   maxReadLines: number;
   maxReadChars: number;
-  readNumbered: boolean;
   subAgents?: SubAgentConfig;
   observer?: ObserverConfig;
   uiAutomation?: UIAutomationConfig;

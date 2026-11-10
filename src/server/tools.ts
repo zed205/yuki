@@ -239,11 +239,9 @@ export async function toolRead(filePath: string, offset?: number, limit?: number
 
     const slice = lines.slice(start, start + count);
     const end = Math.min(start + count, lines.length);
-    const readNumbered = getConfig().readNumbered ?? true;
-    const rendered = readNumbered
-      ? slice.map((line, i) => `${start + i + 1}: ${line}`)
-      : slice;
-    const joined = rendered.join('\n');
+    // Line numbers are always on — the model needs them to reference exact
+    // lines when paging or calling edit/patch.
+    const joined = slice.map((line, i) => `${start + i + 1}: ${line}`).join('\n');
 
     // maxReadChars caps the total characters returned (0 = no char cap).
     if (maxReadChars > 0 && joined.length > maxReadChars) {
