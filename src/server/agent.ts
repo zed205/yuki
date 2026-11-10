@@ -101,6 +101,66 @@ Do not mention the summary process or that context was compacted.`;
 
 const CREATE_ANCHOR = 'Create a new anchored summary from the conversation history above.';
 
+// --- Reasoning/content split repair (Qwen3-style thinking models) -----------
+//
+// Thinking models such as Qwen3 mark the end of their reasoning with a literal
+// close-think tag. llama.cpp's server-side reasoning parser treats that tag as a
+// STRUCTURAL boundary: when the model emits it, the parser closes the thinking
+// block there -- even when the model meant the tag as literal text (e.g. it is
+// discussing the tag, or the tag appears inside a code span). Two failure modes
+// follow:
+//   1. BLEED -- reasoning that comes after the (premature) close tag is
+//      delivered as visible content, so the model's thinking leaks into the
+//      answer.
+//   2. STOP  -- the stream ends at the tag, so the turn produces no (or only a
+//      truncated) visible answer.
+// Yuki only ever sees the already-split stream, so it cannot undo a split when
+// the tag is consumed outright. What it *can* do: (a) normalize the case where a
+// stray close tag survives into content, and (b) recover from the degenerate
+// result (no usable visible answer) by nudging the model to continue instead of
+// presenting a broken final answer.
+
+/** The close-think tag Qwen3-style models emit to end reasoning. */
+const THINK_CLOSE_TAG = '</' + 'think' + '>';
+/** A visible answer shorter than this (right after a stray close tag) counts as
+ *  degenerate, not a legitimate discussion of the tag. */
+const STALL_TINY_ANSWER_CHARS = 40;
+/** Reasoning longer than this with (almost) no visible answer counts as a
+ *  degenerate "thought but stopped" turn worth recovering from. */
+const STALL_MIN_REASONING_CHARS = 200;
+/** Max times per user turn we re-prompt a degenerate response before falling
+ *  back to presenting the best-effort output. */
+const MAX_STALL_RECOVERIES = 2;
+
+/**
+ * Repair a response whose visible content contains a stray close-think tag that
+ * the server passed through instead of consuming it as the boundary. When there
+ * is essentially nothing after that tag, the text before it is leaked reasoning,
+ * not an answer, so move it back into reasoningContent. Mutates `response`.
+ */
+function normalizeThinkingSplit(response: { content?: string; reasoningContent?: string }): void {
+  const content = response.content || '';
+  const idx = content.lastIndexOf(THINK_CLOSE_TAG);
+  if (idx === -1) return;
+  const leaked = content.slice(0, idx + THINK_CLOSE_TAG.length);
+  const rest = content.slice(idx + THINK_CLOSE_TAG.length);
+  if (rest.trim().length > STALL_TINY_ANSWER_CHARS) return; // a real answer follows the tag
+  response.reasoningContent = ((response.reasoningContent || '') + ' ' + leaked).trim();
+  response.content = rest;
+}
+
+/**
+ * True when a no-tool response is degenerate: it produced no usable visible
+ * answer, either because reasoning leaked into content (a stray close tag) or
+ * because the model thought and then stopped. Used to decide whether to recover
+ * (re-prompt to continue) rather than present the response as the final answer.
+ */
+function isDegenerateFinalAnswer(response: { content?: string; reasoningContent?: string }): boolean {
+  const content = (response.content || '').trim();
+  const reasoning = (response.reasoningContent || '').trim();
+  return content.length <= STALL_TINY_ANSWER_CHARS && reasoning.length >= STALL_MIN_REASONING_CHARS;
+}
+
 /** Tools whose results are binary payloads â€” truncating them destroys the data. */
 const IMAGE_RESULT_TOOLS = new Set([
   'desktop_screenshot', 'desktop_snapshot_region', 'desktop_viewport',
@@ -441,6 +501,9 @@ export class Agent {
     let iterations = 0;
     let hasToolCalls = true;
     let midTurnCompactions = 0;
+    // Count of degenerate-response recoveries performed this user turn. Capped
+    // (MAX_STALL_RECOVERIES) so a persistently degenerate model cannot loop.
+    let stallRecoveries = 0;
     // The "current" user message for request rebuilds (compaction). Normally
     // the original user message, but a steer replaces it so post-compaction
     // rebuilds replay the steer, not the stale original.
@@ -539,6 +602,10 @@ export class Agent {
         console.error(`[agent] LLM call failed: ${llmErr?.message}`);
         response = { content: `Error calling LLM: ${llmErr?.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
       }
+
+      // Repair a degenerate reasoning/content split (see normalizeThinkingSplit)
+      // so leaked reasoning is not shown as the visible answer.
+      normalizeThinkingSplit(response);
 
       console.log(`[agent] iter=${iterations} hasToolCalls=${!!(response.toolCalls && response.toolCalls.length > 0)} contentLen=${response.content?.length || 0} toolCount=${response.toolCalls?.length || 0}`);
 
@@ -668,6 +735,35 @@ export class Agent {
         // If the user steered while we were composing this final answer, flag
         // the response so the client knows the turn is NOT over.
         const steerPending = this.pendingSteers.length > 0;
+
+        // Recover from a degenerate final answer: the reasoning/content split
+        // produced no usable visible reply (reasoning leaked into content, or
+        // the model thought and then stopped at the close-think tag). Instead of
+        // presenting leaked reasoning or a truncated fragment as the answer, tell
+        // the client the turn is still going and hand the attempt back with a
+        // nudge to finish. Capped (MAX_STALL_RECOVERIES) so a persistently
+        // degenerate model cannot loop forever; afterwards we fall through to the
+        // normal presentation below as a best-effort fallback.
+        if (!steerPending && isDegenerateFinalAnswer(response) && stallRecoveries < MAX_STALL_RECOVERIES) {
+          stallRecoveries++;
+          console.log(`[agent] degenerate final answer (recovery ${stallRecoveries}/${MAX_STALL_RECOVERIES}): contentLen=${content.length} reasoningLen=${reasoning.length}`);
+          this.sendToClient(ws, 'chat:response', {
+            message: content,
+            reasoningContent: reasoning,
+            toolCalls: undefined,
+            messageId: streamMsgId,
+            sessionId: session.id,
+            continuing: true,
+          });
+          // Extend the ephemeral request so the model continues from its bad
+          // attempt. Not persisted -- the degenerate answer is discarded.
+          messages.push({ role: 'assistant', content: content || reasoning || '[no visible answer]' });
+          messages.push({ role: 'user', content: 'Your previous reply was cut off and did not produce a complete visible answer. Please continue and provide your full final answer now.' });
+          iterations = 0;
+          midTurnCompactions = 0;
+          hasToolCalls = true;
+          continue;
+        }
 
         // If model generated only reasoning with no visible content, surface it
         if (!content && !reasoning) {
