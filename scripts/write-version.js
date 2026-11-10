@@ -12,7 +12,10 @@ function git(cmd) {
   }
 }
 
-const version = git('git describe --tags --always --dirty') || 'unknown';
+// deploy.ps1 sets VERSION_REF to the exact ref being deployed (the staging
+// dir has no .git, so git lookups there fail); dev builds use git describe.
+const version = process.env.VERSION_REF
+  || git('git describe --tags --always --dirty') || 'unknown';
 const commit = git('git rev-parse HEAD') || 'unknown';
 const builtAt = new Date().toISOString();
 

@@ -20,7 +20,7 @@ $live  = 'D:\Apps\YukiWeb'
 $prev  = 'D:\Apps\YukiWeb-previous'
 $stage = Join-Path $env:TEMP 'yukiweb-deploy'
 $port  = 3210
-$baseUrl = "http://localhost:$port"
+$baseUrl = "http://127.0.0.1:$port"
 
 function Stop-LiveServer {
   $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
@@ -35,13 +35,28 @@ function Stop-LiveServer {
 }
 
 function Rollback {
-  if (-not (Test-Path $prev)) {
-    Write-Error "No previous install at $prev — nothing to roll back to."
-  }
   Stop-LiveServer
+  if (-not (Test-Path $prev)) {
+    Write-Warning "No previous install at ${prev} — nothing to roll back to."
+    return $false
+  }
   if (Test-Path $live) { Remove-Item $live -Recurse -Force }
   Rename-Item $prev $live
-  Write-Host "Rolled back: $prev -> $live"
+  Write-Host "Rolled back: ${prev} -> ${live}"
+  return $true
+}
+
+# The tray app owns the server process (it supervises, logs, and can restart
+# it). Restoring/stopping the server is done by restarting the tray.
+function Restart-Tray {
+  $trays = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -like '*tray.ps1*' }
+  if ($trays) {
+    $trays | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 1
+  }
+  $vbs = Join-Path $repo 'scripts\yukiweb-tray.vbs'
+  Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbs`""
 }
 
 if ($Rollback) { Rollback; return }
@@ -70,6 +85,7 @@ try {
   npm ci --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
   Write-Host 'npm run build ...'
+  $env:VERSION_REF = $Ref   # stamped into dist/version.json
   npm run build
   if ($LASTEXITCODE -ne 0) { throw 'build failed' }
 } finally {
@@ -93,37 +109,29 @@ if ((Test-Path $srcEnv) -and -not (Test-Path (Join-Path $live '.env'))) {
   Copy-Item $srcEnv (Join-Path $live '.env')
 }
 
-# --- 5. Start + verify (rollback on failure) ---
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = 'node'
-$psi.Arguments = "`"$live\dist\server\index.js`""
-$psi.WorkingDirectory = $live
-$psi.UseShellExecute = $false
-$p = New-Object System.Diagnostics.Process
-$p.StartInfo = $psi
-$p.Start() | Out-Null
+# --- 5. Restart the tray (which starts the server) + verify ---
+Restart-Tray
 
 $ok = $false
-for ($i = 0; $i -lt 10; $i++) {
+$lastErr = ''
+for ($i = 0; $i -lt 20; $i++) {
   Start-Sleep -Seconds 1
   try {
-    $r = Invoke-WebRequest -Uri $baseUrl -UseBasicParsing -TimeoutSec 2
-    if ($r.StatusCode -lt 500) { $ok = $true; break }
-  } catch {}
+    # Any HTTP response (even 404) proves the server is up.
+    $http = New-Object System.Net.Http.HttpClient
+    $http.Timeout = [TimeSpan]::FromSeconds(2)
+    $resp = $http.GetAsync($baseUrl).GetAwaiter().GetResult()
+    $code = [int]$resp.StatusCode
+    $resp.Dispose(); $http.Dispose()
+    if ($code -lt 500) { $ok = $true; break }
+    $lastErr = "HTTP $code"
+  } catch { $lastErr = $_.Exception.Message }
 }
+if (-not $ok) { Write-Warning "Last verify error: $lastErr" }
 
 if (-not $ok) {
   Write-Warning "Live server did not respond on :$port — rolling back."
-  try { $p.Kill(); $p.WaitForExit(3000) } catch {}
-  Rollback
-  # Best-effort restart of the previous version.
-  $psi2 = New-Object System.Diagnostics.ProcessStartInfo
-  $psi2.FileName = 'node'
-  $psi2.Arguments = "`"$live\dist\server\index.js`""
-  $psi2.WorkingDirectory = $live
-  $psi2.UseShellExecute = $false
-  (New-Object System.Diagnostics.Process).StartInfo = $psi2
-  (New-Object System.Diagnostics.Process).Start() | Out-Null
+  if (Rollback) { Restart-Tray }
   exit 1
 }
 
