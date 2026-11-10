@@ -15,5 +15,6 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/client-v2"]
+  "exclude": ["node_modules", "dist", "src/client-v2"],
+  "files": ["src/declarations.d.ts"]
 }

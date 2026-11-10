@@ -63,8 +63,10 @@
 
     <!-- Utility summary -->
     <div id="utility-summary" class="sidebar-content border-b border-border space-y-2">
-      <!-- Model select -->
-      <select id="model-select" class="w-full bg-surface2 border border-border rounded-md px-2 py-1.5 text-sm text-text focus:outline-none focus:border-primary" title="Model"></select>
+      <!-- Model display (name / active variant) -->
+      <div id="model-label" class="min-w-0 select-none" title="">
+        <div id="model-label-name" class="text-sm font-medium text-text truncate">—</div>
+      </div>
       <!-- Endpoint row -->
       <div class="flex items-center gap-1 min-w-0">
         <span id="util-secure-icon" class="shrink-0 flex-shrink-0">&#x1f512;</span>
@@ -189,6 +191,12 @@
                 <span id="tools-indicator" class="text-xs text-muted">Off</span>
               </button>
               <div class="border-t border-border my-1"></div>
+              <!-- Models -->
+              <button type="button" id="options-models-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Manage models &amp; variants">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+                <span class="flex-1">Models</span>
+              </button>
+              <div class="border-t border-border my-1"></div>
               <!-- Voice Mode -->
               <button type="button" id="options-voice-mode-btn" class="w-full flex items-center gap-3 px-3 py-2 text-sm text-text hover:bg-surface2 rounded-lg transition-colors text-left" title="Continuous voice conversation">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
@@ -269,6 +277,22 @@
     </div>
   </div>
 
+  <!-- Models Modal -->
+  <div id="models-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-[760px] max-w-[95vw] max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-border">
+        <h2 class="text-sm font-semibold">Models</h2>
+        <div class="flex items-center gap-3">
+          <button id="models-add-btn" class="px-3 py-1.5 text-xs bg-primaryDark text-white rounded-lg hover:bg-primary transition-colors shrink-0">+ New Model</button>
+          <button id="close-models-btn" class="text-muted hover:text-text transition-colors">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="models-modal-body" class="flex-1 overflow-y-auto p-4"></div>
+    </div>
+  </div>
+
   <!-- Search Sessions Modal -->
   <div id="search-modal" class="hidden fixed inset-0 z-50 flex items-start justify-center bg-black/50">
     <div class="bg-surface border border-border rounded-xl shadow-2xl w-[520px] max-w-[95vw] max-h-[70vh] flex flex-col mt-[10vh]">
@@ -324,10 +348,17 @@
       <h2 class="text-sm font-semibold mb-3">New Project</h2>
       <input id="add-project-input" type="text" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary placeholder-muted" placeholder="Project name" />
       <div id="add-project-path-wrap" class="hidden mt-2">
-        <label class="text-xs text-muted mb-1 block">Directory (optional)</label>
+        <label class="text-xs text-muted mb-1 block">Directory (required)</label>
         <div class="flex gap-2">
-          <input id="add-project-path-input" type="text" class="flex-1 min-w-0 bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary" placeholder="Directory (leave empty for default)" />
+          <input id="add-project-path-input" type="text" class="flex-1 min-w-0 bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary" placeholder="e.g. D:\Projects\my-project" />
           <button id="add-project-path-browse-btn" type="button" class="px-3 py-2 text-xs bg-surface2 border border-border rounded-lg text-text hover:border-primary hover:text-primary transition-colors shrink-0">Browse…</button>
+        </div>
+        <div id="add-project-browse-wrap" class="hidden mt-2">
+          <div id="add-project-browse-current" class="text-xs text-muted truncate mb-1"></div>
+          <div id="add-project-browse-list" class="max-h-48 overflow-y-auto border border-border rounded-lg bg-surface2 text-xs"></div>
+          <div class="flex justify-end mt-2">
+            <button id="add-project-browse-use-btn" type="button" class="px-3 py-1.5 text-xs bg-surface2 border border-border rounded-lg text-text hover:border-primary hover:text-primary transition-colors">Use this folder</button>
+          </div>
         </div>
       </div>
       <div class="flex justify-end gap-2 mt-3">

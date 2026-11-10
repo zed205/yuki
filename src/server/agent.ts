@@ -7,7 +7,7 @@ import { getConfig } from './config';
 import { tools, toolDefinitions, toolNames, planToolNames, subAgentToolNames, truncateOutput } from './tools';
 import { Message, ToolCall, Session, Plan, PlanStep, Attachment, ModelConfig } from '../shared/types';
 import { planCreate, planUpdate, planGet, planRemove, getPlanSummary } from './plan';
-import { getAgentModel, getActiveModelName, setActiveModelName, getBackupModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getModelReasoningEffort } from './config';
+import { getAgentModel, getActiveModelName, setActiveModelName, getNamedModels, loadVoiceSystemPrompt, getEffectiveThinking, getSubAgentConfig, getModelReasoningEffort } from './config';
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -21,12 +21,12 @@ import {
   estimateRequestTokens,
   estimateSessionTokens,
   isImageResult,
-  projectedPromptTokens,
   requestChars,
   resolveCharsPerToken,
   textTokens,
 } from './context-budget';
 import { normalizeLineEndings, trimLineEndings } from './utils/line-endings';
+import { persistMessage, replaceSessionMessages, touchSession } from '../db';
 import {
   SubAgentJob,
   cancelAllSubAgents,
@@ -100,6 +100,66 @@ Preserve exact file paths, commands, error strings, and identifiers when known.
 Do not mention the summary process or that context was compacted.`;
 
 const CREATE_ANCHOR = 'Create a new anchored summary from the conversation history above.';
+
+// --- Reasoning/content split repair (Qwen3-style thinking models) -----------
+//
+// Thinking models such as Qwen3 mark the end of their reasoning with a literal
+// close-think tag. llama.cpp's server-side reasoning parser treats that tag as a
+// STRUCTURAL boundary: when the model emits it, the parser closes the thinking
+// block there -- even when the model meant the tag as literal text (e.g. it is
+// discussing the tag, or the tag appears inside a code span). Two failure modes
+// follow:
+//   1. BLEED -- reasoning that comes after the (premature) close tag is
+//      delivered as visible content, so the model's thinking leaks into the
+//      answer.
+//   2. STOP  -- the stream ends at the tag, so the turn produces no (or only a
+//      truncated) visible answer.
+// Yuki only ever sees the already-split stream, so it cannot undo a split when
+// the tag is consumed outright. What it *can* do: (a) normalize the case where a
+// stray close tag survives into content, and (b) recover from the degenerate
+// result (no usable visible answer) by nudging the model to continue instead of
+// presenting a broken final answer.
+
+/** The close-think tag Qwen3-style models emit to end reasoning. */
+const THINK_CLOSE_TAG = '</' + 'think' + '>';
+/** A visible answer shorter than this (right after a stray close tag) counts as
+ *  degenerate, not a legitimate discussion of the tag. */
+const STALL_TINY_ANSWER_CHARS = 40;
+/** Reasoning longer than this with (almost) no visible answer counts as a
+ *  degenerate "thought but stopped" turn worth recovering from. */
+const STALL_MIN_REASONING_CHARS = 200;
+/** Max times per user turn we re-prompt a degenerate response before falling
+ *  back to presenting the best-effort output. */
+const MAX_STALL_RECOVERIES = 2;
+
+/**
+ * Repair a response whose visible content contains a stray close-think tag that
+ * the server passed through instead of consuming it as the boundary. When there
+ * is essentially nothing after that tag, the text before it is leaked reasoning,
+ * not an answer, so move it back into reasoningContent. Mutates `response`.
+ */
+function normalizeThinkingSplit(response: { content?: string; reasoningContent?: string }): void {
+  const content = response.content || '';
+  const idx = content.lastIndexOf(THINK_CLOSE_TAG);
+  if (idx === -1) return;
+  const leaked = content.slice(0, idx + THINK_CLOSE_TAG.length);
+  const rest = content.slice(idx + THINK_CLOSE_TAG.length);
+  if (rest.trim().length > STALL_TINY_ANSWER_CHARS) return; // a real answer follows the tag
+  response.reasoningContent = ((response.reasoningContent || '') + ' ' + leaked).trim();
+  response.content = rest;
+}
+
+/**
+ * True when a no-tool response is degenerate: it produced no usable visible
+ * answer, either because reasoning leaked into content (a stray close tag) or
+ * because the model thought and then stopped. Used to decide whether to recover
+ * (re-prompt to continue) rather than present the response as the final answer.
+ */
+function isDegenerateFinalAnswer(response: { content?: string; reasoningContent?: string }): boolean {
+  const content = (response.content || '').trim();
+  const reasoning = (response.reasoningContent || '').trim();
+  return content.length <= STALL_TINY_ANSWER_CHARS && reasoning.length >= STALL_MIN_REASONING_CHARS;
+}
 
 /** Tools whose results are binary payloads â€” truncating them destroys the data. */
 const IMAGE_RESULT_TOOLS = new Set([
@@ -203,7 +263,7 @@ function getSystemInfo(projectPath?: string): string {
     `Shell: ${process.env.SHELL || process.env.ComSpec || 'unknown'}`,
     `CWD: ${projectPath || process.cwd()}`,
     `${maxChars < 0 ? 'Tool output size control is disabled (maxToolOutputChars=-1).' : maxChars === 0 ? 'Tool outputs are written to disk with no inline preview (maxToolOutputChars=0).' : `Tool outputs for web_fetch and shell are capped at ${maxChars} chars. Overflow is saved to disk; use read(..., offset, limit) where offset and limit are line numbers to page through output.`}`,
-    `The read tool always returns content inline (independent of maxToolOutputChars), capped at ${getConfig().maxReadLines ?? 200} lines and ${getConfig().maxReadChars ?? 20000} chars per call, with line numbers ${getConfig().readNumbered ?? true ? 'enabled' : 'disabled'}. Use offset/limit to page through larger files.`,
+    `The read tool always returns content inline (independent of maxToolOutputChars), capped at ${getConfig().maxReadLines ?? 200} lines and ${getConfig().maxReadChars ?? 20000} chars per call, with line numbers on every line. Use offset/limit to page through larger files.`,
   ];
   return lines.join('\n');
 }
@@ -226,6 +286,10 @@ export class Agent {
   private clients: Map<string, OpenAI> = new Map();
   private lastRequestChars = 0;
   private toolDefsChars: number | null = null;
+  /** Actual prompt tokens of the most recent completed LLM request in this turn (0 = none yet). */
+  private lastActualTokens = 0;
+  /** Number of messages in `messages` when that request was sent; base index for delta prediction. */
+  private baseMsgCount = 0;
   private currentWs: WebSocket | null = null;
   private currentSessionId: string | null = null;
   /** Live socket per session, so background agents survive reconnects/switches. */
@@ -337,14 +401,16 @@ export class Agent {
         content: feedbackText,
       };
       messages.push(feedbackMsg);
-      session.messages.push({
+      const obsStoredMsg: Message = {
         id: `obs_${session.id}_${iterations}`,
         role: 'system',
         content: feedbackText,
         timestamp: new Date(),
         sessionId: session.id,
         pruned: true, // Mark as pruned so it doesn't accumulate in history
-      });
+      };
+      session.messages.push(obsStoredMsg);
+      this.persistSessionMessages(session, [obsStoredMsg]);
 
       console.log(`[observer] feedback injected: ${feedback.status} (confidence: ${feedback.confidence})`);
       return true;
@@ -361,10 +427,10 @@ export class Agent {
     let block = '\n\n## Observer Feedback\n';
     block += `**Assessment**: ${feedback.status}\n`;
     if (feedback.concern) {
-      block += `**Concern**: ${feedback.concern}\n`;
+      block += `**Concern**: ${normalizeLineEndings(feedback.concern)}\n`;
     }
     if (feedback.suggestion) {
-      block += `**Suggestion**: ${feedback.suggestion}\n`;
+      block += `**Suggestion**: ${normalizeLineEndings(feedback.suggestion)}\n`;
     }
     block += `Accept this feedback and adjust your approach accordingly.\n`;
     return block;
@@ -400,6 +466,10 @@ export class Agent {
     this.currentSessionId = session.id;
     this.bindClient(session.id, ws);
     this.abortController = new AbortController();
+    // A new turn: the in-flight token base from the previous turn does not apply.
+    // Turn-start prediction anchors on the persisted session.lastPromptTokens instead.
+    this.lastActualTokens = 0;
+    this.baseMsgCount = 0;
     const config = { ...getConfig() };
     let systemPrompt = session.messages.find(m => m.role === 'system' && !this.isSummaryMessage(m))?.content || '';
     if (session.voiceMode) {
@@ -409,17 +479,31 @@ export class Agent {
     const project = getProject(session.projectId || 'default');
     this.currentProjectPath = project?.path || '';
 
-    // Compact if conversation exceeds threshold
+    // Build the request first so turn-start compaction can predict from the real
+    // message array (last actual tokens + the freshly appended user message).
+    let messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
+    // The previous turn's final request covered everything except this tail user
+    // message, so `messages[baseMsgCount:]` is the delta on top of the last
+    // confirmed count. Anything injected later (sub-agent reports, steers, tool
+    // results) is appended past this boundary and included automatically.
+    this.baseMsgCount = Math.max(0, messages.length - 1);
+
     const cm = config.contextManagement;
     if (cm?.enabled) {
-      await this.compactIfOverBudget(session, config, ws);
+      const compacted = await this.compactIfOverBudget(session, config, ws, messages);
+      if (compacted) {
+        // The session was rewritten (compactConversation reset the token base);
+        // rebuild the request from the shortened history.
+        messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
+      }
     }
-
-    let messages = this.buildRequestMessages(session, config, userMessage, images, systemPrompt);
 
     let iterations = 0;
     let hasToolCalls = true;
     let midTurnCompactions = 0;
+    // Count of degenerate-response recoveries performed this user turn. Capped
+    // (MAX_STALL_RECOVERIES) so a persistently degenerate model cannot loop.
+    let stallRecoveries = 0;
     // The "current" user message for request rebuilds (compaction). Normally
     // the original user message, but a steer replaces it so post-compaction
     // rebuilds replay the steer, not the stale original.
@@ -475,15 +559,18 @@ export class Agent {
       if (this.pendingSteers.length > 0) {
         const steerText = this.pendingSteers.join('\n\n');
         this.pendingSteers = [];
+        const steerPrefix = normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n`);
         const steerMsg: Message = {
           id: this.generateId(),
           role: 'user',
           content: steerText,
           timestamp: new Date(),
           sessionId: session.id,
+          syntheticPrefix: steerPrefix,
         };
         session.messages.push(steerMsg);
-        messages.push({ role: 'user', content: `## Current Plan\n${getPlanSummary(session.id)}\n\n${steerText}` });
+        this.persistSessionMessages(session, [steerMsg]);
+        messages.push({ role: 'user', content: steerPrefix + steerText });
         turnUserMessage = steerText;
         turnImages = [];
         console.log(`[agent] steer injected into turn (${steerText.length} chars)`);
@@ -521,21 +608,23 @@ export class Agent {
           undefined, session.id, session.disabledTools,
         );
       } catch (llmErr: any) {
-        const backupName = getBackupModelName();
-        if (backupName && backupName !== getActiveModelName()) {
-          console.log(`[agent] primary model failed, falling back to backup: ${backupName}`);
-          setActiveModelName(backupName);
-          response = await this.callLLM(messages, config, this.abortController?.signal,
-            (thinkingChunk) => this.sendToClient(ws, 'thinking:chunk', { chunk: thinkingChunk, messageId: streamMsgId, sessionId: session.id }),
-            (contentChunk) => this.sendToClient(ws, 'chat:chunk', { chunk: contentChunk, messageId: streamMsgId, sessionId: session.id }),
-            undefined, session.id, session.disabledTools,
-          );
-        } else {
-          response = { content: `Error calling LLM: ${llmErr.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
-        }
+        console.error(`[agent] LLM call failed: ${llmErr?.message}`);
+        response = { content: `Error calling LLM: ${llmErr?.message}`, toolCalls: undefined, reasoningContent: '', usage: undefined };
       }
 
+      // Repair a degenerate reasoning/content split (see normalizeThinkingSplit)
+      // so leaked reasoning is not shown as the visible answer.
+      normalizeThinkingSplit(response);
+
       console.log(`[agent] iter=${iterations} hasToolCalls=${!!(response.toolCalls && response.toolCalls.length > 0)} contentLen=${response.content?.length || 0} toolCount=${response.toolCalls?.length || 0}`);
+
+      // Record the actual prompt size and message boundary so the next context
+      // prediction is "last actual + the messages appended since", never a fresh
+      // full-context re-estimate.
+      this.baseMsgCount = messages.length;
+      if (response.usage?.promptTokens) {
+        this.lastActualTokens = response.usage.promptTokens;
+      }
 
       if (response.usage?.promptTokens) {
         const before = session.charsPerToken;
@@ -630,7 +719,9 @@ export class Agent {
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         }
 
-        session.messages.push(this.forStorage(assistantMsg, config));
+        const storedAssistantMsg = this.forStorage(assistantMsg, config);
+        session.messages.push(storedAssistantMsg);
+        this.persistSessionMessages(session, [storedAssistantMsg]);
         this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
 
         // Run observer evaluation if enabled
@@ -654,6 +745,35 @@ export class Agent {
         // the response so the client knows the turn is NOT over.
         const steerPending = this.pendingSteers.length > 0;
 
+        // Recover from a degenerate final answer: the reasoning/content split
+        // produced no usable visible reply (reasoning leaked into content, or
+        // the model thought and then stopped at the close-think tag). Instead of
+        // presenting leaked reasoning or a truncated fragment as the answer, tell
+        // the client the turn is still going and hand the attempt back with a
+        // nudge to finish. Capped (MAX_STALL_RECOVERIES) so a persistently
+        // degenerate model cannot loop forever; afterwards we fall through to the
+        // normal presentation below as a best-effort fallback.
+        if (!steerPending && isDegenerateFinalAnswer(response) && stallRecoveries < MAX_STALL_RECOVERIES) {
+          stallRecoveries++;
+          console.log(`[agent] degenerate final answer (recovery ${stallRecoveries}/${MAX_STALL_RECOVERIES}): contentLen=${content.length} reasoningLen=${reasoning.length}`);
+          this.sendToClient(ws, 'chat:response', {
+            message: content,
+            reasoningContent: reasoning,
+            toolCalls: undefined,
+            messageId: streamMsgId,
+            sessionId: session.id,
+            continuing: true,
+          });
+          // Extend the ephemeral request so the model continues from its bad
+          // attempt. Not persisted -- the degenerate answer is discarded.
+          messages.push({ role: 'assistant', content: content || reasoning || '[no visible answer]' });
+          messages.push({ role: 'user', content: 'Your previous reply was cut off and did not produce a complete visible answer. Please continue and provide your full final answer now.' });
+          iterations = 0;
+          midTurnCompactions = 0;
+          hasToolCalls = true;
+          continue;
+        }
+
         // If model generated only reasoning with no visible content, surface it
         if (!content && !reasoning) {
           // Completely empty response â€” send fallback instead of breaking silently
@@ -665,13 +785,15 @@ export class Agent {
             sessionId: session.id,
             continuing: steerPending,
           });
-          session.messages.push({
+          const emptyResponseMsg: Message = {
             id: streamMsgId,
             role: 'assistant',
             content: '[Empty response â€” likely ran out of token budget during thinking.]',
             timestamp: new Date(),
             sessionId: session.id,
-          });
+          };
+          session.messages.push(emptyResponseMsg);
+          this.persistSessionMessages(session, [emptyResponseMsg]);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         } else if (!content && reasoning) {
           this.sendToClient(ws, 'chat:response', {
@@ -682,14 +804,16 @@ export class Agent {
             sessionId: session.id,
             continuing: steerPending,
           });
-          session.messages.push({
+          const reasoningOnlyMsg: Message = {
             id: streamMsgId,
             role: 'assistant',
             content: reasoning,
             reasoningContent: reasoning,
             timestamp: new Date(),
             sessionId: session.id,
-          });
+          };
+          session.messages.push(reasoningOnlyMsg);
+          this.persistSessionMessages(session, [reasoningOnlyMsg]);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         } else {
           const assistantMsg: Message = {
@@ -711,6 +835,7 @@ export class Agent {
           });
 
           session.messages.push(assistantMsg);
+          this.persistSessionMessages(session, [assistantMsg]);
           this.sendContextUpdate(ws, this.estimateSessionTokens(session, config), getAgentModel().contextWindow || 64000);
         }
         // Steering: if the user sent a message while we were composing this
@@ -722,15 +847,18 @@ export class Agent {
           this.pendingSteers = [];
 
           messages.push({ role: 'assistant', content: content || reasoning || '[empty response]' });
+          const steerPrefix = normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n`);
           const steerMsg: Message = {
             id: this.generateId(),
             role: 'user',
             content: steerText,
             timestamp: new Date(),
             sessionId: session.id,
+            syntheticPrefix: steerPrefix,
           };
           session.messages.push(steerMsg);
-          messages.push({ role: 'user', content: `## Current Plan\n${getPlanSummary(session.id)}\n\n${steerText}` });
+          this.persistSessionMessages(session, [steerMsg]);
+          messages.push({ role: 'user', content: steerPrefix + steerText });
           turnUserMessage = steerText;
           turnImages = [];
 
@@ -805,11 +933,17 @@ export class Agent {
       sessionId: sessionId || undefined,
     };
     const createParams: Record<string, any> = {
-      model: agentCfg.model,
+      // Empty Model ID (e.g. single-model llama.cpp servers) -> placeholder;
+      // the loaded model is served regardless of this value.
+      model: agentCfg.model || 'default',
       messages: messages as any,
       max_tokens: maxOutputTokens ?? (agentCfg.maxTokens === -1 ? undefined : (agentCfg.maxTokens || 8000)),
       ...(agentCfg.temperature !== undefined ? { temperature: agentCfg.temperature } : {}),
       stream: true,
+      // Guarantee the engine reports usage on every response (vLLM etc. only
+      // send it when asked), since context prediction now anchors on the
+      // provider-confirmed prompt token count.
+      stream_options: { include_usage: true },
     };
 
     if (toolDefinitions.length > 0) {
@@ -1604,6 +1738,10 @@ export class Agent {
     const hardStopThreshold = cm?.hardStopThreshold ?? 0.95;
     const safetyMargin = cm?.estimateSafetyMargin ?? 1.15;
     let lastActualPromptTokens = 0;
+    // Number of messages in `messages` when the last request was sent; the
+    // prediction only estimates what was appended since (same base+delta model
+    // as the main agent).
+    let subAgentBaseMsgCount = 0;
     let finalContent = '';
     let iterations = 0;
 
@@ -1611,12 +1749,15 @@ export class Agent {
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
       iterations++;
 
-      // Token estimation — same function as the main agent, no heuristics.
-      const liveEstimate = estimateRequestTokens(messages, undefined, childConfig);
-      // Project forward using last provider-confirmed count (when available).
-      const projected = lastActualPromptTokens > 0
-        ? Math.max(liveEstimate, Math.ceil(lastActualPromptTokens * safetyMargin))
-        : liveEstimate;
+      // Predict as "last confirmed prompt tokens + the delta appended since":
+      // the base is exact, only the small increment is estimated. Falls back to
+      // a fresh full estimate for the first call or after a compaction splice.
+      const projected = Math.ceil(
+        (lastActualPromptTokens > 0
+          ? lastActualPromptTokens + estimateRequestTokens(messages.slice(subAgentBaseMsgCount), undefined, childConfig)
+          : estimateRequestTokens(messages, undefined, childConfig))
+        * safetyMargin,
+      );
 
       const overThreshold = projected > ctxWindow * compactionThreshold;
       const atWall = projected > ctxWindow * hardStopThreshold;
@@ -1643,6 +1784,9 @@ export class Agent {
           console.warn(`[subagent] ${agentId}: compaction did not reclaim enough`);
           return '[Sub-agent stopped: could not compact further.]';
         }
+        // The transcript was spliced in place; no prior base survives.
+        lastActualPromptTokens = 0;
+        subAgentBaseMsgCount = 0;
       }
 
       const response = await this.callLLM(
@@ -1658,10 +1802,12 @@ export class Agent {
         childMaxOutput,
       );
 
-      // Calibrate estimate from the provider's actual count.
+      // Record the provider-confirmed count and the message boundary it covered,
+      // so the next prediction only estimates the increment added since.
       if (response.usage?.promptTokens) {
         lastActualPromptTokens = response.usage.promptTokens;
       }
+      subAgentBaseMsgCount = messages.length;
 
       if (job.abort.signal.aborted) return '[Sub-agent cancelled by user.]';
 
@@ -1971,14 +2117,18 @@ export class Agent {
     // Only go back to the start, or to the last compaction summary. Anything
     // older than the anchor has been folded into it and is no longer replayed.
     const anchorIndex = anchored ? session.messages.indexOf(anchored) : -1;
-    const historyMessages = session.messages
-      .filter((m, idx) => m.role !== 'system' && !m.pruned && !m.compacted && idx > anchorIndex)
-      .slice(0, -1); // last message is the current user msg (re-added below with images)
+    const eligibleMessages = session.messages
+      .filter((m, idx) => m.role !== 'system' && !m.pruned && !m.compacted && idx > anchorIndex);
+    const historyMessages = eligibleMessages.slice(0, -1); // last message is the current user msg (re-added below with images)
 
     for (const msg of historyMessages) {
       const entry: Record<string, any> = {
         role: msg.role,
-        content: msg.content,
+        // Replay the exact bytes that were sent originally. The plan snapshot is
+        // prepended at request-build time; if it were dropped here the message
+        // would differ from the cached prompt at this position, invalidating the
+        // cache from here to the end of the context.
+        content: msg.syntheticPrefix ? msg.syntheticPrefix + msg.content : msg.content,
       };
       if (msg.reasoningContent) {
         entry.reasoning_content = msg.reasoningContent;
@@ -2020,7 +2170,19 @@ export class Agent {
           ? 'It returns an agent id immediately and its report is delivered automatically when it finishes — continue working instead of polling. Use agent_result to collect one explicitly or agent_list to check capacity. Every finished agent alerts you, so review and validate its work (check the files, rerun the command/test) before relying on or reporting it.'
           : `To run sub-agents in parallel, emit their spawn_agent calls together in one response (at most ${subAgentsForNote}).`}\n\n`
       : '';
-    const planNote = `## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`;
+    // Persist the exact prefix on the message it rides on. On the initial build
+    // this is the user message that started the turn; on a mid-turn rebuild
+    // (compaction) it is that same message further back in history. Reusing a
+    // stored prefix keeps rebuilds byte-identical to the original request.
+    const tailUserMsg = [...eligibleMessages].reverse().find(m => m.role === 'user' && m.content === userMessage);
+    const planNote = tailUserMsg?.syntheticPrefix
+      ?? normalizeLineEndings(`## Current Plan\n${getPlanSummary(session.id)}\n\n${delegationNote}`);
+    if (tailUserMsg && !tailUserMsg.syntheticPrefix) {
+      tailUserMsg.syntheticPrefix = planNote;
+      // Persist the prefix immediately so a replay after a mid-turn restart
+      // still reproduces the exact bytes that were sent for this message.
+      this.persistSessionMessages(session, [tailUserMsg]);
+    }
     if (typeof currentUserContent === 'string') {
       messages.push({ role: 'user', content: planNote + currentUserContent });
     } else {
@@ -2085,23 +2247,107 @@ export class Agent {
     return capped ? { ...msg, toolCalls } : msg;
   }
 
+  /**
+   * Incrementally persist newly-created session messages so an interrupted turn
+   * (stop button, server restart, crash) never loses the work done so far. The
+   * full-session save in index.ts only runs after the whole turn completes.
+   * A failed write is logged but never allowed to kill the agent loop.
+   */
+  private persistSessionMessages(session: Session, msgs: Message[]): void {
+    if (!msgs.length) return;
+    try {
+      for (const m of msgs) persistMessage(m);
+      session.updatedAt = new Date();
+      touchSession(session.id);
+    } catch (err) {
+      console.error('[agent] failed to persist session message:', err);
+    }
+  }
+
+  /**
+   * Persist an in-place rewrite of session.messages (mid-turn compaction that
+   * marks turns compacted, drops the old anchor and inserts a new summary).
+   * The whole array is replaced so rows removed in memory cannot linger in DB.
+   */
+  private persistSessionRewrite(session: Session): void {
+    try {
+      replaceSessionMessages(session.id, session.messages);
+      session.updatedAt = new Date();
+      touchSession(session.id);
+    } catch (err) {
+      console.error('[agent] failed to persist session rewrite:', err);
+    }
+  }
+
   private estimateSessionTokens(session: Session, config: any): number {
     return estimateSessionTokens(session, config, this.toolDefsOverheadChars());
   }
 
-  /** Turn-start compaction: cheap, runs once before the tool loop. */
-  private async compactIfOverBudget(session: Session, config: any, ws: WebSocket): Promise<void> {
-    const cm = config.contextManagement;
-    if (!cm?.enabled) return;
-    const ctxWindow = getAgentModel().contextWindow || 64000;
-    const projected = projectedPromptTokens(
-      session,
-      this.estimateSessionTokens(session, config),
-      cm.estimateSafetyMargin ?? 1.15,
-    );
-    if (projected > ctxWindow * (cm.compactionThreshold ?? 0.85)) {
-      await this.compactConversation(session, config, ws);
+  /**
+   * Accurate projected prompt size for a session, for the UI context label.
+   * Delegates to the same calibrated, replay-accurate estimator that compaction
+   * relies on (plus the tool-schema overhead), so the label can no longer
+   * diverge from what actually gets sent.
+   */
+  getProjectedContextTokens(session: Session, config: any = getConfig()): number {
+    return this.estimateSessionTokens(session, config);
+  }
+
+  /**
+   * Predict the next request's prompt size as "last actual tokens + the small
+   * delta appended since", instead of re-estimating the whole context from chars.
+   *
+   * The base is the most recent provider-confirmed prompt count — this turn's
+   * (`lastActualTokens`, mid-turn) or the previous turn's (`session.lastPromptTokens`,
+   * turn start) — and the delta is `messages[baseMsgCount:]`, i.e. only the
+   * messages appended since that request (tool results, steers, the new user
+   * message). The base already reflects whatever the template actually rendered
+   * (including preserve_thinking stripping), so it can never drift. Only the
+   * small, fully-rendered increment is estimated.
+   *
+   * When no confirmed base exists (first request of a session, or right after a
+   * compaction rewrote the context), fall back to a fresh char-based estimate of
+   * the whole array plus tool-definition overhead.
+   */
+  private projectedNextTokens(
+    messages: Array<Record<string, any>>,
+    session: Session,
+    config: any,
+  ): number {
+    const cm = config.contextManagement || {};
+    const margin = cm.estimateSafetyMargin ?? 1.15;
+    const base = this.lastActualTokens > 0 ? this.lastActualTokens : (session.lastPromptTokens ?? 0);
+    let predicted: number;
+    if (base > 0) {
+      predicted = base + estimateRequestTokens(messages.slice(this.baseMsgCount), session, config);
+    } else {
+      const cpt = resolveCharsPerToken(session, cm);
+      predicted = estimateRequestTokens(messages, session, config)
+        + Math.ceil(this.toolDefsOverheadChars() / cpt);
     }
+    return Math.ceil(predicted * margin);
+  }
+
+  /**
+   * Turn-start compaction: cheap, runs once before the tool loop.
+   * Returns true when the session was actually rewritten (caller must rebuild
+   * its message array), false when nothing changed.
+   */
+  private async compactIfOverBudget(
+    session: Session,
+    config: any,
+    ws: WebSocket,
+    messages: Array<Record<string, any>>,
+  ): Promise<boolean> {
+    const cm = config.contextManagement;
+    if (!cm?.enabled) return false;
+    const ctxWindow = getAgentModel().contextWindow || 64000;
+    const projected = this.projectedNextTokens(messages, session, config);
+    if (projected > ctxWindow * (cm.compactionThreshold ?? 0.85)) {
+      const reason = await this.compactConversation(session, config, ws);
+      return reason === '';
+    }
+    return false;
   }
 
   /**
@@ -2123,21 +2369,19 @@ export class Agent {
     if (!cm?.enabled) return 'ok';
 
     const ctxWindow = getAgentModel().contextWindow || 64000;
-    const cpt = resolveCharsPerToken(session, cm);
-    const liveEstimate = estimateRequestTokens(messages, session, config)
-      + Math.ceil(this.toolDefsOverheadChars() / cpt);
-    const projected = projectedPromptTokens(session, liveEstimate, cm.estimateSafetyMargin ?? 1.15);
+    const projected = this.projectedNextTokens(messages, session, config);
 
     if (projected <= ctxWindow * (cm.compactionThreshold ?? 0.85)) return 'ok';
 
     const atWall = projected > ctxWindow * (cm.hardStopThreshold ?? 0.95);
     console.log(
       `[agent] budget guard: projected=${projected}/${ctxWindow} ` +
-      `(live=${liveEstimate}, lastActual=${session.lastPromptTokens || 0}, cpt=${cpt.toFixed(2)})`,
+      `(base=${this.lastActualTokens || session.lastPromptTokens || 0}, cpt=${resolveCharsPerToken(session, cm).toFixed(2)})`,
     );
 
     const compacted = await this.compactConversation(session, config, ws);
-    if (compacted) return 'compacted';
+    // Success returns '' (the session was rewritten) — tell the caller to rebuild.
+    if (compacted === '') return 'compacted';
 
     // Nothing could be reclaimed â€” either the turn is tiny or compaction failed.
     if (atWall) {
@@ -2191,7 +2435,12 @@ export class Agent {
     const summaryMsg = session.messages.find(m => this.isSummaryMessage(m));
     const systemMsg = session.messages.find(m => m.role === 'system' && m !== summaryMsg);
 
-    const rest = session.messages.filter(m => m !== systemMsg && m !== summaryMsg);
+    // Already-compacted turns are kept in the log but are NOT re-fed to the
+    // summarizer: their substance is already inside the previous anchor
+    // (passed via prevSummary). Including them would make every compaction
+    // re-read the entire transcript, so the summarizer prompt grows toward the
+    // staged budget and each compaction pays a full prefill on the model.
+    const rest = session.messages.filter(m => m !== systemMsg && m !== summaryMsg && !m.compacted);
     if (rest.length < 1) return 'There is no conversation to compact.';
 
     // Never summarize away the message currently being answered.
@@ -2240,12 +2489,22 @@ export class Agent {
       }
       session.updatedAt = new Date();
 
+      // Persist the rewritten transcript atomically so a mid-turn interrupt or
+      // reload shows the compacted state instead of the stale pre-compaction one.
+      this.persistSessionRewrite(session);
+
       const afterTokens = this.estimateSessionTokens(session, config);
       this.sendToClient(ws, 'context:compacted', {
         savedTokens: Math.max(0, beforeTokens - afterTokens),
         messagesCompacted: toSummarize.length,
         sessionId: session.id,
       });
+
+      // A successful compaction rewrites the context, so every previous token
+      // baseline (persisted and in-flight) is invalid until the next request.
+      session.lastPromptTokens = 0;
+      this.lastActualTokens = 0;
+      this.baseMsgCount = 0;
       return '';
     } catch (err) {
       return `Compaction failed with an error: ${err instanceof Error ? err.message : String(err)}`;
@@ -2460,7 +2719,9 @@ function buildUserContent(text: string, images: string[], attachments: Attachmen
     let textFile = '';
     if (TEXT_MIME_HINTS.test(`${att.name}`)) {
       try {
-        textFile = fs.readFileSync(att.path, 'utf-8').slice(0, 40000);
+        // Normalise line endings so CRLF text attachments don't leak \r
+        // into the model context.
+        textFile = normalizeLineEndings(fs.readFileSync(att.path, 'utf-8')).slice(0, 40000);
       } catch { /* ignore */ }
     }
 

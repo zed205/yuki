@@ -15,6 +15,7 @@
   const optionsTtsBtn = document.getElementById('options-tts-btn');
   const optionsThinkingBtn = document.getElementById('options-thinking-btn');
   const optionsToolsBtn = document.getElementById('options-tools-btn');
+  const optionsModelsBtn = document.getElementById('options-models-btn');
   const optionsCompactBtn = document.getElementById('options-compact-btn');
   const optionsNotificationsBtn = document.getElementById('options-notifications-btn');
   const notificationsIndicator = document.getElementById('notifications-indicator');
@@ -36,6 +37,10 @@
   const toolsModal = document.getElementById('tools-modal');
   const toolsList = document.getElementById('tools-list');
   const closeToolsBtn = document.getElementById('close-tools-btn');
+  const modelsModal = document.getElementById('models-modal');
+  const modelsModalBody = document.getElementById('models-modal-body');
+  const closeModelsBtn = document.getElementById('close-models-btn');
+  const modelsAddBtn = document.getElementById('models-add-btn');
   const renameModal = document.getElementById('rename-modal');
   const renameInput = document.getElementById('rename-input');
   const renameModalTitle = document.getElementById('rename-modal-title');
@@ -55,6 +60,10 @@
   const addProjectPathWrap = document.getElementById('add-project-path-wrap');
   const addProjectPathInput = document.getElementById('add-project-path-input');
   const addProjectPathBrowseBtn = document.getElementById('add-project-path-browse-btn');
+  const addProjectBrowseWrap = document.getElementById('add-project-browse-wrap');
+  const addProjectBrowseCurrent = document.getElementById('add-project-browse-current');
+  const addProjectBrowseList = document.getElementById('add-project-browse-list');
+  const addProjectBrowseUseBtn = document.getElementById('add-project-browse-use-btn');
   const addProjectCancelBtn = document.getElementById('add-project-cancel-btn');
   const addProjectSaveBtn = document.getElementById('add-project-save-btn');
   const searchBtn = document.getElementById('search-btn');
@@ -91,6 +100,12 @@
   const subAgentSnapshots = new Map();
   let enableImagePaste = false;
   let connectedConfig = {};
+  // Structured model data (nested model → variants) from the server.
+  // qualifiedName identifies a selectable preset: the model's plain name for its
+  // default variant, or "Name / Variant" otherwise.
+  let modelsData = { models: [], activeModel: null };
+  // Which form the models modal is showing: null | { type: 'model', id } | { type: 'variant', modelId, id }
+  let modelsFormMode = null;
   // Desktop notifications (completion alerts) — default on, synced from server config
   let desktopNotifications = true;
   // Stores auto-generated summaries per session
@@ -536,9 +551,30 @@
         voiceMode = !!data.data.voiceMode;
         updateVoiceModeVisual();
         updateUtilitySummary();
-        buildModelSelect(data.data.models || [], data.data.activeModel);
+        if (Array.isArray(data.data.structuredModels) && data.data.structuredModels.length > 0) {
+          modelsData = {
+            models: data.data.structuredModels,
+            activeModel: data.data.activeModel,
+          };
+        } else {
+          // Fallback: synthesize a single-variant shape from the flat model list.
+          modelsData = {
+            models: (data.data.models || []).map(m => ({
+              id: m.name, name: m.name, model: m.model, endpoint: m.endpoint,
+              apiKeyMasked: '', contextWindow: null, maxTokens: null, sortOrder: 0,
+              variants: [{
+                id: m.name, name: 'Default', temperature: null, thinkingEnabled: null,
+                preserveThinking: null, reasoningEffort: null, isDefault: true,
+                sortOrder: 0, qualifiedName: m.name,
+              }],
+            })),
+            activeModel: data.data.activeModel,
+          };
+        }
+        updateModelLabel();
         const savedModel = localStorage.getItem('yukiweb_model');
-        if (savedModel && savedModel !== data.data.activeModel && (data.data.models || []).some(m => m.name === savedModel)) {
+        const flatQualified = modelsData.models.flatMap(m => m.variants.map(v => v.qualifiedName));
+        if (savedModel && savedModel !== data.data.activeModel && flatQualified.includes(savedModel)) {
           send('model:switch', { modelName: savedModel });
         }
         loadTree();
@@ -801,14 +837,22 @@
       case 'model:switched':
         if (data.data.activeModel) {
           localStorage.setItem('yukiweb_model', data.data.activeModel);
-          const modelSelect = document.getElementById('model-select');
-          if (modelSelect) modelSelect.value = data.data.activeModel;
+          modelsData.activeModel = data.data.activeModel;
+          updateModelLabel();
           connectedConfig = { ...connectedConfig, ...data.data };
           if (typeof data.data.thinkingEnabled === 'boolean') {
             thinkingEnabled = data.data.thinkingEnabled;
             updateThinkingBtnVisual();
           }
           updateUtilitySummary();
+        }
+        break;
+
+      case 'models:updated':
+        if (data.data && Array.isArray(data.data.models)) {
+          modelsData = { models: data.data.models, activeModel: data.data.activeModel };
+          updateModelLabel();
+          if (!modelsModal.classList.contains('hidden') && !modelsFormMode) renderModelsModal();
         }
         break;
 
@@ -1336,7 +1380,7 @@
     }
 
     messagesEl.appendChild(msgEl);
-    scrollToBottom();
+    scrollToBottom(role === 'user');
     updateContextUsage();
     return msgEl;
   }
@@ -2224,8 +2268,31 @@
     });
   }
 
-function scrollToBottom() {
-  scrollContainer.scrollTop = scrollContainer.scrollHeight;
+// --- Smart transcript auto-scroll ----------------------------------------
+// Only follow the stream (pin the view to the bottom) while the user is at
+// the bottom of the transcript. If they scroll up to read history, new
+// content won't yank the view down; scrolling back to the bottom re-engages
+// follow. Pass force=true to jump unconditionally (e.g. the user just sent
+// a message, or a session feed was just rebuilt).
+const SCROLL_FOLLOW_THRESHOLD_PX = 80;
+let followScroll = true;
+
+function isAtBottom() {
+  const gap = scrollContainer.scrollHeight - (scrollContainer.scrollTop + scrollContainer.clientHeight);
+  return gap <= SCROLL_FOLLOW_THRESHOLD_PX;
+}
+
+if (scrollContainer) {
+  scrollContainer.addEventListener('scroll', () => {
+    followScroll = isAtBottom();
+  });
+}
+
+function scrollToBottom(force = false) {
+  if (force || followScroll) {
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    followScroll = true;
+  }
 }
 
   function setIsWaiting(waiting) {
@@ -2263,6 +2330,7 @@ function scrollToBottom() {
 
   function clearChatDisplay() {
     messagesEl.innerHTML = '';
+    followScroll = true;
     lastAssistantMessage = '';
     lastAssistantBubble = null;
     thinkingBubble = null;
@@ -2614,29 +2682,35 @@ function scrollToBottom() {
     loadTree();
   }
 
-  function buildModelSelect(models, activeModel) {
-    const select = document.getElementById('model-select');
-    if (!select) return;
-    select.innerHTML = '';
-    for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = m.name;
-      opt.textContent = m.name;
-      if (m.name === activeModel) opt.selected = true;
-      select.appendChild(opt);
-    }
-    select.value = activeModel;
-    if (connectedConfig) {
-      connectedConfig.model = (models.find(m => m.name === activeModel) || {}).model || connectedConfig.model;
-    }
+  /** Split a qualified selection name ("Name / Variant") into model + variant. */
+  function parseModelSelection(qualifiedName) {
+    const idx = (qualifiedName || '').indexOf(' / ');
+    if (idx === -1) return { modelName: qualifiedName, variantName: null };
+    return { modelName: qualifiedName.slice(0, idx), variantName: qualifiedName.slice(idx + 3) };
   }
 
-  document.addEventListener('change', (e) => {
-    if (e.target.id === 'model-select') {
-      const modelName = e.target.value;
-      send('model:switch', { modelName });
+  /** Update the sidebar model label (name + active variant) from the structured model data. */
+  function updateModelLabel() {
+    const nameEl = document.getElementById('model-label-name');
+    if (!nameEl) return;
+    const activeQualified = modelsData.activeModel || '';
+    const { modelName, variantName } = parseModelSelection(activeQualified);
+    const model = modelsData.models.find(m => m.name === modelName);
+    const name = model ? model.name : (modelName || '—');
+    // The variant is always shown, including the default one: a plain model name
+    // (no " / " separator) maps to the variant whose qualified name is the model name.
+    let displayVariant = variantName;
+    if (!displayVariant && model && Array.isArray(model.variants) && model.variants.length) {
+      const def = model.variants.find(v => v.qualifiedName === modelName)
+        || model.variants.find(v => v.isDefault)
+        || model.variants[0];
+      displayVariant = def ? def.name : null;
     }
-  });
+    nameEl.textContent = displayVariant ? name + ' / ' + displayVariant : name;
+    const label = document.getElementById('model-label');
+    if (label) label.title = displayVariant ? name + ' / ' + displayVariant : name;
+    if (connectedConfig && model) connectedConfig.model = model.model;
+  }
 
   async function loadSessionMessages(id) {
     try {
@@ -2752,7 +2826,7 @@ function scrollToBottom() {
       const snap = subAgentSnapshots.get(id);
       applySubAgentList(snap || { slots: 0, running: 0, queued: 0, agents: [], sessionId: id });
       updateContextUsage();
-      scrollToBottom();
+      scrollToBottom(true);
     } catch (err) {
       console.error('Failed to load session:', err);
     }
@@ -3698,6 +3772,314 @@ function scrollToBottom() {
     if (e.target === toolsModal) toolsModal.classList.add('hidden');
   });
 
+  // --- Models Modal (SQLite-backed model + variant management) ---
+  const MODELS_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
+  async function fetchModels() {
+    try {
+      const res = await fetch('/api/models');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const payload = await res.json();
+      modelsData = { models: payload.models || [], activeModel: payload.activeModel || null };
+      return true;
+    } catch (err) {
+      console.error('Failed to load models:', err);
+      return false;
+    }
+  }
+
+  async function modelsRequest(path, method, body) {
+    const res = await fetch('/api/models' + path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+    return data;
+  }
+
+  function openModelsModal() {
+    toggleOptionsMenu(false);
+    modelsFormMode = null;
+    fetchModels().then(ok => {
+      renderModelsModal();
+      modelsModal.classList.remove('hidden');
+      if (!ok) showToast('Could not refresh models — showing cached list');
+    });
+  }
+
+  function closeModelsModal() {
+    modelsFormMode = null;
+    modelsModal.classList.add('hidden');
+  }
+
+  function renderModelsModal() {
+    if (!modelsModalBody) return;
+    if (modelsFormMode && modelsFormMode.type === 'model') {
+      modelsModalBody.innerHTML = modelFormHtml(modelsFormMode.id);
+    } else if (modelsFormMode && modelsFormMode.type === 'variant') {
+      modelsModalBody.innerHTML = variantFormHtml(modelsFormMode);
+    } else {
+      modelsModalBody.innerHTML = modelsListHtml();
+    }
+  }
+
+  function modelsListHtml() {
+    if (modelsData.models.length === 0) {
+      return '<div class="text-sm text-muted text-center py-8">No models yet. Click “+ New Model” to add one.</div>';
+    }
+    let html = '';
+    for (const m of modelsData.models) {
+      const isActive = modelsData.activeModel === m.name ||
+        (modelsData.activeModel || '').startsWith(m.name + ' / ');
+      const detail = [m.model, '@', m.endpoint,
+        m.contextWindow ? `· ctx ${m.contextWindow}` : '',
+        m.maxTokens != null && m.maxTokens >= 0 ? `· max ${m.maxTokens}` : '',
+      ].filter(Boolean).join(' ');
+      html += `
+        <div class="border border-border rounded-lg mb-3">
+          <div class="flex items-center gap-2 px-3 py-2">
+            <span class="font-semibold text-sm truncate" title="${esc(m.name)}">${esc(m.name)}</span>
+            ${isActive ? '<span class="px-1.5 py-0.5 text-[10px] rounded bg-primary/15 text-primary border border-primary/40 shrink-0">Active</span>' : ''}
+            <span class="ml-auto flex items-center gap-1 shrink-0">
+              <button data-action="model-edit" data-id="${m.id}" class="px-2 py-1 text-xs text-muted hover:text-text bg-surface2 rounded transition-colors">Edit</button>
+              <button data-action="model-delete" data-id="${m.id}" class="px-2 py-1 text-xs text-muted hover:text-danger bg-surface2 rounded transition-colors">Delete</button>
+            </span>
+          </div>
+          <div class="px-3 pb-2 text-xs text-muted truncate" title="${esc(detail)}">${esc(detail)}</div>
+          <div class="border-t border-border px-3 py-1.5">
+            ${variantRowsHtml(m)}
+            <button data-action="variant-add" data-id="${m.id}" class="mt-1 text-xs text-muted hover:text-primary transition-colors">+ Add variant</button>
+          </div>
+        </div>`;
+    }
+    return html;
+  }
+
+  function variantRowsHtml(m) {
+    if (m.variants.length === 0) return '<div class="text-xs text-muted py-1">No variants</div>';
+    return m.variants.map(v => `
+      <div class="flex items-center gap-2 py-1 text-xs">
+        <input type="checkbox" data-qualified="${esc(v.qualifiedName)}" class="variant-active-cb shrink-0 cursor-pointer accent-primaryDark" title="Set as active model" ${v.qualifiedName === modelsData.activeModel ? 'checked' : ''}>
+        <span class="w-3 text-primary shrink-0" title="Default variant">${v.isDefault ? '★' : ''}</span>
+        <span class="text-text truncate">${esc(v.name)}</span>
+        <span class="text-muted truncate" title="${esc(variantMetaText(v))}">${esc(variantMetaText(v))}</span>
+        <span class="ml-auto flex items-center gap-1 shrink-0">
+          <button data-action="variant-edit" data-model-id="${m.id}" data-id="${v.id}" class="px-1.5 py-0.5 text-[11px] text-muted hover:text-text bg-surface2 rounded transition-colors">Edit</button>
+          <button data-action="variant-delete" data-model-id="${m.id}" data-id="${v.id}" class="px-1.5 py-0.5 text-[11px] text-muted hover:text-danger bg-surface2 rounded transition-colors">Delete</button>
+        </span>
+      </div>`).join('');
+  }
+
+  function variantMetaText(v) {
+    const parts = [];
+    if (v.temperature != null) parts.push('temp ' + v.temperature);
+    if (v.thinkingEnabled != null) parts.push('thinking ' + (v.thinkingEnabled ? 'on' : 'off'));
+    if (v.preserveThinking === false) parts.push('no preserve');
+    if (v.reasoningEffort) parts.push('effort ' + v.reasoningEffort);
+    return parts.length ? parts.join(' · ') : 'defaults';
+  }
+
+  function modelFieldHtml(id, label, value, placeholder, hint, type = 'text') {
+    return `
+      <div>
+        <label for="${id}" class="text-xs text-muted block mb-1">${label}</label>
+        <input type="${type}" id="${id}" value="${esc(value)}" placeholder="${esc(placeholder)}" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary">
+        ${hint ? `<div class="text-[11px] text-muted mt-0.5">${esc(hint)}</div>` : ''}
+      </div>`;
+  }
+
+  function modelFormHtml(id) {
+    const m = id ? modelsData.models.find(x => x.id === id) : null;
+    return `
+      <h3 class="text-sm font-semibold mb-3">${m ? 'Edit Model' : 'New Model'}</h3>
+      <div class="space-y-3">
+        ${modelFieldHtml('mf-name', 'Name', m ? m.name : '', 'e.g. Qwen3.6 35B (debby)', 'Display name shown in pickers (unique)')}
+        ${modelFieldHtml('mf-model', 'Model ID', m ? m.model : '', 'unsloth/Qwen3.6-27B-…', 'Model id sent to the provider — blank/placeholder for single-model local servers (llama.cpp)')}
+        ${modelFieldHtml('mf-endpoint', 'Endpoint', m ? m.endpoint : '', 'http://debby:1234/v1', 'Base URL of the OpenAI-compatible API')}
+        ${modelFieldHtml('mf-api-key', 'API Key', '', m ? '••• (leave blank to keep)' : 'Optional for local models', m ? 'Leave blank to keep the stored key' : 'Stored server-side, never re-sent to the client')}
+        <div class="grid grid-cols-2 gap-3">
+          ${modelFieldHtml('mf-context-window', 'Context Window', m && m.contextWindow != null ? m.contextWindow : '', '64000', 'Blank = default', 'number')}
+          ${modelFieldHtml('mf-max-tokens', 'Max Tokens', m && m.maxTokens != null ? m.maxTokens : '', '-1', 'Response cap; -1 or blank = provider default', 'number')}
+        </div>
+        <div id="models-form-error" class="hidden text-xs text-danger"></div>
+        <div class="flex justify-end gap-2 pt-1">
+          <button data-action="models-cancel" class="px-3 py-1.5 text-xs text-muted hover:text-text transition-colors">Cancel</button>
+          <button data-action="model-form-save" data-id="${id || ''}" class="px-4 py-1.5 text-xs bg-primaryDark text-white rounded-lg hover:bg-primary transition-colors">Save</button>
+        </div>
+      </div>`;
+  }
+
+  function variantFormHtml(opts) {
+    const model = modelsData.models.find(m => m.id === opts.modelId);
+    const v = opts.id && model ? model.variants.find(x => x.id === opts.id) : null;
+    const thinking = v && v.thinkingEnabled != null ? (v.thinkingEnabled ? 'on' : 'off') : 'inherit';
+    const preserve = v && v.preserveThinking != null ? (v.preserveThinking ? 'on' : 'off') : 'default';
+    const effort = v && v.reasoningEffort ? v.reasoningEffort : 'default';
+    return `
+      <h3 class="text-sm font-semibold mb-1">${v ? 'Edit Variant' : 'New Variant'}</h3>
+      <div class="text-xs text-muted mb-3">${model ? esc(model.name) : ''}</div>
+      <div class="space-y-3">
+        ${modelFieldHtml('vf-name', 'Name', v ? v.name : '', 'e.g. Fast, Creative, Deep Think', 'Preset label (unique per model)')}
+        <div class="grid grid-cols-2 gap-3">
+          ${modelFieldHtml('vf-temperature', 'Temperature', v && v.temperature != null ? v.temperature : '', 'e.g. 0.7', 'Blank = provider default', 'number')}
+          <div>
+            <label for="vf-effort" class="text-xs text-muted block mb-1">Reasoning Effort</label>
+            <select id="vf-effort" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary">
+              ${['default'].concat(MODELS_REASONING_EFFORTS).map(x => `<option value="${x}" ${effort === x ? 'selected' : ''}>${x === 'default' ? 'Default' : x}</option>`).join('')}
+            </select>
+            <div class="text-[11px] text-muted mt-0.5">Applies when thinking is on</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="vf-thinking" class="text-xs text-muted block mb-1">Thinking</label>
+            <select id="vf-thinking" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary">
+              <option value="inherit" ${thinking === 'inherit' ? 'selected' : ''}>Inherit (global)</option>
+              <option value="on" ${thinking === 'on' ? 'selected' : ''}>On</option>
+              <option value="off" ${thinking === 'off' ? 'selected' : ''}>Off</option>
+            </select>
+          </div>
+          <div>
+            <label for="vf-preserve" class="text-xs text-muted block mb-1">Preserve Thinking</label>
+            <select id="vf-preserve" class="w-full bg-surface2 border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary">
+              <option value="default" ${preserve === 'default' ? 'selected' : ''}>Default (on)</option>
+              <option value="on" ${preserve === 'on' ? 'selected' : ''}>On</option>
+              <option value="off" ${preserve === 'off' ? 'selected' : ''}>Off</option>
+            </select>
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" id="vf-default" ${v && v.isDefault ? 'checked' : ''} class="accent-[#d4760a]"> Default variant</label>
+        <div id="models-form-error" class="hidden text-xs text-danger"></div>
+        <div class="flex justify-end gap-2 pt-1">
+          <button data-action="models-cancel" class="px-3 py-1.5 text-xs text-muted hover:text-text transition-colors">Cancel</button>
+          <button data-action="variant-form-save" data-model-id="${opts.modelId}" data-id="${opts.id || ''}" class="px-4 py-1.5 text-xs bg-primaryDark text-white rounded-lg hover:bg-primary transition-colors">Save</button>
+        </div>
+      </div>`;
+  }
+
+  function formEl(id) { return document.getElementById(id); }
+  function formVal(id) { const el = formEl(id); return el ? el.value.trim() : ''; }
+  function formParseNum(id) {
+    const raw = formVal(id);
+    if (raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function showFormError(msg) {
+    const el = formEl('models-form-error');
+    if (el) { el.textContent = msg; el.classList.remove('hidden'); }
+  }
+
+  async function saveModelForm(id) {
+    const body = {
+      name: formVal('mf-name'),
+      model: formVal('mf-model') || undefined,
+      endpoint: formVal('mf-endpoint'),
+      contextWindow: formParseNum('mf-context-window'),
+      maxTokens: formParseNum('mf-max-tokens'),
+    };
+    const key = formVal('mf-api-key');
+    if (id) {
+      if (key) body.apiKey = key; // blank => keep the stored key
+    } else {
+      body.apiKey = key || '';
+      body.variant = { name: 'Default' };
+    }
+    try {
+      if (id) await modelsRequest('/' + id, 'PUT', body);
+      else await modelsRequest('', 'POST', body);
+      modelsFormMode = null;
+      renderModelsModal();
+    } catch (err) {
+      showFormError(err.message);
+    }
+  }
+
+  async function saveVariantForm(modelId, id) {
+    const name = formVal('vf-name');
+    if (!name) { showFormError('Variant name is required'); return; }
+    const thinkingSel = formVal('vf-thinking');
+    const preserveSel = formVal('vf-preserve');
+    const effortSel = formVal('vf-effort');
+    const body = {
+      name,
+      temperature: formParseNum('vf-temperature'),
+      thinkingEnabled: thinkingSel === 'inherit' ? null : (thinkingSel === 'on'),
+      preserveThinking: preserveSel === 'default' ? null : (preserveSel === 'on'),
+      reasoningEffort: effortSel === 'default' ? null : effortSel,
+      isDefault: formEl('vf-default') ? formEl('vf-default').checked : false,
+    };
+    try {
+      if (id) await modelsRequest('/' + modelId + '/variants/' + id, 'PUT', body);
+      else await modelsRequest('/' + modelId + '/variants', 'POST', body);
+      modelsFormMode = null;
+      renderModelsModal();
+    } catch (err) {
+      showFormError(err.message);
+    }
+  }
+
+  if (modelsModalBody) {
+    modelsModalBody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      if (action === 'model-edit') {
+        modelsFormMode = { type: 'model', id: btn.dataset.id };
+        renderModelsModal();
+      } else if (action === 'model-delete') {
+        const m = modelsData.models.find(x => x.id === btn.dataset.id);
+        showConfirmModal('Delete Model', `Delete “${m ? m.name : ''}” and all of its variants? This cannot be undone.`, () => {
+          modelsRequest('/' + btn.dataset.id, 'DELETE').catch(err => showToast(err.message));
+        });
+      } else if (action === 'variant-add') {
+        modelsFormMode = { type: 'variant', modelId: btn.dataset.id, id: null };
+        renderModelsModal();
+      } else if (action === 'variant-edit') {
+        modelsFormMode = { type: 'variant', modelId: btn.dataset.modelId, id: btn.dataset.id };
+        renderModelsModal();
+      } else if (action === 'variant-delete') {
+        const model = modelsData.models.find(x => x.id === btn.dataset.modelId);
+        const v = model ? model.variants.find(x => x.id === btn.dataset.id) : null;
+        showConfirmModal('Delete Variant', `Delete variant “${v ? v.name : ''}”${model ? ' from ' + model.name : ''}?`, () => {
+          modelsRequest('/' + btn.dataset.modelId + '/variants/' + btn.dataset.id, 'DELETE').catch(err => showToast(err.message));
+        });
+      } else if (action === 'models-cancel') {
+        modelsFormMode = null;
+        renderModelsModal();
+      } else if (action === 'model-form-save') {
+        saveModelForm(btn.dataset.id || null);
+      } else if (action === 'variant-form-save') {
+        saveVariantForm(btn.dataset.modelId, btn.dataset.id || null);
+      }
+    });
+
+    // Active-variant checkboxes (one checked variant = the active model)
+    modelsModalBody.addEventListener('change', (e) => {
+      const cb = e.target.closest('input[type="checkbox"][data-qualified]');
+      if (!cb) return;
+      const q = cb.dataset.qualified;
+      if (cb.checked) {
+        modelsRequest('/active', 'PUT', { name: q }).catch(err => { showToast(err.message); cb.checked = false; });
+      } else if (q === modelsData.activeModel) {
+        cb.checked = true; // an active variant is always set — nothing to uncheck
+      }
+    });
+
+  }
+
+  if (optionsModelsBtn) optionsModelsBtn.addEventListener('click', openModelsModal);
+  if (closeModelsBtn) closeModelsBtn.addEventListener('click', closeModelsModal);
+  if (modelsAddBtn) modelsAddBtn.addEventListener('click', () => {
+    modelsFormMode = { type: 'model', id: null };
+    renderModelsModal();
+  });
+  if (modelsModal) modelsModal.addEventListener('click', (e) => {
+    if (e.target === modelsModal) closeModelsModal();
+  });
   // --- Thinking & Tools toggle functions ---
   function toggleThinking() {
     thinkingEnabled = !thinkingEnabled;
@@ -3852,32 +4234,89 @@ function scrollToBottom() {
 
   function closeAddProjectModal() {
     addProjectPathWrap.classList.add('hidden');
+    addProjectBrowseWrap.classList.add('hidden');
     addProjectModal.classList.add('hidden');
+  }
+
+  // --- Project folder browser (server-side) ---
+  let projectBrowseDir = null;
+
+  async function renderProjectBrowse(dir) {
+    try {
+      const url = '/api/fs/browse' + (dir ? `?dir=${encodeURIComponent(dir)}` : '');
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      projectBrowseDir = data.current;
+      addProjectBrowseCurrent.textContent = data.current;
+      addProjectBrowseList.innerHTML = '';
+      const addItem = (label, target, isParent) => {
+        const el = document.createElement('div');
+        el.textContent = (isParent ? '↑ ' : '▸ ') + label;
+        el.className = 'px-2 py-1 cursor-pointer hover:bg-surface transition-colors';
+        el.addEventListener('click', () => renderProjectBrowse(target));
+        addProjectBrowseList.appendChild(el);
+      };
+      if (data.parent) addItem('.. (up)', data.parent, true);
+      for (const name of data.entries) {
+        addItem(name, `${data.current}/${name}`.replace(/\\/g, '/'), false);
+      }
+      if (!data.parent && data.entries.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = '(empty)';
+        empty.className = 'px-2 py-1 text-muted';
+        addProjectBrowseList.appendChild(empty);
+      }
+    } catch (err) {
+      addProjectBrowseList.innerHTML = '';
+      const errEl = document.createElement('div');
+      errEl.textContent = `Error: ${err.message}`;
+      errEl.className = 'px-2 py-1 text-red-400';
+      addProjectBrowseList.appendChild(errEl);
+    }
+  }
+
+  if (addProjectBrowseUseBtn) {
+    addProjectBrowseUseBtn.addEventListener('click', () => {
+      if (projectBrowseDir) addProjectPathInput.value = projectBrowseDir;
+      updateAddProjectSaveState();
+      addProjectBrowseWrap.classList.add('hidden');
+      addProjectPathInput.focus();
+    });
   }
 
   addProjectBtn.addEventListener('click', openAddProjectModal);
   addProjectCancelBtn.addEventListener('click', closeAddProjectModal);
-  addProjectInput.addEventListener('input', () => {
-    addProjectSaveBtn.disabled = !addProjectInput.value.trim();
-  });
+  addProjectInput.addEventListener('input', updateAddProjectSaveState);
+  addProjectPathInput.addEventListener('input', updateAddProjectSaveState);
   addProjectInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') addProjectSaveBtn.click();
     if (e.key === 'Escape') closeAddProjectModal();
   });
+  function updateAddProjectSaveState() {
+    addProjectSaveBtn.disabled = !addProjectInput.value.trim() || !addProjectPathInput.value.trim();
+  }
+
   addProjectSaveBtn.addEventListener('click', async () => {
     const name = addProjectInput.value.trim();
-    if (!name) return;
-    const path = addProjectPathInput.value.trim() || undefined;
+    const path = addProjectPathInput.value.trim();
+    if (!name || !path) return;
     closeAddProjectModal();
     try {
-      await fetch('/api/projects', {
+      const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, path }),
       });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Failed to create project: ${data.error || res.statusText}`);
+        return;
+      }
       loadTree();
     } catch (err) {
       console.error('Failed to create project:', err);
+      alert(`Failed to create project: ${err.message}`);
     }
   });
   addProjectModal.addEventListener('click', (e) => {
@@ -3942,35 +4381,16 @@ function scrollToBottom() {
     });
   }
 
-  // Add project path browse button
+  // Add project path browse button — server-side folder browser
   if (addProjectPathBrowseBtn) {
-    addProjectPathBrowseBtn.addEventListener('click', async () => {
-      try {
-        // Try showDirectoryPicker first (Chrome/Edge 86+)
-        if (window.showDirectoryPicker) {
-          const dirHandle = await window.showDirectoryPicker({ mode: 'readonly' });
-          addProjectPathInput.value = dirHandle.path || dirHandle.name;
-          return;
-        }
-        // Fallback: use hidden file input with webkitdirectory
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.webkitdirectory = true;
-        input.mozdirectory = true;
-        input.addEventListener('change', (e) => {
-          if (e.target.files && e.target.files.length > 0) {
-            // Get the first file's path and extract the directory name
-            const firstFile = e.target.files[0];
-            const fullPath = firstFile.webkitRelativePath || firstFile.name;
-            const dirName = fullPath.split('/')[0];
-            addProjectPathInput.value = dirName;
-          }
-          input.remove();
-        });
-        input.click();
-      } catch (err) {
-        console.error('Directory picker error:', err.message || err);
+    addProjectPathBrowseBtn.addEventListener('click', () => {
+      if (!addProjectBrowseWrap.classList.contains('hidden')) {
+        addProjectBrowseWrap.classList.add('hidden');
+        return;
       }
+      addProjectBrowseWrap.classList.remove('hidden');
+      const start = addProjectPathInput.value.trim() || (projectBrowseDir ?? undefined);
+      renderProjectBrowse(start);
     });
   }
 

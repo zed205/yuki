@@ -1,11 +1,11 @@
 import * as path from 'path';
-import * as os from 'os';
 import Database from 'better-sqlite3';
 import type { Statement, RunResult } from 'better-sqlite3';
 import type { Session, Message } from '../shared/types';
 import { normalizeLineEndings } from '../server/utils/line-endings';
+import { dataDir } from '../server/paths';
 
-const configDir = path.join(os.homedir(), '.config', 'yukiweb');
+const configDir = dataDir;
 const dbPath = path.join(configDir, 'yukiweb.db');
 
 let _db: Database.Database | null = null;
@@ -23,11 +23,6 @@ function getDbInstance(): Database.Database {
 
     // Initialize schema
     _db.exec(`
-      CREATE TABLE IF NOT EXISTS config (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
       CREATE TABLE IF NOT EXISTS projects (
         id         TEXT PRIMARY KEY,
         name       TEXT NOT NULL,
@@ -85,6 +80,7 @@ function getDbInstance(): Database.Database {
         pruned              INTEGER DEFAULT 0,
         compacted           INTEGER DEFAULT 0,
         parent_session_id   TEXT,
+        synthetic_prefix    TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
 
@@ -129,12 +125,60 @@ function getDbInstance(): Database.Database {
       );
 
       CREATE INDEX IF NOT EXISTS idx_llm_logs_session_id_timestamp ON llm_logs(session_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS models (
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL UNIQUE,
+        model          TEXT NOT NULL,
+        endpoint       TEXT NOT NULL,
+        api_key        TEXT,
+        context_window INTEGER,
+        max_tokens     INTEGER,
+        sort_order     INTEGER NOT NULL DEFAULT 0,
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS model_variants (
+        id                TEXT PRIMARY KEY,
+        model_id          TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+        name              TEXT NOT NULL,
+        temperature       REAL,
+        thinking_enabled  INTEGER,
+        preserve_thinking INTEGER,
+        reasoning_effort  TEXT,
+        is_default        INTEGER NOT NULL DEFAULT 0,
+        sort_order        INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (model_id, name)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_model_variants_model_id ON model_variants(model_id);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
 
     // Migration: add fork tracking columns to existing schemas (ignore errors if columns exist)
     try { _db.exec(`ALTER TABLE sessions ADD COLUMN forked_from TEXT`); } catch {}
     try { _db.exec(`ALTER TABLE sessions ADD COLUMN parent_message_id TEXT`); } catch {}
     try { _db.exec(`ALTER TABLE messages ADD COLUMN parent_session_id TEXT`); } catch {}
+
+    // Additive migrations for databases created by older versions. CREATE TABLE
+    // IF NOT EXISTS does not add columns to an existing table.
+    const messageColumns = _db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+    if (!messageColumns.some(c => c.name === 'synthetic_prefix')) {
+      _db.exec('ALTER TABLE messages ADD COLUMN synthetic_prefix TEXT');
+    }
+    // Models/variants are enabled by virtue of being defined; drop the now-unused
+    // 'enabled' columns from DBs created by older versions.
+    if ((_db.prepare('PRAGMA table_info(models)').all() as Array<{ name: string }>).some(c => c.name === 'enabled')) {
+      _db.exec('ALTER TABLE models DROP COLUMN enabled');
+    }
+    if ((_db.prepare('PRAGMA table_info(model_variants)').all() as Array<{ name: string }>).some(c => c.name === 'enabled')) {
+      _db.exec('ALTER TABLE model_variants DROP COLUMN enabled');
+    }
   }
 
   return _db;
@@ -216,6 +260,7 @@ export interface MessageRow {
   pruned: number;
   compacted: number;
   parent_session_id?: string;
+  synthetic_prefix?: string | null;
 }
 
 /**
@@ -313,9 +358,19 @@ export function updateSessionField(
  * Get all messages for a session, ordered by timestamp.
  */
 export function getMessages(sessionId: string): MessageRow[] {
-  return getDb().prepare(
+  const rows = getDb().prepare(
     'SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC'
   ).all(sessionId) as MessageRow[];
+  // Normalise line endings at the context boundary. Messages may have been
+  // written with CRLF (e.g. user text pasted from a Windows app), and the
+  // model context must be LF for consistency.
+  for (const row of rows) {
+    if (row.content) row.content = normalizeLineEndings(row.content);
+    if (row.tool_calls) row.tool_calls = normalizeLineEndings(row.tool_calls);
+    if (row.reasoning_content) row.reasoning_content = normalizeLineEndings(row.reasoning_content);
+    if (row.synthetic_prefix) row.synthetic_prefix = normalizeLineEndings(row.synthetic_prefix);
+  }
+  return rows;
 }
 
 /**
@@ -333,14 +388,15 @@ export function upsertMessage(
   attachments: string | null,
   pruned: boolean,
   compacted: boolean,
-  parentSessionId: string | null,
+  parentSessionId: string | null = null,
+  syntheticPrefix: string | null = null,
 ): void {
   getDb().prepare(`
     INSERT INTO messages (
       id, session_id, role, content, timestamp,
       tool_calls, reasoning_content, images, attachments,
-      pruned, compacted, parent_session_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      pruned, compacted, parent_session_id, synthetic_prefix
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       role = excluded.role,
       content = excluded.content,
@@ -351,12 +407,13 @@ export function upsertMessage(
       attachments = excluded.attachments,
       pruned = excluded.pruned,
       compacted = excluded.compacted,
-      parent_session_id = excluded.parent_session_id
+      parent_session_id = excluded.parent_session_id,
+      synthetic_prefix = excluded.synthetic_prefix
   `).run(
     id, sessionId, role, content, timestamp,
     toolCalls, reasoningContent, images, attachments,
     pruned ? 1 : 0, compacted ? 1 : 0,
-    parentSessionId,
+    parentSessionId, syntheticPrefix,
   );
 }
 
@@ -365,6 +422,70 @@ export function upsertMessage(
  */
 export function deleteMessagesForSession(sessionId: string): void {
   getDb().prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+}
+
+/**
+ * Persist a single message immediately (incremental save). The agent loop calls
+ * this after every message/thought/tool-use so an interrupted turn (stop,
+ * server restart, crash) never loses work — the full-session save only happens
+ * once the turn completes.
+ */
+export function persistMessage(msg: Message): void {
+  upsertMessage(
+    msg.id,
+    msg.sessionId,
+    msg.role,
+    msg.content,
+    Math.floor(msg.timestamp.getTime() / 1000),
+    msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+    msg.reasoningContent || null,
+    msg.images ? JSON.stringify(msg.images) : null,
+    msg.attachments ? JSON.stringify(msg.attachments) : null,
+    !!msg.pruned,
+    !!msg.compacted,
+    msg.parentSessionId || null,
+    msg.syntheticPrefix || null,
+  );
+}
+
+/**
+ * Replace every message row for a session in one transaction. Used when the
+ * in-memory array was rewritten in place (e.g. a compaction that marks turns
+ * compacted, drops the old summary and inserts a new one) so the DB cannot
+ * diverge from the live session.
+ */
+export function replaceSessionMessages(sessionId: string, msgs: Message[]): void {
+  const db = getDb();
+  const txn = db.transaction((list: Message[]) => {
+    deleteMessagesForSession(sessionId);
+    for (const m of list) {
+      upsertMessage(
+        m.id,
+        m.sessionId,
+        m.role,
+        m.content,
+        Math.floor(m.timestamp.getTime() / 1000),
+        m.toolCalls ? JSON.stringify(m.toolCalls) : null,
+        m.reasoningContent || null,
+        m.images ? JSON.stringify(m.images) : null,
+        m.attachments ? JSON.stringify(m.attachments) : null,
+        !!m.pruned,
+        !!m.compacted,
+        m.parentSessionId || null,
+        m.syntheticPrefix || null,
+      );
+    }
+  });
+  txn(msgs);
+}
+
+/**
+ * Bump a session's updated_at without touching its messages. Called alongside
+ * incremental saves so live activity keeps the session at the top of the list.
+ */
+export function touchSession(sessionId: string): void {
+  getDb().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?')
+    .run(Math.floor(Date.now() / 1000), sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +540,7 @@ export function saveSession(session: Session): void {
         !!msg.pruned,
         !!msg.compacted,
         msg.parentSessionId || null,
+        msg.syntheticPrefix || null,
       );
     }
   });
@@ -462,6 +584,7 @@ export function getSession(sessionId: string): Session | undefined {
       pruned: !!r.pruned,
       compacted: !!r.compacted,
       parentSessionId: r.parent_session_id,
+      syntheticPrefix: r.synthetic_prefix || undefined,
     })),
   };
 }
@@ -638,6 +761,7 @@ export function createForkSession(
       !!msg.pruned,
       !!msg.compacted,
       msg.parentSessionId || null,
+      msg.syntheticPrefix || null,
     );
   }
 
@@ -751,4 +875,118 @@ export function loadSessions(sessionDataDir: string): string | null {
   }
 
   return latestId;
+}
+
+// ---------------------------------------------------------------------------
+// Models & variants
+// ---------------------------------------------------------------------------
+
+export interface ModelRow {
+  id: string;
+  name: string;
+  model: string;
+  endpoint: string;
+  api_key: string | null;
+  context_window: number | null;
+  max_tokens: number | null;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ModelVariantRow {
+  id: string;
+  model_id: string;
+  name: string;
+  temperature: number | null;
+  thinking_enabled: number | null;
+  preserve_thinking: number | null;
+  reasoning_effort: string | null;
+  is_default: number;
+  sort_order: number;
+}
+
+export function countModelRows(): number {
+  return (getDb().prepare('SELECT COUNT(*) AS c FROM models').get() as { c: number }).c;
+}
+
+export function listModelRows(): ModelRow[] {
+  return getDb().prepare('SELECT * FROM models ORDER BY sort_order ASC, name ASC').all() as ModelRow[];
+}
+
+export function getModelRow(id: string): ModelRow | undefined {
+  return getDb().prepare('SELECT * FROM models WHERE id = ?').get(id) as ModelRow | undefined;
+}
+
+export function upsertModel(row: ModelRow): void {
+  getDb().prepare(`
+    INSERT INTO models (id, name, model, endpoint, api_key, context_window, max_tokens, sort_order, created_at, updated_at)
+    VALUES (@id, @name, @model, @endpoint, @api_key, @context_window, @max_tokens, @sort_order, @created_at, @updated_at)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      model = excluded.model,
+      endpoint = excluded.endpoint,
+      api_key = excluded.api_key,
+      context_window = excluded.context_window,
+      max_tokens = excluded.max_tokens,
+      sort_order = excluded.sort_order,
+      updated_at = excluded.updated_at
+  `).run(row);
+}
+
+/** Delete a model and (via FK cascade) its variants. */
+export function deleteModelRow(id: string): void {
+  getDb().prepare('DELETE FROM models WHERE id = ?').run(id);
+}
+
+export function listVariantRows(modelId?: string): ModelVariantRow[] {
+  if (modelId) {
+    return getDb().prepare(
+      'SELECT * FROM model_variants WHERE model_id = ? ORDER BY sort_order ASC, name ASC'
+    ).all(modelId) as ModelVariantRow[];
+  }
+  return getDb().prepare('SELECT * FROM model_variants ORDER BY sort_order ASC, name ASC').all() as ModelVariantRow[];
+}
+
+export function upsertVariant(row: ModelVariantRow): void {
+  getDb().prepare(`
+    INSERT INTO model_variants (id, model_id, name, temperature, thinking_enabled, preserve_thinking, reasoning_effort, is_default, sort_order)
+    VALUES (@id, @model_id, @name, @temperature, @thinking_enabled, @preserve_thinking, @reasoning_effort, @is_default, @sort_order)
+    ON CONFLICT(id) DO UPDATE SET
+      model_id = excluded.model_id,
+      name = excluded.name,
+      temperature = excluded.temperature,
+      thinking_enabled = excluded.thinking_enabled,
+      preserve_thinking = excluded.preserve_thinking,
+      reasoning_effort = excluded.reasoning_effort,
+      is_default = excluded.is_default,
+      sort_order = excluded.sort_order
+  `).run(row);
+}
+
+export function deleteVariantRow(id: string): void {
+  getDb().prepare('DELETE FROM model_variants WHERE id = ?').run(id);
+}
+
+/** Clear the default flag on all other variants of a model (used before promoting one). */
+export function clearVariantDefaults(modelId: string): void {
+  getDb().prepare('UPDATE model_variants SET is_default = 0 WHERE model_id = ?').run(modelId);
+}
+
+// ---------------------------------------------------------------------------
+// Settings (model-related scalar state, e.g. active/backup selection)
+// ---------------------------------------------------------------------------
+
+export function getSetting(key: string): string | undefined {
+  return (getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+}
+
+export function setSetting(key: string, value: string): void {
+  getDb().prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run(key, value);
+}
+
+export function deleteSetting(key: string): void {
+  getDb().prepare('DELETE FROM settings WHERE key = ?').run(key);
 }

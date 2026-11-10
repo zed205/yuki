@@ -1,7 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig } from './config';
+import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig, getStructuredModels, addModel, updateModel, deleteModel, addVariant, updateVariant, deleteVariant } from './config';
 import { Agent } from './agent';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
@@ -34,11 +34,12 @@ import {
 import * as fs from 'fs';
 import { normalizeLineEndings } from './utils/line-endings';
 import * as os from 'os';
+import { port as configuredPort, sessionsDir, attachmentsDir as pathsAttachmentsDir } from './paths';
 
 loadEnvFile();
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '3210', 10);
+const PORT = configuredPort;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -67,8 +68,8 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, '..', 'client-v2')));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 
-const sessionDataDir = path.join(os.homedir(), '.config', 'yukiweb', 'sessions');
-const attachmentsDir = path.join(os.homedir(), '.config', 'yukiweb', 'attachments');
+const sessionDataDir = sessionsDir;
+const attachmentsDir = pathsAttachmentsDir;
 
 // Decode data URLs for dropped files, write them to disk, and return attachment
 // metadata to store on the user message.
@@ -509,6 +510,104 @@ app.get('/api/config', (_req, res) => {
   res.json(sanitized);
 });
 
+// --- Models API (SQLite-backed; variants are generation presets) ---
+// The DB is the source of truth for model definitions. These endpoints drive the
+// settings UI; every mutation re-persists the (possibly re-normalised) active
+// selection and broadcasts the new list to all connected clients.
+
+function modelsPayload() {
+  const active = getActiveModelName();
+  const activeCfg = getAgentModel(active);
+  return {
+    models: getStructuredModels(),
+    activeModel: active,
+    activeConfig: {
+      model: activeCfg.model,
+      endpoint: activeCfg.endpoint,
+      contextWindow: activeCfg.contextWindow,
+    },
+  };
+}
+
+function broadcastModelsUpdated(): void {
+  const payload = JSON.stringify({ type: 'models:updated', data: modelsPayload() });
+  for (const client of wss.clients) {
+    if (client.readyState === 1) client.send(payload);
+  }
+}
+
+/** Re-persist the (normalised) active selection after a structural change. */
+function afterModelsMutation(): void {
+  try { setActiveModelName(getActiveModelName()); } catch { /* non-fatal */ }
+  // Endpoint/key edits invalidate any cached OpenAI clients.
+  try { agent.resetClient(); } catch { /* non-fatal */ }
+  broadcastModelsUpdated();
+}
+
+app.get('/api/models', (_req, res) => {
+  res.json(modelsPayload());
+});
+
+app.post('/api/models', (req, res) => {
+  const r = addModel(req.body || {}, req.body?.variant);
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true, modelId: r.modelId });
+});
+
+// NOTE: register before /api/models/:id so 'active' isn't treated as an id.
+app.put('/api/models/active', (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const cfg = setActiveModelName(name);
+  if (!cfg) { res.status(400).json({ error: 'Unknown model' }); return; }
+  const activeCfg = getAgentModel(name);
+  broadcastModelsUpdated();
+  res.json({
+    success: true,
+    activeModel: name,
+    model: activeCfg.model,
+    endpoint: activeCfg.endpoint,
+    contextWindow: activeCfg.contextWindow,
+    thinkingEnabled: getEffectiveThinking(),
+    preserveThinking: activeCfg.preserveThinking ?? true,
+  });
+});
+
+app.put('/api/models/:id', (req, res) => {
+  const r = updateModel(req.params.id, req.body || {});
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
+app.delete('/api/models/:id', (req, res) => {
+  const r = deleteModel(req.params.id);
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
+app.post('/api/models/:id/variants', (req, res) => {
+  const r = addVariant(req.params.id, req.body || {});
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true, variantId: r.variantId });
+});
+
+app.put('/api/models/:id/variants/:vid', (req, res) => {
+  const r = updateVariant(req.params.vid, req.body || {});
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
+app.delete('/api/models/:id/variants/:vid', (req, res) => {
+  const r = deleteVariant(req.params.vid);
+  if (!r.ok) { res.status(400).json({ error: r.error }); return; }
+  afterModelsMutation();
+  res.json({ success: true });
+});
+
 // --- Project API ---
 app.get('/api/projects', (_req, res) => {
   res.json(getProjects().map(p => ({
@@ -522,8 +621,36 @@ app.get('/api/projects', (_req, res) => {
 
 app.post('/api/projects', (req, res) => {
   try {
-    const project = createProject(req.body.name);
-    res.json({ id: project.id, name: project.name });
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Project name is required' });
+    const folder = typeof req.body?.path === 'string' && req.body.path.trim() ? req.body.path.trim() : undefined;
+    const project = createProject(name, folder);
+    res.json({ id: project.id, name: project.name, path: project.path });
+  } catch (err: any) {
+    const status = /^Project folder/.test(err.message) ? 400 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// Folder browser for the "add project" dialog: list subdirectories of a folder.
+app.get('/api/fs/browse', (req, res) => {
+  try {
+    const requested = typeof req.query.dir === 'string' && req.query.dir.trim() ? req.query.dir.trim() : undefined;
+    let dir = requested
+      ? path.resolve(requested)
+      : path.join(os.homedir());
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      return res.status(400).json({ error: `Not a directory: ${dir}` });
+    }
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    res.json({
+      current: dir,
+      parent: path.dirname(dir) !== dir ? path.dirname(dir) : null,
+      entries,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -659,6 +786,18 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client-v2', 'index.html'));
 });
 
+// Version stamp (written by scripts/write-version.js at build time) so the
+// log/UI can answer "what is this instance actually running?".
+try {
+  const versionFile = path.join(__dirname, '..', 'version.json');
+  if (fs.existsSync(versionFile)) {
+    const v = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+    console.log(`YukiWeb version ${v.version || 'unknown'} (commit ${v.commit || 'unknown'}, built ${v.builtAt || 'unknown'})`);
+  }
+} catch (err) {
+  console.error('Failed to read version.json:', err);
+}
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`YukiWeb server running at http://0.0.0.0:${PORT}`);
 });
@@ -700,24 +839,18 @@ server.on('upgrade', (request, socket, head) => {
 
 function sendContextUpdate(ws: WebSocket, session: Session): void {
   try {
-    const config = loadConfig();
-    let totalTokens = 0;
-    for (const msg of session.messages) {
-      const content = msg.content || '';
-      totalTokens += Math.ceil(content.length / 4) + 10;
-      if (msg.toolCalls) {
-        for (const tc of msg.toolCalls) {
-          totalTokens += Math.ceil(JSON.stringify(tc.parameters).length / 4) + 5;
-          if (tc.result) totalTokens += Math.ceil(tc.result.length / 4) + 5;
-        }
-      }
-      if (msg.images) totalTokens += (msg.images.length * (config.imageTokensPerImage || 1024));
-    }
+    // Use the agent's calibrated, replay-accurate estimate so the label matches
+    // what is actually sent (and stays in step with compaction). The previous
+    // naive chars/4 loop counted compacted + pruned history, so the label
+    // climbed past the window on long sessions.
+    const promptTokens = session.messages.length > 0
+      ? agent.getProjectedContextTokens(session)
+      : 0;
     const agentCfg = getAgentModel();
     if (ws.readyState === 1) {
       ws.send(JSON.stringify({
         type: 'context:update',
-        data: { promptTokens: totalTokens, maxTokens: agentCfg.contextWindow || 64000 },
+        data: { promptTokens, maxTokens: agentCfg.contextWindow || 64000 },
       }));
     }
   } catch { /* ignore */ }
@@ -813,6 +946,7 @@ wss.on('connection', (ws) => {
       },
       models: allModels,
       activeModel: getActiveModelName(),
+      structuredModels: getStructuredModels(),
     },
   }));
 
@@ -1149,7 +1283,8 @@ wss.on('connection', (ws) => {
           agent.resetClient();
           agent.currentModelName = modelName;
           const agentCfg = getAgentModel(modelName);
-          ws.send(JSON.stringify({
+          // Broadcast to all clients so every open window stays in sync.
+          const switched = JSON.stringify({
             type: 'model:switched',
             data: {
               activeModel: modelName,
@@ -1159,7 +1294,10 @@ wss.on('connection', (ws) => {
               thinkingEnabled: getEffectiveThinking(),
               preserveThinking: agentCfg.preserveThinking ?? true,
             },
-          }));
+          });
+          for (const client of wss.clients) {
+            if (client.readyState === 1) client.send(switched);
+          }
           sendContextUpdate(ws, session);
         }
       }

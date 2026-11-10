@@ -6,10 +6,15 @@
   "scripts": {
     "build:client": "npm --prefix src/client-v2 run build",
     "build:server": "tsc",
-    "build": "npm run build:client && npm run build:server && node scripts/copy-client.js",
+    "build": "npm run build:client && npm run build:server && node scripts/copy-client.js && node scripts/write-version.js",
+    "start": "node dist/server/index.js",
     "dev:client": "npx -C src/client-v2 vite",
     "dev:server": "npx ts-node src/server/index.ts",
-    "dev": "npx concurrently \"npm run dev:client\" \"npm run dev:server\""
+    "dev": "npx concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:watch": "npx nodemon --exec ts-node src/server/index.ts",
+    "deploy": "pwsh -NoProfile -File scripts/deploy.ps1",
+    "deploy:latest": "pwsh -NoProfile -File scripts/deploy.ps1 -Ref main",
+    "deploy:rollback": "pwsh -NoProfile -File scripts/deploy.ps1 -Rollback"
   },
   "license": "MIT",
   "dependencies": {

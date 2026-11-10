@@ -51,7 +51,6 @@ export interface Config {
   models?: ModelConfig[];
   // References into the models[] array by name
   activeModel?: string;
-  backupModel?: string;
   // Core config
   maxToolIterations: number;
   imageTokensPerImage: number;
@@ -75,11 +74,10 @@ export interface Config {
    * so the model can always page through file contents inline.
    *   maxReadLines: max lines returned per read call (0 = no line cap).
    *   maxReadChars: max characters returned per read call (0 = no char cap).
-   *   readNumbered: prefix each returned line with its line number (default true).
+   * Each returned line is always prefixed with its line number.
    */
   maxReadLines: number;
   maxReadChars: number;
-  readNumbered: boolean;
   subAgents?: SubAgentConfig;
   observer?: ObserverConfig;
   uiAutomation?: UIAutomationConfig;
@@ -216,6 +214,11 @@ export interface Message {
   forkedFrom?: string;
   // Session ID of the parent session (the one this fork originated from).
   parentSessionId?: string;
+  // Synthetic text prepended to this message at request-build time (currently the
+  // live plan snapshot + delegation note on user messages). Persisted so that
+  // replaying the message later reproduces the exact bytes that were sent — the
+  // prompt prefix must stay byte-identical or the server re-processes the suffix.
+  syntheticPrefix?: string;
 }
 
 export interface ToolCall {

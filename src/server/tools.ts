@@ -2,13 +2,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import { applyPatch } from 'diff';
 import TurndownService from 'turndown';
 import { getConfig } from './config';
 import { memorySave, memoryRead, memoryList, memoryDelete } from './memory';
 import { skillList, skillLoad, skillSave, skillDelete } from './skill';
 import { runShellCommand } from './shell';
-import { normalizeLineEndings } from './utils/line-endings';
+import {
+  normalizeLineEndings,
+  matchFileLineEndings,
+  preserveBom,
+  stripBom,
+} from './utils/line-endings';
+import { applyUnifiedDiff } from './utils/patch';
 
 // Durable cwds: keyed by session/agent so `cd foo` carries forward per agent
 // without leaking across concurrent sub-agents.
@@ -234,11 +239,9 @@ export async function toolRead(filePath: string, offset?: number, limit?: number
 
     const slice = lines.slice(start, start + count);
     const end = Math.min(start + count, lines.length);
-    const readNumbered = getConfig().readNumbered ?? true;
-    const rendered = readNumbered
-      ? slice.map((line, i) => `${start + i + 1}: ${line}`)
-      : slice;
-    const joined = rendered.join('\n');
+    // Line numbers are always on — the model needs them to reference exact
+    // lines when paging or calling edit/patch.
+    const joined = slice.map((line, i) => `${start + i + 1}: ${line}`).join('\n');
 
     // maxReadChars caps the total characters returned (0 = no char cap).
     if (maxReadChars > 0 && joined.length > maxReadChars) {
@@ -263,7 +266,15 @@ export async function toolWrite(
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(absPath, content, 'utf-8');
+    let out = normalizeLineEndings(content);
+    if (fs.existsSync(absPath)) {
+      const raw = fs.readFileSync(absPath, 'utf-8');
+      // Keep the file's existing line-ending style + BOM so a full rewrite
+      // does not flip a CRLF file to LF (or vice versa).
+      out = matchFileLineEndings(raw, out);
+      out = preserveBom(raw, out);
+    }
+    fs.writeFileSync(absPath, out, 'utf-8');
     return `File written successfully: ${absPath}`;
   } catch (err: any) {
     return `Error writing file: ${err.message}`;
@@ -276,14 +287,36 @@ export async function toolEditFile(filePath: string, oldString: string, newStrin
     if (!fs.existsSync(absPath)) {
       return `Error: file not found: ${absPath}`;
     }
-    const content = fs.readFileSync(absPath, 'utf-8');
-    const idx = content.indexOf(oldString);
-    if (idx === -1) {
-      return `Error: oldString not found in ${absPath}`;
+    if (typeof oldString !== 'string' || oldString.length === 0) {
+      return 'Error: oldString must be a non-empty string.';
     }
-    const updated = content.slice(0, idx) + newString + content.slice(idx + oldString.length);
-    fs.writeFileSync(absPath, updated, 'utf-8');
-    return `File updated: ${absPath}`;
+    const raw = fs.readFileSync(absPath, 'utf-8');
+    // Normalise both sides to LF so matching is independent of the file's
+    // actual line-ending style (CRLF/LF/CR). The file's original style is
+    // re-applied on write, so a CRLF file stays CRLF.
+    const content = normalizeLineEndings(stripBom(raw));
+    const oldN = normalizeLineEndings(oldString);
+    const newN = normalizeLineEndings(newString);
+    const idx = content.indexOf(oldN);
+    if (idx === -1) {
+      return (
+        `Error: oldString not found in ${absPath}. Matching is exact and line endings ` +
+        `are normalised automatically, so verify the snippet still exists and that ` +
+        `indentation/whitespace is identical (use read to view the current content).`
+      );
+    }
+    // Count occurrences so the model can detect ambiguous matches.
+    let occurrences = 0;
+    for (let pos = content.indexOf(oldN); pos !== -1; pos = content.indexOf(oldN, pos + oldN.length)) {
+      occurrences++;
+    }
+    const updated = content.slice(0, idx) + newN + content.slice(idx + oldN.length);
+    let out = matchFileLineEndings(raw, updated);
+    out = preserveBom(raw, out);
+    fs.writeFileSync(absPath, out, 'utf-8');
+    return occurrences > 1
+      ? `File updated: ${absPath} (note: oldString matched ${occurrences} times  the first occurrence was replaced)`
+      : `File updated: ${absPath}`;
   } catch (err: any) {
     return `Error editing file: ${err.message}`;
   }
@@ -295,15 +328,25 @@ export async function toolPatchFile(filePath: string, patch: string): Promise<st
     if (!fs.existsSync(absPath)) {
       return `Error: file not found: ${absPath}`;
     }
-
-    const content = fs.readFileSync(absPath, 'utf-8');
-    const result = applyPatch(content, patch);
-
-    if (typeof result !== 'string') {
-      return 'Error: patch did not apply cleanly. Check that the diff format is correct and context lines match.';
+    if (typeof patch !== 'string' || patch.trim().length === 0) {
+      return 'Error: patch must be a non-empty unified diff string.';
     }
 
-    fs.writeFileSync(absPath, result, 'utf-8');
+    const raw = fs.readFileSync(absPath, 'utf-8');
+    const result = applyUnifiedDiff(raw, patch);
+
+    if (!result.ok || result.content === undefined) {
+      return `Error: patch did not apply cleanly.\n${result.error || 'Unknown error.'}`;
+    }
+
+    if (!result.changed) {
+      // Context matched but the content is unchanged — leave the file bytes
+      // and mtime untouched rather than rewriting an identical file (which
+      // would also silently normalise a mixed-ending file on a no-op patch).
+      return `Patch applied: ${absPath} (context matched, but no lines were changed)`;
+    }
+
+    fs.writeFileSync(absPath, result.content, 'utf-8');
     return `Patch applied successfully: ${absPath}`;
   } catch (err: any) {
     return `Error applying patch: ${err.message}`;
@@ -553,9 +596,9 @@ async function searchExa(query: string, numResults: number = 8): Promise<SearchR
 
   for (const item of (data.results || []).slice(0, numResults)) {
     results.push({
-      title: item.title || '',
+      title: normalizeLineEndings(item.title || ''),
       url: item.url || '',
-      snippet: item.text || '',
+      snippet: normalizeLineEndings(item.text || ''),
     });
   }
 
@@ -622,7 +665,9 @@ export async function toolWebFetch(url: string, format?: string): Promise<string
     const contentType = response.headers.get('content-type') || '';
     const isBinary = /^(application\/(pdf|zip|gzip|x-zip|x-tar|x-gzip|octet-stream)|image\/|audio\/|video\/)/i.test(contentType);
 
-    const html = await response.text();
+    // Normalise line endings  servers (especially on Windows) may serve
+    // CRLF, and fetched text goes straight into the model context.
+    const html = normalizeLineEndings(await response.text());
 
     // Detect binary content that wasn't caught by Content-Type (PDF magic bytes, null bytes)
     const detectedBinary = /^%PDF-/i.test(html.trim()) || html.indexOf('\x00') !== -1;
@@ -784,13 +829,13 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'edit',
-      description: 'Performs a targeted string replacement within a file. Searches for a specific substring and replaces it with new content. Best for simple, non-structural text updates where the exact match is known.',
+      description: 'Performs a targeted string replacement within a file. Searches for a specific substring and replaces its first occurrence with new content. Line endings (LF/CRLF/CR) are normalised automatically on both the file and the search/replace text, so snippets match regardless of the file\'s line-ending style; the file\'s original line endings are preserved on write. Best for simple, non-structural text updates where the exact match is known.',
       parameters: {
         type: 'object',
         properties: {
           filePath: { type: 'string', description: 'Path to the file to edit' },
-          oldString: { type: 'string', description: 'The exact text to search for and replace' },
-          newString: { type: 'string', description: 'The replacement text' },
+          oldString: { type: 'string', description: 'The exact text to search for and replace (whitespace-sensitive; line endings are normalised automatically)' },
+          newString: { type: 'string', description: 'The replacement text (line endings are normalised automatically)' },
         },
         required: ['filePath', 'oldString', 'newString'],
       },
@@ -800,12 +845,12 @@ export const toolDefinitions = [
     type: 'function',
     function: {
       name: 'patch',
-      description: 'Applies a unified diff hunk to a target file using surrounding context for accurate location. Reliable for structural changes, multi-line edits, and complex refactoring without a full file rewrite.',
+      description: 'Applies a unified diff to a target file using surrounding context for accurate location. Accepts one or more hunks; line numbers in the @@ header are optional (a bare @@ works) and file headers (---/+++) may be omitted. Line endings are normalised automatically and the file\'s existing line-ending style is preserved. Reliable for structural changes, multi-line edits, and complex refactoring without a full file rewrite.',
       parameters: {
         type: 'object',
         properties: {
           filePath: { type: 'string', description: 'Path to the file to patch' },
-          patch: { type: 'string', description: 'Unified diff content with @@ -line,count +line,count @@ headers. Context lines start with space, removals with -, additions with +.' },
+          patch: { type: 'string', description: 'Unified diff content with one or more hunks. Each hunk starts with a @@ line (line numbers optional, e.g. "@@ -3,4 +3,5 @@" or just "@@"). Context lines start with a space, removals with -, additions with +.' },
         },
         required: ['filePath', 'patch'],
       },

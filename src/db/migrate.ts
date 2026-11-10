@@ -12,16 +12,18 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 
-import { initDb, run, get } from './index';
+import { initDb, get } from './index';
+import { normalizeLineEndings } from '../server/utils/line-endings';
+import { dataDir } from '../server/paths';
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'yukiweb');
+const CONFIG_DIR = dataDir;
 const SESSIONS_DIR = path.join(CONFIG_DIR, 'sessions');
 const PROJECTS_FILE = path.join(CONFIG_DIR, 'projects', 'projects.json');
 const PLANS_DIR = path.join(CONFIG_DIR, 'plans');
@@ -386,26 +388,6 @@ function importPlans(
 }
 
 /**
- * Import config as a single JSON blob.
- */
-function importConfig(
-  db: Database.Database,
-  log: ProgressCallback,
-): void {
-  log('import-config', 'Reading application config…');
-
-  const configData = readJsonFile<any>(CONFIG_FILE);
-  if (!configData) {
-    log('import-config', 'No config.json found');
-    return;
-  }
-
-  // Store entire config as a single JSON blob under key 'config'
-  run('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', ['config', JSON.stringify(configData)]);
-  log('import-config', 'Config imported');
-}
-
-/**
  * Import memories from memories.json (key-value store).
  */
 function importMemories(
@@ -461,7 +443,9 @@ function importSkills(
   let count = 0;
   for (const file of skillFiles) {
     try {
-      const content = fs.readFileSync(file, 'utf-8');
+      // Normalise line endings so stored skill text is canonical LF,
+      // regardless of the source file's on-disk style.
+      const content = normalizeLineEndings(fs.readFileSync(file, 'utf-8'));
       const name = path.basename(file, '.md');
 
       // Parse skill metadata from the markdown content
@@ -550,6 +534,96 @@ function importMcpServers(
   }
 
   log('import-mcp', `Imported ${count} MCP server(s)`);
+}
+
+/**
+ * Import model definitions from the config file into the models / model_variants
+ * tables. Each config entry becomes a `models` row (connection identity) plus a
+ * single default `model_variants` row (generation params).
+ *
+ * Idempotent: models/variants that already exist (by name) are left untouched so
+ * the migration never clobbers edits made through the UI. A legacy top-level
+ * `reasoningEffort` is applied to entries that don't set their own (matches the
+ * normalisation in config.ts).
+ */
+function importModels(
+  db: Database.Database,
+  log: ProgressCallback,
+): number {
+  log('import-models', 'Reading model configs…');
+
+  const configData = readJsonFile<any>(CONFIG_FILE);
+  if (!configData) {
+    log('import-models', 'No config.json found');
+    return 0;
+  }
+
+  const models = configData.models;
+  if (!Array.isArray(models) || models.length === 0) {
+    log('import-models', 'No models found');
+    return 0;
+  }
+
+  const legacyReasoning = configData.reasoningEffort;
+
+  const findModel = db.prepare('SELECT id FROM models WHERE name = ?');
+  const findVariant = db.prepare('SELECT id FROM model_variants WHERE model_id = ? AND name = ?');
+  const insertModel = db.prepare(`
+    INSERT INTO models (id, name, model, endpoint, api_key, context_window, max_tokens, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertVariant = db.prepare(`
+    INSERT INTO model_variants (id, model_id, name, temperature, thinking_enabled, preserve_thinking, reasoning_effort, is_default, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)
+  `);
+  const upsertSetting = db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  );
+
+  const now = Math.floor(Date.now() / 1000);
+  let imported = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < models.length; i++) {
+    const m = models[i];
+    if (!m || !m.name) continue;
+
+    const existing = findModel.get(m.name) as { id: string } | undefined;
+    if (existing) { skipped++; continue; }  // already migrated / edited via UI
+
+    const modelId = randomUUID();
+    insertModel.run(
+      modelId,
+      m.name,
+      m.model || '',
+      m.endpoint || '',
+      m.apiKey || null,
+      typeof m.contextWindow === 'number' ? m.contextWindow : null,
+      typeof m.maxTokens === 'number' ? m.maxTokens : null,
+      i,
+      now,
+      now,
+    );
+
+    const reasoningEffort = m.reasoningEffort !== undefined
+      ? m.reasoningEffort
+      : (legacyReasoning !== undefined ? legacyReasoning : null);
+    insertVariant.run(
+      randomUUID(),
+      modelId,
+      'Default',
+      typeof m.temperature === 'number' ? m.temperature : null,
+      m.thinkingEnabled == null ? null : (m.thinkingEnabled ? 1 : 0),
+      m.preserveThinking == null ? null : (m.preserveThinking ? 1 : 0),
+      reasoningEffort || null,
+    );
+    imported++;
+  }
+
+  if (configData.activeModel) upsertSetting.run('activeModel', configData.activeModel);
+
+  log('import-models', `Imported ${imported} model(s)${skipped ? `, skipped ${skipped} existing` : ''}`);
+  return imported + skipped;
 }
 
 /**
@@ -747,10 +821,10 @@ export function runMigration(onProgress?: ProgressCallback): {
   sessions: number;
   messages: number;
   plans: number;
-  config: boolean;
   memories: number;
   skills: number;
   mcpServers: number;
+  models: number;
   llmLogs: number;
   alreadyMigrated: boolean;
 } {
@@ -771,6 +845,7 @@ export function runMigration(onProgress?: ProgressCallback): {
   let memoryCount = 0;
   let skillCount = 0;
   let mcpCount = 0;
+  let modelCount = 0;
   let llmLogCount = 0;
 
   const startTime = Date.now();
@@ -802,14 +877,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `Plan import failed: ${err.message}`);
   }
 
-  // 4. Config
-  try {
-    importConfig(db, log);
-  } catch (err: any) {
-    log('error', `Config import failed: ${err.message}`);
-  }
-
-  // 5. Memories
+  // 4. Memories
   try {
     importMemories(db, log);
     memoryCount = (db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number }).count;
@@ -817,7 +885,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `Memory import failed: ${err.message}`);
   }
 
-  // 6. Skills
+  // 5. Skills
   try {
     importSkills(db, log);
     skillCount = (db.prepare('SELECT COUNT(*) as count FROM skills').get() as { count: number }).count;
@@ -825,7 +893,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `Skill import failed: ${err.message}`);
   }
 
-  // 7. MCP servers
+  // 6. MCP servers
   try {
     importMcpServers(db, log);
     mcpCount = (db.prepare('SELECT COUNT(*) as count FROM mcp_servers').get() as { count: number }).count;
@@ -833,7 +901,14 @@ export function runMigration(onProgress?: ProgressCallback): {
     log('error', `MCP server import failed: ${err.message}`);
   }
 
-  // 8. LLM logs
+  // 6.5 Models (connection identity + generation presets)
+  try {
+    modelCount = importModels(db, log);
+  } catch (err: any) {
+    log('error', `Model import failed: ${err.message}`);
+  }
+
+  // 7. LLM logs
   try {
     importLlmLogs(db, log);
     llmLogCount = (db.prepare('SELECT COUNT(*) as count FROM llm_logs').get() as { count: number }).count;
@@ -842,7 +917,7 @@ export function runMigration(onProgress?: ProgressCallback): {
   }
 
   // Mark migration complete
-  const MIGRATION_VERSION = 1;
+  const MIGRATION_VERSION = 2;
   markMigrationComplete(db, MIGRATION_VERSION);
 
   const elapsed = Date.now() - startTime;
@@ -855,6 +930,7 @@ export function runMigration(onProgress?: ProgressCallback): {
     `  Memories:         ${memoryCount}`,
     `  Skills:           ${skillCount}`,
     `  MCP Servers:      ${mcpCount}`,
+    `  Models:           ${modelCount}`,
     `  LLM Logs:         ${llmLogCount}`,
   ].join('\n'));
 
@@ -863,10 +939,10 @@ export function runMigration(onProgress?: ProgressCallback): {
     sessions: sessionCount,
     messages: messageCount,
     plans: planCount,
-    config: true,
     memories: memoryCount,
     skills: skillCount,
     mcpServers: mcpCount,
+    models: modelCount,
     llmLogs: llmLogCount,
     alreadyMigrated: migrationAlreadyRan(db),
   };
