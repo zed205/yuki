@@ -88,12 +88,44 @@ export function estimateSessionTokens(
   const cpt = resolveCharsPerToken(session, cfg);
   const imageTokens = cfg?.imageTokensPerImage || 1024;
   let total = Math.ceil(overheadChars / cpt);
-  for (const msg of session.messages) {
-    // Compacted turns are kept in the log but no longer replayed to the model,
-    // so they are excluded from the projected prompt cost.
-    if (!msg.compacted) total += sessionMessageTokens(msg, cpt, imageTokens);
+  // Only the messages the next request actually replays are counted. Compacted
+  // and pruned turns stay in the log for the user but are never re-sent to the
+  // model, so charging them here made the context label (and every estimate
+  // built on it) climb well past the real prompt size on long, compacted
+  // sessions.
+  for (const msg of replayedMessages(session)) {
+    total += sessionMessageTokens(msg, cpt, imageTokens);
   }
   return total;
+}
+
+/**
+ * The stored messages that buildRequestMessages will actually replay to the
+ * model on the next turn: the base (non-summary) system prompt, the running
+ * compaction anchor (if present), and the non-system messages after the anchor
+ * that have not been pruned or compacted. Anything older has been folded into
+ * the anchor and no longer enters the prompt.
+ *
+ * Kept in sync with Agent.buildRequestMessages — the two must agree or the
+ * context label and the compaction guard will drift apart.
+ */
+const SUMMARY_PREFIX = 'Summary of previous conversation:';
+
+function isSummaryMessage(msg: Message): boolean {
+  return msg.id === `${msg.sessionId}-summary` ||
+    (msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith(SUMMARY_PREFIX));
+}
+
+export function replayedMessages(session: Session): Message[] {
+  const messages = session.messages || [];
+  const system = messages.filter(m => m.role === 'system' && !m.pruned);
+  const anchor = system.find(isSummaryMessage);
+  const base = system.find(m => !isSummaryMessage(m));
+  const anchorIndex = anchor ? messages.indexOf(anchor) : -1;
+  const history = messages.filter(
+    (m, idx) => m.role !== 'system' && !m.pruned && !m.compacted && idx > anchorIndex,
+  );
+  return [base, anchor, ...history].filter((m): m is Message => !!m);
 }
 
 /** Projected cost of an in-flight request array (the shape actually sent). */

@@ -2179,6 +2179,16 @@ export class Agent {
   }
 
   /**
+   * Accurate projected prompt size for a session, for the UI context label.
+   * Delegates to the same calibrated, replay-accurate estimator that compaction
+   * relies on (plus the tool-schema overhead), so the label can no longer
+   * diverge from what actually gets sent.
+   */
+  getProjectedContextTokens(session: Session, config: any = getConfig()): number {
+    return this.estimateSessionTokens(session, config);
+  }
+
+  /**
    * Predict the next request's prompt size as "last actual tokens + the small
    * delta appended since", instead of re-estimating the whole context from chars.
    *

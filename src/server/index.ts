@@ -710,24 +710,18 @@ server.on('upgrade', (request, socket, head) => {
 
 function sendContextUpdate(ws: WebSocket, session: Session): void {
   try {
-    const config = loadConfig();
-    let totalTokens = 0;
-    for (const msg of session.messages) {
-      const content = msg.content || '';
-      totalTokens += Math.ceil(content.length / 4) + 10;
-      if (msg.toolCalls) {
-        for (const tc of msg.toolCalls) {
-          totalTokens += Math.ceil(JSON.stringify(tc.parameters).length / 4) + 5;
-          if (tc.result) totalTokens += Math.ceil(tc.result.length / 4) + 5;
-        }
-      }
-      if (msg.images) totalTokens += (msg.images.length * (config.imageTokensPerImage || 1024));
-    }
+    // Use the agent's calibrated, replay-accurate estimate so the label matches
+    // what is actually sent (and stays in step with compaction). The previous
+    // naive chars/4 loop counted compacted + pruned history, so the label
+    // climbed past the window on long sessions.
+    const promptTokens = session.messages.length > 0
+      ? agent.getProjectedContextTokens(session)
+      : 0;
     const agentCfg = getAgentModel();
     if (ws.readyState === 1) {
       ws.send(JSON.stringify({
         type: 'context:update',
-        data: { promptTokens: totalTokens, maxTokens: agentCfg.contextWindow || 64000 },
+        data: { promptTokens, maxTokens: agentCfg.contextWindow || 64000 },
       }));
     }
   } catch { /* ignore */ }
