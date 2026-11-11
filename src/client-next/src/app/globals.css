@@ -128,3 +128,146 @@
     @apply font-sans;
   }
 }
+/* =============================================================================
+   Yuki Brand Overrides (ported from client-v2 theme/yuki-brand.css)
+   These sit on top of the shadcn base tokens and provide message-bubble,
+   thinking-block, agent-status and scrollbar styling.
+   ============================================================================= */
+
+/* Message bubbles */
+.yuki-user-bubble {
+  background-color: var(--yuki-user-bubble-bg);
+  border-color: var(--yuki-user-bubble-border);
+  color: var(--yuki-user-bubble-text);
+}
+.yuki-asst-bubble {
+  background-color: var(--yuki-asst-bubble-bg);
+  border-color: var(--yuki-asst-bubble-border);
+  color: var(--yuki-asst-bubble-text);
+}
+
+/* Thinking block */
+.thinking-block {
+  background-color: var(--yuki-thinking-bg);
+  border-color: var(--yuki-thinking-border);
+  color: var(--yuki-thinking-text);
+}
+.thinking-block .thinking-accent {
+  color: var(--yuki-thinking-accent);
+}
+
+/* Tool call wrapper */
+.tool-call-wrapper {
+  background-color: var(--yuki-tool-bg, hsl(222.2, 47.4%, 6%));
+  border-color: var(--yuki-tool-border, hsl(217.2, 14%, 32.6%));
+}
+
+/* Compact / opacity states */
+.yuki-compact {
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+}
+.yuki-compact:hover {
+  opacity: 0.7;
+}
+
+/* Collapsible thinking/tool group */
+.tt-group-header {
+  border-color: var(--yuki-tt-group-border, hsl(217.2, 14%, 32.6%));
+}
+.tt-group-header:hover {
+  border-color: var(--yuki-tt-group-hover-border, hsla(217.2, 91.2%, 60%, 0.4));
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--yuki-scrollbar-thumb, hsl(217.2, 14%, 32.6%));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--yuki-scrollbar-thumb-hover, hsl(217.2, 14%, 42.6%));
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--yuki-scrollbar-thumb, hsl(217.2, 14%, 32.6%)) transparent;
+}
+
+/* Markdown content (assistant bubbles) */
+.yuki-asst-bubble .prose {
+  --tw-prose-body: #c9d1d9;
+  --tw-prose-headings: var(--yuki-heading, #d4760a);
+  --tw-prose-bold: #58a6ff;
+  --tw-prose-links: #58a6ff;
+  --tw-prose-quotes: #c9d1d9;
+  --tw-prose-code: #c9d1d9;
+  --tw-prose-hr: #30363d;
+  --tw-prose-th-borders: #30363d;
+  --tw-prose-td-borders: #30363d;
+}
+.yuki-asst-bubble .prose h1,
+.yuki-asst-bubble .prose h2,
+.yuki-asst-bubble .prose h3,
+.yuki-asst-bubble .prose h4,
+.yuki-asst-bubble .prose h5,
+.yuki-asst-bubble .prose h6 {
+  color: var(--yuki-heading, #d4760a);
+}
+.yuki-asst-bubble .prose h1 { font-size: 1.3rem; }
+.yuki-asst-bubble .prose h2 { font-size: 1.15rem; }
+.yuki-asst-bubble .prose h3 { font-size: 1.05rem; }
+.yuki-asst-bubble .prose h4 { font-size: 0.95rem; }
+.yuki-asst-bubble .prose strong {
+  color: #58a6ff;
+  font-weight: 550;
+}
+.yuki-asst-bubble .prose code {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.85em;
+  background: var(--yuki-code-inline-bg, #21262d);
+  padding: 0.15em 0.4em;
+  border-radius: 0.25rem;
+}
+.yuki-asst-bubble .prose pre {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 0.375rem;
+}
+.yuki-asst-bubble .prose pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.yuki-asst-bubble .prose blockquote {
+  background: var(--yuki-blockquote-bg, #161b22);
+  border-left: 3px solid var(--yuki-blockquote-border, #30363d);
+  padding-left: 1rem;
+}
+.yuki-asst-bubble .prose table {
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+.yuki-asst-bubble .prose th,
+.yuki-asst-bubble .prose td {
+  padding: 0.125rem 0.5rem;
+  border-color: inherit;
+}
+.yuki-asst-bubble .prose th {
+  background: #21262d;
+  font-weight: 550;
+}
+.yuki-asst-bubble .prose tr:nth-child(even) {
+  background: #161b22;
+}
+.yuki-asst-bubble .prose img {
+  max-width: 100%;
+  border-radius: 0.375rem;
+  margin: 0.35rem 0;
+}
