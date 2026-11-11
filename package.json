@@ -4,7 +4,7 @@
   "description": "Personal AI agent with speech-to-speech, browser automation, and desktop control",
   "main": "dist/server/index.js",
   "scripts": {
-    "build:client": "npm --prefix src/client-next run build",
+    "build:client": "npm --prefix src/client-next run clean && npm --prefix src/client-next run build",
     "build:server": "tsc",
     "build": "npm run build:client && npm run build:server && node scripts/copy-client.js && node scripts/write-version.js",
     "start": "node dist/server/index.js",
@@ -32,9 +32,6 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@solidjs/meta": "^0.29.8",
-    "@solidjs/router": "^1.0.1",
-    "@tanstack/solid-query": "^5.107.1",
     "@types/cors": "^2.8.17",
     "@types/diff": "^7.0.2",
     "@types/express": "^5.0.0",
@@ -44,13 +41,10 @@
     "clsx": "^2.1.1",
     "concurrently": "^9.1.2",
     "nodemon": "^3.1.0",
-    "solid-js": "^1.9.18",
     "tailwind-merge": "^3.7.0",
     "tailwindcss": "^4.3.5",
     "ts-node": "^10.9.0",
-    "typescript": "^5.9.3",
-    "vite": "^8.3.6",
-    "vite-plugin-solid": "^2.11.15"
+    "typescript": "^5.9.3"
   },
   "keywords": [],
   "author": "",

@@ -12,6 +12,8 @@ import { SettingsModal } from '@/components/settings/settings-modal';
 import { VoicePanel } from '@/components/voice/voice-panel';
 import { BrowserView } from '@/components/browser/browser-view';
 import { SessionSync } from '@/components/session-sync';
+import { RenameModal } from '@/components/modals/rename-modal';
+import { ConfirmModal } from '@/components/modals/confirm-modal';
 import { IconButton } from '@/components/ui/icon-button';
 import { Text } from '@/components/ui/box';
 import {
@@ -184,34 +186,34 @@ export function MainLayout({ className }: { className?: string }) {
   const { sessions, switchSession, renameSession, deleteSession } = useSession();
   const { addProject: addProjectCtx, setCurrentProject } = useProject();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
+  const [deleteSessionId, setDeleteSessionId] = useState<string | null>(null);
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
 
   const handleSessionSelect = (sessionId: string, projectId: string) => {
     switchSession(sessionId, projectId);
   };
 
   const handleSessionRename = (sessionId: string) => {
-    const session = sessions.find((s) => s.id === sessionId);
-    if (!session) return;
-    const newName = window.prompt('Rename session:', session.title);
-    if (newName && newName.trim()) {
-      renameSession(sessionId, newName.trim());
-    }
+    setRenameSessionId(sessionId);
   };
 
   const handleSessionDelete = (sessionId: string) => {
-    if (window.confirm('Delete this session?')) {
-      deleteSession(sessionId);
-    }
+    setDeleteSessionId(sessionId);
   };
 
-  const handleAddProject = async () => {
-    const name = window.prompt('Project name:');
-    if (name && name.trim()) {
-      try {
-        await addProjectCtx(name.trim());
-      } catch {
-        /* provider logs */
-      }
+  const renameSessionTarget = renameSessionId
+    ? sessions.find((s) => s.id === renameSessionId) ?? null
+    : null;
+  const deleteSessionTarget = deleteSessionId
+    ? sessions.find((s) => s.id === deleteSessionId) ?? null
+    : null;
+
+  const handleAddProject = async (name: string) => {
+    try {
+      await addProjectCtx(name);
+    } catch {
+      /* provider logs */
     }
   };
 
@@ -231,7 +233,7 @@ export function MainLayout({ className }: { className?: string }) {
           onProjectSelect={(projectId) => {
             void setCurrentProject(projectId).catch(() => {});
           }}
-          onAddProject={handleAddProject}
+          onAddProject={() => setAddProjectOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
       </div>
@@ -248,6 +250,50 @@ export function MainLayout({ className }: { className?: string }) {
       <SessionSync />
       <BrowserView />
       <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
+
+      {/* Session rename */}
+      <RenameModal
+        open={renameSessionId !== null}
+        onOpenChange={(open) => { if (!open) setRenameSessionId(null); }}
+        title="Rename session"
+        currentValue={renameSessionTarget?.title}
+        placeholder="Session name"
+        onSave={(name) => {
+          if (renameSessionId) renameSession(renameSessionId, name);
+          setRenameSessionId(null);
+        }}
+      />
+
+      {/* Session delete confirm */}
+      <ConfirmModal
+        open={deleteSessionId !== null}
+        onOpenChange={(open) => { if (!open) setDeleteSessionId(null); }}
+        title="Delete session"
+        message={
+          deleteSessionTarget
+            ? `Delete session “${deleteSessionTarget.title || 'Untitled'}”? This cannot be undone.`
+            : 'Delete this session?'
+        }
+        confirmText="Delete"
+        variant="danger"
+        onConfirm={() => {
+          if (deleteSessionId) deleteSession(deleteSessionId);
+          setDeleteSessionId(null);
+        }}
+      />
+
+      {/* New project */}
+      <RenameModal
+        open={addProjectOpen}
+        onOpenChange={setAddProjectOpen}
+        title="New project"
+        currentValue=""
+        placeholder="Project name"
+        onSave={(name) => {
+          setAddProjectOpen(false);
+          void handleAddProject(name);
+        }}
+      />
     </div>
   );
 }

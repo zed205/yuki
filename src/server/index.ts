@@ -48,11 +48,13 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self'; " +
+    // 'unsafe-inline' is required by the Next.js App Router (inline flight scripts)
+    "script-src 'self' 'unsafe-inline'; " +
     "style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data:; " +
+    "img-src 'self' data: blob:; " +
+    "media-src 'self' blob: data:; " +
     "font-src 'self' data:; " +
-    "connect-src 'self' ws://localhost:* wss://localhost:*; " +
+    "connect-src 'self' ws://localhost:* wss://localhost:* ws://127.0.0.1:* wss://127.0.0.1:*; " +
     "frame-ancestors 'none'; " +
     "base-uri 'self'; " +
     "form-action 'self'"
@@ -785,8 +787,7 @@ let nextHandler: ((req: Request, res: Response) => Promise<void>) | null = null;
 let nextReady: Promise<void> | null = null;
 const hasNextBuild = fs.existsSync(path.join(nextClientDir, '.next', 'BUILD_ID'));
 if (!hasNextBuild) {
-  // No Next.js build: serve the legacy Vite client (client-v2) + legacy client assets
-  app.use(express.static(path.join(__dirname, '..', 'client-v2')));
+  // No Next.js build: serve legacy client assets only
   app.use(express.static(path.join(__dirname, '..', 'client')));
 }
 if (hasNextBuild) {
@@ -810,18 +811,18 @@ if (hasNextBuild) {
     console.error('Failed to load Next.js (is `next` installed at the root?); falling back to static client:', err);
   }
 } else {
-  console.log('No Next.js build found at dist/client-next; serving legacy static client.');
+  console.log('No Next.js build found at dist/client-next; client UI will be unavailable until built.');
 }
 
 // Serve the Next.js app once ready (waits out the async prepare() so
-// early requests don't leak to the legacy fallback).
+// early requests don't 404 while the handler initializes).
 const serveClient = async (req: Request, res: Response) => {
   if (nextReady) await nextReady;
   if (nextHandler) {
     await nextHandler(req, res);
     return;
   }
-  res.sendFile(path.join(__dirname, '..', 'client-v2', 'index.html'));
+  res.status(503).send('Client not built. Run: npm run build (builds src/client-next) and restart.');
 };
 
 app.get('/', (req, res) => {

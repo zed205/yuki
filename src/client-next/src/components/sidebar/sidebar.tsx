@@ -32,15 +32,22 @@ type Section = 'sessions' | 'projects';
 function SidebarFooter() {
   const { connectionState, endpoint } = useWebSocket();
   const { voiceMode, voiceListening } = useAudio();
+  const [mounted, setMounted] = useState(false);
 
-  const hostname = (() => {
-    if (!endpoint) return null;
-    try {
-      return new URL(endpoint).hostname;
-    } catch {
-      return endpoint;
-    }
-  })();
+  // The endpoint is derived from window on the client; SSR has none. Gate the
+  // hostname so the client's initial paint matches the server HTML.
+  useEffect(() => setMounted(true), []);
+
+  const hostname = mounted
+    ? (() => {
+        if (!endpoint) return null;
+        try {
+          return new URL(endpoint).hostname;
+        } catch {
+          return endpoint;
+        }
+      })()
+    : null;
 
   return (
     <div className="shrink-0 border-t border-border/50">

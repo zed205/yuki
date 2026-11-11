@@ -88,10 +88,10 @@ app.prepare().then(() => {
 
   server.on('upgrade', (req, socket, head) => {
     const url = req.url || '/';
+    // Only proxy the app's WS endpoint; leave everything else (e.g. Next's
+    // /_next/webpack-hmr) to the dev server's own upgrade handling.
     if (url === '/ws' || url.startsWith('/ws?')) {
       proxyUpgrade(req, socket, head);
-    } else {
-      socket.destroy();
     }
   });
 

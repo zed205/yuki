@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "clean": "node -e \"require('fs').rmSync('.next', {recursive: true, force: true})\""
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

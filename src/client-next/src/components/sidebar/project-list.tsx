@@ -7,6 +7,8 @@ import { useProject } from '@/context/project-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { IconButton } from '@/components/ui/icon-button';
 import { Text } from '@/components/ui/box';
+import { RenameModal } from '@/components/modals/rename-modal';
+import { ConfirmModal } from '@/components/modals/confirm-modal';
 import type { Project } from '@/lib/types';
 
 interface ProjectListProps {
@@ -130,17 +132,15 @@ export function ProjectList({ onProjectSelect, onAddProject, className }: Projec
     onProjectSelect?.(id);
   };
 
+  const [renameTarget, setRenameTarget] = useState<Project | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+
   const handleRename = (p: Project) => {
-    const name = window.prompt('Rename project:', p.name);
-    if (name && name.trim()) {
-      void renameProject(p.id, name.trim()).catch(() => {});
-    }
+    setRenameTarget(p);
   };
 
   const handleDelete = (p: Project) => {
-    if (p.id !== 'default' && window.confirm(`Delete project "${p.name}"?`)) {
-      void removeProject(p.id).catch(() => {});
-    }
+    if (p.id !== 'default') setDeleteTarget(p);
   };
 
   const list: Project[] =
@@ -176,6 +176,33 @@ export function ProjectList({ onProjectSelect, onAddProject, className }: Projec
           />
         ))}
       </div>
+
+      {/* Rename project */}
+      <RenameModal
+        open={renameTarget !== null}
+        onOpenChange={(open) => { if (!open) setRenameTarget(null); }}
+        title="Rename project"
+        currentValue={renameTarget?.name}
+        placeholder="Project name"
+        onSave={(name) => {
+          if (renameTarget) void renameProject(renameTarget.id, name).catch(() => {});
+          setRenameTarget(null);
+        }}
+      />
+
+      {/* Delete project confirm */}
+      <ConfirmModal
+        open={deleteTarget !== null}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        title="Delete project"
+        message={deleteTarget ? `Delete project “${deleteTarget.name}”?` : ''}
+        confirmText="Delete"
+        variant="danger"
+        onConfirm={() => {
+          if (deleteTarget) void removeProject(deleteTarget.id).catch(() => {});
+          setDeleteTarget(null);
+        }}
+      />
     </div>
   );
 }
