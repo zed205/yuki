@@ -11,7 +11,18 @@ import {
   type ReactNode,
 } from 'react';
 import { useWebSocket } from './websocket-context';
-import type { Message, ModelInfo, Session, ToolCallEntry } from '@/lib/types';
+import { useToaster } from '@/components/toast/toaster-provider';
+import type {
+  Message,
+  MCPServerStatus,
+  ModelInfo,
+  Plan,
+  PlanStep,
+  Session,
+  SubAgentInfo,
+  ToolCallEntry,
+  ToolInfo,
+} from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +88,12 @@ export interface SessionContextValue {
   promptTokens: number;
   maxTokens: number;
 
+  // Tools / MCP / Plan / Sub-agents
+  tools: ToolInfo[];
+  mcpServers: MCPServerStatus[];
+  plan: Plan | null;
+  subagents: SubAgentInfo[];
+
   // Actions (WS-backed)
   sendMessage: (text: string) => boolean;
   stopResponse: () => void;
@@ -85,6 +102,14 @@ export interface SessionContextValue {
   deleteSession: (sessionId: string) => void;
   renameSession: (sessionId: string, title: string) => void;
   switchModel: (modelName: string) => void;
+  forkSession: (sessionId: string, messageIndex: number) => void;
+  moveSession: (sessionId: string, projectId: string) => void;
+  compactContext: () => void;
+  revertMessage: (messageId: string) => void;
+  toggleTool: (toolName: string, enabled: boolean) => void;
+  toggleMcp: (serverName: string, enabled: boolean) => void;
+  refreshMcp: () => void;
+  killSubAgent: (agentId: string) => void;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -115,6 +140,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [voiceMode, setVoiceMode] = useState(false);
   const [promptTokens, setPromptTokens] = useState(0);
   const [maxTokens, setMaxTokens] = useState(64000);
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServerStatus[]>([]);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [subagents, setSubagents] = useState<SubAgentInfo[]>([]);
+  const { showToast, showSuccess, showError } = useToaster();
 
   const setConfig = useCallback((v: Partial<SessionConfig>) => {
     setConfigState((prev) => ({ ...prev, ...v }));
@@ -163,6 +193,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error('[SessionContext] failed to load session', sessionId, err);
     }
+  }, []);
+
+  // Merge a sub-agent event into the subagents list.
+  const upsertSubAgent = useCallback((agentId: string, patch: Partial<SubAgentInfo>) => {
+    setSubagents((prev) => {
+      const idx = prev.findIndex((a) => a.agentId === agentId);
+      if (idx === -1) {
+        return [{ agentId, status: 'running', ...patch }, ...prev];
+      }
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...patch };
+      return next;
+    });
   }, []);
 
   // -----------------------------------------------------------------
@@ -636,8 +679,225 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }),
     );
 
+    // --- Tools / MCP / Plan ---
+
+    unsubs.push(
+      on('tools:list', (data) => {
+        const td = data as { tools?: ToolInfo[] };
+        if (td.tools) setTools(td.tools);
+      }),
+    );
+
+    unsubs.push(
+      on('tools:toggled', (data) => {
+        const td = data as { toolName?: string; enabled?: boolean };
+        if (!td.toolName) return;
+        setTools((prev) =>
+          prev.map((t) =>
+            t.name === td.toolName ? { ...t, enabled: !!td.enabled } : t,
+          ),
+        );
+      }),
+    );
+
+    unsubs.push(
+      on('mcp:list', (data) => {
+        const md = data as { servers?: MCPServerStatus[] };
+        if (md.servers) setMcpServers(md.servers);
+      }),
+    );
+
+    unsubs.push(
+      on('mcp:toggled', (data) => {
+        const md = data as {
+          serverName?: string;
+          enabled?: boolean;
+          success?: boolean;
+          error?: string;
+        };
+        if (md.error) showError(md.error);
+      }),
+    );
+
+    unsubs.push(
+      on('plan:updated', (data) => {
+        const pd = data as {
+          plan?: {
+            id?: string;
+            title?: string;
+            steps?: Array<{
+              id?: string;
+              description?: string;
+              status?: PlanStep['status'];
+            }>;
+          } | null;
+        };
+        if (!pd.plan) {
+          setPlan(null);
+          return;
+        }
+        setPlan({
+          id: pd.plan.id || `plan-${Date.now()}`,
+          title: pd.plan.title || 'Plan',
+          steps: (pd.plan.steps || []).map((s) => ({
+            id: s.id || '',
+            description: s.description || '',
+            status: s.status || 'pending',
+          })),
+        });
+      }),
+    );
+
+    // --- Context compaction ---
+
+    unsubs.push(
+      on('context:compacted', (data) => {
+        const cd = data as { savedTokens?: number; messagesCompacted?: number };
+        showToast(
+          `Context compacted — ${cd.messagesCompacted ?? 0} messages summarized (saved ~${cd.savedTokens ?? 0} tokens)`,
+          'success',
+        );
+      }),
+    );
+
+    unsubs.push(
+      on('context:compact-failed', (data) => {
+        const cd = data as { error?: string };
+        showError(cd.error || 'Context compaction failed');
+      }),
+    );
+
+    // --- Session fork / switch guards ---
+
+    unsubs.push(
+      on('session:fork-result', (data) => {
+        const fd = data as {
+          ok?: boolean;
+          sessionId?: string;
+          parentSessionId?: string;
+          error?: string;
+        };
+        if (!fd.ok) {
+          showError(fd.error || 'Fork failed');
+          return;
+        }
+        if (fd.sessionId) {
+          showSuccess('Session forked');
+          send('session:switch', { sessionId: fd.sessionId });
+        }
+      }),
+    );
+
+    unsubs.push(
+      on('switch:blocked', (data) => {
+        const bd = data as { reason?: string };
+        showError(bd.reason || 'Cannot switch session right now');
+      }),
+    );
+
+    // --- Sub-agents ---
+
+    unsubs.push(
+      on('subagent:list', (data) => {
+        const sd = data as { agents?: SubAgentInfo[] };
+        if (sd.agents) setSubagents(sd.agents);
+      }),
+    );
+
+    const subAgentUpsert = (type: string) =>
+      on(type, (data) => {
+        const d = data as Partial<SubAgentInfo> & { ok?: boolean };
+        const agentId = d.agentId;
+        if (!agentId) return;
+        const { ok, ...rest } = d;
+        if (type === 'subagent:kill-result') {
+          upsertSubAgent(agentId, {
+            ...rest,
+            status: ok ? 'cancelled' : 'error',
+            error: ok ? rest.error : rest.error || 'Kill failed',
+          });
+        } else {
+          upsertSubAgent(agentId, rest);
+        }
+      });
+
+    unsubs.push(
+      subAgentUpsert('subagent:spawn'),
+      subAgentUpsert('subagent:status'),
+      subAgentUpsert('subagent:done'),
+      subAgentUpsert('subagent:kill-result'),
+    );
+
+    unsubs.push(
+      on('subagent:chunk', (data) => {
+        const d = data as { agentId?: string; chunk?: string };
+        if (!d.agentId || !d.chunk) return;
+        upsertSubAgent(d.agentId, {});
+        setSubagents((prev) =>
+          prev.map((a) =>
+            a.agentId === d.agentId
+              ? { ...a, content: (a.content || '') + d.chunk!, status: a.status === 'queued' ? 'running' : a.status }
+              : a,
+          ),
+        );
+      }),
+    );
+
+    unsubs.push(
+      on('subagent:thinking', (data) => {
+        const d = data as { agentId?: string; chunk?: string };
+        if (!d.agentId || !d.chunk) return;
+        setSubagents((prev) =>
+          prev.map((a) =>
+            a.agentId === d.agentId ? { ...a, thinking: (a.thinking || '') + d.chunk! } : a,
+          ),
+        );
+      }),
+    );
+
+    unsubs.push(
+      on('subagent:response', (data) => {
+        const d = data as { agentId?: string; message?: string };
+        if (!d.agentId) return;
+        setSubagents((prev) =>
+          prev.map((a) =>
+            a.agentId === d.agentId
+              ? { ...a, content: d.message ?? a.content, status: a.status === 'error' ? a.status : 'completed' }
+              : a,
+          ),
+        );
+      }),
+    );
+
+    unsubs.push(
+      on('subagent:results-delivered', () => {
+        showToast('Sub-agent results delivered', 'info');
+      }),
+    );
+
+    unsubs.push(
+      on('subagent:results-pending', (data) => {
+        const d = data as { count?: number };
+        showToast(`${d.count ?? 1} sub-agent result(s) pending — will be injected`, 'info');
+      }),
+    );
+
+    unsubs.push(
+      on('subagent:wake', (data) => {
+        const d = data as { agentId?: string; description?: string };
+        console.info('[subagent] wake', d.agentId, d.description);
+      }),
+    );
+
+    // --- Voice global toggle (tray hotkey ping) ---
+
+    unsubs.push(on('voice:global-toggle', () => {
+      // The server broadcasts this when the global voice hotkey fires;
+      // voice state arrives via voice:status.
+    }));
+
     return () => unsubs.forEach((u) => u());
-  }, [messageRouter, setConfig, loadSession]);
+  }, [messageRouter, setConfig, loadSession, upsertSubAgent, showToast, showSuccess, showError, send]);
 
   // -----------------------------------------------------------------
   // Actions
@@ -688,6 +948,56 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [send],
   );
 
+  const forkSession = useCallback(
+    (sessionId: string, messageIndex: number) => {
+      send('session:fork', { sessionId, messageIndex });
+    },
+    [send],
+  );
+
+  const moveSession = useCallback(
+    (sessionId: string, projectId: string) => {
+      send('session:move', { sessionId, projectId });
+    },
+    [send],
+  );
+
+  const compactContext = useCallback(() => {
+    send('context:compact', {});
+  }, [send]);
+
+  const revertMessage = useCallback(
+    (messageId: string) => {
+      send('message:revert', { messageId });
+    },
+    [send],
+  );
+
+  const toggleTool = useCallback(
+    (toolName: string, enabled: boolean) => {
+      send('tools:toggle', { toolName, enabled });
+    },
+    [send],
+  );
+
+  const toggleMcp = useCallback(
+    (serverName: string, enabled: boolean) => {
+      send('mcp:toggle', { serverName, enabled });
+    },
+    [send],
+  );
+
+  const refreshMcp = useCallback(() => {
+    send('mcp:refresh', {});
+  }, [send]);
+
+  const killSubAgent = useCallback(
+    (agentId: string) => {
+      send('subagent:kill', { agentId });
+    },
+    [send],
+  );
+
   const value = useMemo<SessionContextValue>(
     () => ({
       messages,
@@ -720,6 +1030,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setVoiceMode,
       promptTokens,
       maxTokens,
+      tools,
+      mcpServers,
+      plan,
+      subagents,
       sendMessage,
       stopResponse,
       switchSession,
@@ -727,13 +1041,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       deleteSession,
       renameSession,
       switchModel,
+      forkSession,
+      moveSession,
+      compactContext,
+      revertMessage,
+      toggleTool,
+      toggleMcp,
+      refreshMcp,
+      killSubAgent,
     }),
     [
       messages, isWaiting, isStreaming, thinkingEnabled, compactMode,
       notificationsEnabled, activeModel, models, config, currentSessionId,
       currentProjectId, activeSessionId, sessions, voiceMode, promptTokens,
-      maxTokens, setConfig, sendMessage, stopResponse, switchSession,
-      createSession, deleteSession, renameSession, switchModel,
+      maxTokens, tools, mcpServers, plan, subagents, setConfig, sendMessage,
+      stopResponse, switchSession, createSession, deleteSession,
+      renameSession, switchModel, forkSession, moveSession, compactContext,
+      revertMessage, toggleTool, toggleMcp, refreshMcp, killSubAgent,
     ],
   );
 

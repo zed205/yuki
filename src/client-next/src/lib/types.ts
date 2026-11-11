@@ -203,6 +203,38 @@ export interface ModelInfo {
 
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 
+// ─── Sub-agents ──────────────────────────────────────────────────────────────
+
+export interface SubAgentInfo {
+  agentId: string;
+  description?: string;
+  task?: string;
+  model?: string;
+  status: 'queued' | 'running' | 'completed' | 'error' | 'cancelled' | string;
+  startedAt?: number;
+  elapsedSeconds?: number;
+  durationMs?: number;
+  queuePosition?: number;
+  reportReady?: boolean;
+  error?: string;
+  /** Client-side streaming buffer for subagent:response chunks. */
+  content?: string;
+  /** Client-side streaming buffer for subagent:thinking chunks. */
+  thinking?: string;
+}
+
+export interface SubAgentSnapshot {
+  slots?: number;
+  running?: number;
+  queued?: number;
+  agents: SubAgentInfo[];
+}
+
+export interface ToolInfo {
+  name: string;
+  enabled: boolean;
+}
+
 export interface MCPServerStatus {
   name: string;
   command: string;
