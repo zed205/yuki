@@ -41,6 +41,10 @@ export interface SessionConfig {
   thinkingEnabled?: boolean;
   toolsEnabled?: boolean;
   compactMode?: boolean;
+  /** Underlying model string (server config), for the utility summary. */
+  model?: string;
+  /** Endpoint URL, for the utility summary. */
+  endpoint?: string;
 }
 
 export interface SessionContextValue {
@@ -98,6 +102,9 @@ export interface SessionContextValue {
 
   // Structured models (cards + variants) for the models modal
   structuredModels: StructuredModel[];
+
+  // Sub-agent capacity reported by the server (subagent:list slots).
+  subAgentSlots: number;
 
   // Compaction indicator state (Ready / Busy / Done / Failed)
   compactState: 'ready' | 'busy' | 'done' | 'failed';
@@ -157,6 +164,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [subagents, setSubagents] = useState<SubAgentInfo[]>([]);
   const [structuredModels, setStructuredModels] = useState<StructuredModel[]>([]);
+  const [subAgentSlots, setSubAgentSlots] = useState(0);
   const [compactState, setCompactState] = useState<'ready' | 'busy' | 'done' | 'failed'>('ready');
   const [revertFill, setRevertFill] = useState<{ text: string; nonce: number } | null>(null);
   const { showToast, showSuccess, showError } = useToaster();
@@ -233,12 +241,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Merge a sub-agent event into the subagents list.
   const upsertSubAgent = useCallback((agentId: string, patch: Partial<SubAgentInfo>) => {
     setSubagents((prev) => {
+      const baseAt = Date.now();
       const idx = prev.findIndex((a) => a.agentId === agentId);
       if (idx === -1) {
-        return [{ agentId, status: 'running', ...patch }, ...prev];
+        return [{ agentId, status: 'running', ...patch, baseAt }, ...prev];
       }
       const next = [...prev];
-      next[idx] = { ...next[idx], ...patch };
+      next[idx] = { ...next[idx], ...patch, baseAt };
       return next;
     });
   }, []);
@@ -308,7 +317,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               (sd.config.collapseThinkingTools as boolean) ?? false,
             desktopNotifications:
               (sd.config.desktopNotifications as boolean) ?? true,
-          });
+            model: (sd.config.model as string) || undefined,
+            endpoint: (sd.config.endpoint as string) || undefined,
+            contextWindow:
+              (sd.config.contextWindow as number) || undefined,
+          } as Partial<SessionConfig>);
         }
       }),
     );
@@ -372,6 +385,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (md.contextWindow) setMaxTokens(md.contextWindow);
         if (typeof md.thinkingEnabled === 'boolean')
           setThinkingEnabled(md.thinkingEnabled);
+        // Keep the utility summary's model/endpoint in sync.
+        const md2 = data as { model?: string; endpoint?: string };
+        if (md2.model || md2.endpoint) {
+          setConfig({
+            model: md2.model,
+            endpoint: md2.endpoint,
+          } as Partial<SessionConfig>);
+        }
       }),
     );
 
@@ -955,11 +976,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     unsubs.push(
       on('subagent:list', (data) => {
         const sd = data as { agents?: SubAgentInfo[] };
-        if (sd.agents) {
-          setSubagents(sd.agents);
+        const d2 = data as { agents?: SubAgentInfo[]; slots?: number };
+        if (typeof d2.slots === 'number') setSubAgentSlots(d2.slots);
+        if (d2.agents) {
+          setSubagents(d2.agents.map((a) => ({ ...a, baseAt: Date.now() })));
           // Recreate feed bubbles for agents that are still alive (after a
           // session switch the old bubbles are gone).
-          for (const a of sd.agents) {
+          for (const a of d2.agents) {
             if (a.status === 'running' || a.status === 'queued') {
               ensureAgentBubble(a.agentId);
             }
@@ -1267,6 +1290,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       plan,
       subagents,
       structuredModels,
+      subAgentSlots,
       compactState,
       revertFill,
       sendMessage,
@@ -1290,7 +1314,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       notificationsEnabled, activeModel, models, config, currentSessionId,
       currentProjectId, activeSessionId, sessions, voiceMode, promptTokens,
       maxTokens, tools, mcpServers, plan, subagents, structuredModels,
-      compactState, revertFill, setConfig, sendMessage,
+      subAgentSlots, compactState, revertFill, setConfig, sendMessage,
       stopResponse, switchSession, createSession, deleteSession,
       renameSession, switchModel, forkSession, moveSession, compactContext,
       revertMessage, toggleTool, toggleMcp, refreshMcp, killSubAgent,

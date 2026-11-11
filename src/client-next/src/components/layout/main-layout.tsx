@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Check } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
 import { useProject } from '@/context/project-context';
@@ -14,165 +14,64 @@ import { BrowserView } from '@/components/browser/browser-view';
 import { SessionSync } from '@/components/session-sync';
 import { RenameModal } from '@/components/modals/rename-modal';
 import { ConfirmModal } from '@/components/modals/confirm-modal';
-import { IconButton } from '@/components/ui/icon-button';
-import { Text } from '@/components/ui/box';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+import { SearchModal } from '@/components/modals/search-modal';
 
 // ---------------------------------------------------------------------------
-// Token usage ring
+// Mobile top bar (legacy `#top-bar`): hamburger + logo + context ring
 // ---------------------------------------------------------------------------
 
-function TokenRing({ pct }: { pct: number }) {
-  if (pct <= 0) return null;
-  const dashArray = `${Math.min(pct, 100)} 100`;
-  const color =
-    pct > 90 ? '#ef4444' : pct > 70 ? '#f59e0b' : '#22c55e';
-  return (
-    <div className="relative h-6 w-6" title={`${pct}% context used`}>
-      <svg className="h-6 w-6 -rotate-90" viewBox="0 0 36 36">
-        <circle
-          cx="18"
-          cy="18"
-          r="15.915"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className="text-border/20"
-        />
-        <circle
-          cx="18"
-          cy="18"
-          r="15.915"
-          fill="none"
-          stroke={color}
-          strokeWidth="2"
-          strokeDasharray={dashArray}
-          strokeDashoffset="0"
-          strokeLinecap="round"
-        />
-      </svg>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Top bar
-// ---------------------------------------------------------------------------
-
-function TopBar() {
-  const { activeModel, models, switchModel, promptTokens, maxTokens } =
-    useSession();
-  const { connectionState } = useWebSocket();
-  const [modelOpen, setModelOpen] = useState(false);
-
-  const pct = maxTokens > 0 ? Math.round((promptTokens / maxTokens) * 100) : 0;
+function MobileTopBar({ onMenu }: { onMenu: () => void }) {
+  const { promptTokens, maxTokens } = useSession();
+  const pct =
+    maxTokens > 0 ? Math.min(100, Math.round((promptTokens / maxTokens) * 100)) : 0;
+  const color = pct > 90 ? '#f85149' : pct > 70 ? '#f0883e' : '#58a6ff';
 
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/50 bg-background/50 px-4">
-      {/* Left: context indicator + connection status */}
-      <div className="flex items-center gap-3">
-        <TokenRing pct={pct} />
-        <div className="hidden items-center gap-1.5 sm:flex">
-          <div
-            className={cn(
-              'h-1.5 w-1.5 rounded-full',
-              connectionState === 'connected' ? 'bg-green-500' : 'bg-red-500',
-            )}
-          />
-          <Text size="xs" className="text-muted-foreground">
-            {connectionState === 'connected'
-              ? 'Connected'
-              : connectionState === 'connecting'
-                ? 'Connecting...'
-                : 'Disconnected'}
-          </Text>
+    <div className="fixed top-0 left-0 right-0 z-40 flex h-14 items-center gap-3 border-b border-border bg-card px-3 md:hidden">
+      <button
+        type="button"
+        className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        title="Menu"
+        onClick={onMenu}
+      >
+        <Menu size={20} />
+      </button>
+
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#d4760a] text-xs font-bold text-white">
+          Y
         </div>
+        <span className="truncate font-bold">Yuki</span>
       </div>
 
-      {/* Center: model selector */}
-      <div className="flex flex-1 justify-center">
-        <Popover open={modelOpen} onOpenChange={setModelOpen}>
-          <PopoverTrigger asChild>
-            <button className="flex items-center gap-2 rounded-md px-3 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground">
-              <Text size="sm" weight="medium" truncate>
-                {activeModel || 'Select model'}
-              </Text>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className={cn(
-                  'text-muted-foreground transition-transform',
-                  modelOpen && 'rotate-180',
-                )}
-              >
-                <path d="m6 9 6 6 6-6" />
-              </svg>
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="center" className="w-64 p-1">
-            {models.map((model) => (
-              <button
-                key={model.name}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-                  model.name === activeModel
-                    ? 'bg-muted text-foreground'
-                    : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground',
-                )}
-                onClick={() => {
-                  switchModel(model.name);
-                  setModelOpen(false);
-                }}
-              >
-                {model.name === activeModel && (
-                  <Check size={14} className="shrink-0 text-green-500" />
-                )}
-                <span className="truncate">
-                  {model.displayName || model.name}
-                </span>
-              </button>
-            ))}
-          </PopoverContent>
-        </Popover>
-      </div>
-
-      {/* Right: quick actions */}
-      <div className="flex items-center gap-1">
-        <IconButton icon="search" size="sm" tooltip="Search" />
-      </div>
-    </header>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Mobile status bar
-// ---------------------------------------------------------------------------
-
-function StatusBarMobile() {
-  const { connectionState } = useWebSocket();
-  return (
-    <div className="flex items-center justify-center gap-3 border-t border-border/50 bg-background/30 px-4 py-1.5 lg:hidden">
-      <div className="flex items-center gap-1.5">
-        <div
-          className={cn(
-            'h-1.5 w-1.5 rounded-full',
-            connectionState === 'connected' ? 'bg-green-500' : 'bg-red-500',
-          )}
-        />
-        <Text size="xs" className="text-muted-foreground">
-          {connectionState === 'connected' ? 'Connected' : 'Disconnected'}
-        </Text>
+      {/* Context usage circle */}
+      <div
+        className="relative flex h-8 w-8 shrink-0 items-center justify-center"
+        title="Context usage"
+      >
+        <svg viewBox="0 0 36 36" className="h-8 w-8 -rotate-90">
+          <circle
+            cx="18"
+            cy="18"
+            r="15.915"
+            fill="none"
+            stroke="var(--color-muted)"
+            strokeWidth="3"
+          />
+          <circle
+            cx="18"
+            cy="18"
+            r="15.915"
+            fill="none"
+            stroke={color}
+            strokeWidth="3"
+            strokeDasharray={`${pct} 100`}
+            strokeLinecap="round"
+          />
+        </svg>
+        <span className="absolute text-[8px] font-medium text-muted-foreground">
+          {pct}%
+        </span>
       </div>
     </div>
   );
@@ -184,23 +83,28 @@ function StatusBarMobile() {
 
 export function MainLayout({ className }: { className?: string }) {
   const { sessions, switchSession, renameSession, deleteSession } = useSession();
-  const { addProject: addProjectCtx, setCurrentProject } = useProject();
+  const {
+    projects,
+    addProject: addProjectCtx,
+    renameProject,
+    removeProject,
+  } = useProject();
+  const { send } = useWebSocket();
+
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Session rename / delete
   const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
   const [deleteSessionId, setDeleteSessionId] = useState<string | null>(null);
+
+  // Project modify / delete
+  const [modifyProjectId, setModifyProjectId] = useState<string | null>(null);
+  const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
+
+  // New project
   const [addProjectOpen, setAddProjectOpen] = useState(false);
-
-  const handleSessionSelect = (sessionId: string, projectId: string) => {
-    switchSession(sessionId, projectId);
-  };
-
-  const handleSessionRename = (sessionId: string) => {
-    setRenameSessionId(sessionId);
-  };
-
-  const handleSessionDelete = (sessionId: string) => {
-    setDeleteSessionId(sessionId);
-  };
 
   const renameSessionTarget = renameSessionId
     ? sessions.find((s) => s.id === renameSessionId) ?? null
@@ -208,14 +112,12 @@ export function MainLayout({ className }: { className?: string }) {
   const deleteSessionTarget = deleteSessionId
     ? sessions.find((s) => s.id === deleteSessionId) ?? null
     : null;
-
-  const handleAddProject = async (name: string) => {
-    try {
-      await addProjectCtx(name);
-    } catch {
-      /* provider logs */
-    }
-  };
+  const modifyProject = modifyProjectId
+    ? projects.find((p) => p.id === modifyProjectId) ?? null
+    : null;
+  const deleteProject = deleteProjectId
+    ? projects.find((p) => p.id === deleteProjectId) ?? null
+    : null;
 
   return (
     <div
@@ -224,37 +126,44 @@ export function MainLayout({ className }: { className?: string }) {
         className,
       )}
     >
-      {/* Sidebar */}
-      <div className="flex-shrink-0">
-        <Sidebar
-          onSessionSelect={handleSessionSelect}
-          onSessionRename={handleSessionRename}
-          onSessionDelete={handleSessionDelete}
-          onProjectSelect={(projectId) => {
-            void setCurrentProject(projectId).catch(() => {});
-          }}
-          onAddProject={() => setAddProjectOpen(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
-      </div>
+      {/* Sidebar (desktop + mobile drawer) */}
+      <Sidebar
+        mobileOpen={mobileOpen}
+        onMobileOpenChange={setMobileOpen}
+        onSessionSelect={(sessionId, projectId) =>
+          switchSession(sessionId, projectId)
+        }
+        onSessionRename={(sessionId) => setRenameSessionId(sessionId)}
+        onSessionDelete={(sessionId) => setDeleteSessionId(sessionId)}
+        onProjectNewSession={(projectId) =>
+          send('session:create', { projectId })
+        }
+        onProjectModify={(projectId) => setModifyProjectId(projectId)}
+        onProjectDelete={(projectId) => setDeleteProjectId(projectId)}
+        onAddProject={() => setAddProjectOpen(true)}
+        onOpenSearch={() => setSearchOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
       {/* Main content area */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar />
-        <ChatPanel />
+        <MobileTopBar onMenu={() => setMobileOpen(true)} />
+        <ChatPanel className="pt-14 md:pt-0" />
         <VoicePanel />
-        <StatusBarMobile />
       </div>
 
       {/* Overlays & sync */}
       <SessionSync />
       <BrowserView />
       <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SearchModal open={searchOpen} onOpenChange={setSearchOpen} />
 
       {/* Session rename */}
       <RenameModal
         open={renameSessionId !== null}
-        onOpenChange={(open) => { if (!open) setRenameSessionId(null); }}
+        onOpenChange={(open) => {
+          if (!open) setRenameSessionId(null);
+        }}
         title="Rename session"
         currentValue={renameSessionTarget?.title}
         placeholder="Session name"
@@ -267,7 +176,9 @@ export function MainLayout({ className }: { className?: string }) {
       {/* Session delete confirm */}
       <ConfirmModal
         open={deleteSessionId !== null}
-        onOpenChange={(open) => { if (!open) setDeleteSessionId(null); }}
+        onOpenChange={(open) => {
+          if (!open) setDeleteSessionId(null);
+        }}
         title="Delete session"
         message={
           deleteSessionTarget
@@ -282,6 +193,41 @@ export function MainLayout({ className }: { className?: string }) {
         }}
       />
 
+      {/* Project modify (rename) */}
+      <RenameModal
+        open={modifyProjectId !== null}
+        onOpenChange={(open) => {
+          if (!open) setModifyProjectId(null);
+        }}
+        title="Modify Project"
+        currentValue={modifyProject?.name}
+        placeholder="Project name"
+        onSave={(name) => {
+          if (modifyProjectId) {
+            void renameProject(modifyProjectId, name).catch(() => {});
+          }
+          setModifyProjectId(null);
+        }}
+      />
+
+      {/* Project delete confirm */}
+      <ConfirmModal
+        open={deleteProjectId !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteProjectId(null);
+        }}
+        title={`Delete “${deleteProject?.name || 'project'}”?`}
+        message="All sessions in this project will be deleted. The workspace folder will be kept."
+        confirmText="Delete"
+        variant="danger"
+        onConfirm={() => {
+          if (deleteProjectId) {
+            void removeProject(deleteProjectId).catch(() => {});
+          }
+          setDeleteProjectId(null);
+        }}
+      />
+
       {/* New project */}
       <RenameModal
         open={addProjectOpen}
@@ -291,7 +237,7 @@ export function MainLayout({ className }: { className?: string }) {
         placeholder="Project name"
         onSave={(name) => {
           setAddProjectOpen(false);
-          void handleAddProject(name);
+          void addProjectCtx(name).catch(() => {});
         }}
       />
     </div>

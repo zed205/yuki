@@ -270,6 +270,8 @@ export interface SubAgentInfo {
   thinking?: string;
   /** Tool calls issued by this sub-agent (subagent:tool_call / tool_result). */
   toolCalls?: ToolCallEntry[];
+  /** Client-side: when the last event for this agent was received (ms). */
+  baseAt?: number;
 }
 
 export interface SubAgentSnapshot {

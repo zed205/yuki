@@ -112,7 +112,14 @@ export function SessionSync() {
       unsubs.push(on(type, () => void refreshTree()));
     }
 
-    return () => unsubs.forEach((u) => u());
+    // Local refresh requests (e.g. after a project reorder via DnD).
+    const onLocal = () => void refreshTree();
+    window.addEventListener('yukiweb:refresh-tree', onLocal);
+
+    return () => {
+      unsubs.forEach((u) => u());
+      window.removeEventListener('yukiweb:refresh-tree', onLocal);
+    };
   }, [messageRouter, setSessions, setProjects]);
 
   return null;
