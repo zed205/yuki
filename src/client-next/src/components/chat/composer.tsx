@@ -243,7 +243,7 @@ export function Composer(props: ComposerProps) {
             isFocused && 'border-[#58a6ff]/50',
           )}
         >
-          <div className="flex flex-1 flex-col">
+          <div className="order-2 flex flex-1 flex-col">
             <textarea
               ref={textareaRef}
               rows={1}
@@ -259,9 +259,8 @@ export function Composer(props: ComposerProps) {
             />
           </div>
 
-          {/* Left actions: options menu + paperclip */}
-          <div className="flex items-center gap-0.5 px-1 pb-1">
-            {/* ⋮ Options menu (legacy parity) */}
+          {/* ⋮ Options menu (legacy parity — options live on the left of the input) */}
+          <div className="order-1 flex items-center gap-0.5 pl-1 pb-1">
             <div ref={optionsMenuRef} className="relative">
               <button
                 type="button"
@@ -505,6 +504,10 @@ export function Composer(props: ComposerProps) {
               )}
             </div>
 
+          </div>
+
+          {/* Right actions: paperclip (new-client enhancement) + Stop (legacy parity — only visible while streaming) */}
+          <div className="order-3 flex items-center gap-0.5 pr-1 pb-1">
             {/* Paperclip */}
             <button
               type="button"
@@ -522,10 +525,6 @@ export function Composer(props: ComposerProps) {
                 accept="image/*,.pdf,.txt,.json,.xml,.yaml,.yml,.md,.csv"
               />
             </button>
-          </div>
-
-          {/* Right action: Stop button (legacy parity — only visible while streaming) */}
-          <div className="flex items-center gap-0.5 px-1 pb-1">
             {isBusy && (
               <button
                 type="button"
