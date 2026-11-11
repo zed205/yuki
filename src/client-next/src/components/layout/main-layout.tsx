@@ -16,6 +16,8 @@ import { RenameModal } from '@/components/modals/rename-modal';
 import { ConfirmModal } from '@/components/modals/confirm-modal';
 import { SearchModal } from '@/components/modals/search-modal';
 import { AddProjectModal } from '@/components/modals/add-project-modal';
+import { useGlobalShortcuts } from '@/hooks/use-global-shortcuts';
+import { useBrowser } from '@/context/browser-context';
 
 // ---------------------------------------------------------------------------
 // Mobile top bar (legacy `#top-bar`): hamburger + logo + context ring
@@ -92,6 +94,7 @@ export function MainLayout({ className }: { className?: string }) {
     removeProject,
   } = useProject();
   const { send } = useWebSocket();
+  const browser = useBrowser();
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -107,6 +110,9 @@ export function MainLayout({ className }: { className?: string }) {
 
   // New project
   const [addProjectOpen, setAddProjectOpen] = useState(false);
+
+  // Global keyboard shortcuts + ambient behaviors (search, voice, notifications).
+  useGlobalShortcuts(() => setSearchOpen(true));
 
   const renameSessionTarget = renameSessionId
     ? sessions.find((s) => s.id === renameSessionId) ?? null
@@ -144,6 +150,7 @@ export function MainLayout({ className }: { className?: string }) {
         onProjectDelete={(projectId) => setDeleteProjectId(projectId)}
         onAddProject={() => setAddProjectOpen(true)}
         onOpenSearch={() => setSearchOpen(true)}
+        onToggleBrowser={() => browser.setVisible(!browser.visible)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FolderPlus, Search, Settings } from 'lucide-react';
+import { FolderPlus, Search, Settings, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
 import { useWebSocket } from '@/context/websocket-context';
@@ -37,6 +37,7 @@ export interface SidebarProps {
   onProjectDelete?: (projectId: string) => void;
   onAddProject?: () => void;
   onOpenSearch?: () => void;
+  onToggleBrowser?: () => void;
   onOpenSettings?: () => void;
   mobileOpen: boolean;
   onMobileOpenChange: (open: boolean) => void;
@@ -182,6 +183,14 @@ function SidebarInner({
           >
             <Search size={16} className="-mt-0.5" />
             Search
+          </button>
+          <button
+            type="button"
+            className="flex shrink-0 items-center justify-center rounded-md border border-border px-3 py-2 text-sm transition-colors hover:bg-muted hover:text-primary"
+            title="Browser panel"
+            onClick={props.onToggleBrowser}
+          >
+            <Globe size={16} className="-mt-0.5" />
           </button>
         </div>
       </div>

@@ -195,6 +195,49 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     currentSessionRef.current = currentSessionId;
   }, [currentSessionId]);
+
+  // Desktop notification on turn-complete (legacy `notifyCompletion`).
+  const notificationsEnabledRef = useRef(true);
+  useEffect(() => {
+    notificationsEnabledRef.current = notificationsEnabled;
+  }, [notificationsEnabled]);
+
+  // Stored in a ref so the (once-registered) WS handler never sees a stale fn.
+  const notifyCompletionRef = useRef<(message: string) => void>(() => {});
+  notifyCompletionRef.current = (message: string) => {
+    if (!notificationsEnabledRef.current) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    // Notify only when the app isn't the active window (covers minimized AND
+    // merely covered — document.hidden stays false in the latter case).
+    if (document.hasFocus()) return;
+    try {
+      const body = message ? message.slice(0, 140) : 'Yuki finished the task.';
+      const n = new Notification('Yuki — task complete', {
+        body,
+        tag: 'yuki-complete',
+      });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+      };
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Request Notification permission while enabled (legacy parity).
+  useEffect(() => {
+    if (!notificationsEnabled) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      try {
+        void Notification.requestPermission();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [notificationsEnabled]);
   const pendingCompactionRefreshRef = useRef(false);
 
   const setConfig = useCallback((v: Partial<SessionConfig>) => {
@@ -749,6 +792,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           };
           return next;
         });
+        // Turn-complete desktop notification (final answer, no pending tools).
+        if (rd.message && !rd.toolCalls?.length) {
+          notifyCompletionRef.current(rd.message);
+        }
       }),
     );
 
@@ -817,6 +864,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         };
         const tc = td.toolCall;
         if (!tc?.id) return;
+        // Auto-open the browser panel when the agent uses a browser tool.
+        if (typeof window !== 'undefined' && tc.name.startsWith('browser_')) {
+          window.dispatchEvent(new CustomEvent('yukiweb:browser-tool'));
+        }
         setMessages((prev) => {
           const idx = prev.findIndex(
             (m) => m.role === 'assistant' && (m.isStreaming || m.id === streamingIdRef.current),

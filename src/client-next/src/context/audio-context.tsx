@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useWebSocket } from './websocket-context';
 
 /**
  * AudioContext — manages audio state for the voice pipeline.
@@ -57,6 +58,7 @@ export interface AudioContextValue {
 const AudioContext = createContext<AudioContextValue | null>(null);
 
 export function AudioProvider({ children }: { children: ReactNode }) {
+  const { send } = useWebSocket();
   const [voiceMode, setVoiceMode] = useState(false);
   const [mic, setMic] = useState(false);
   const [tts, setTts] = useState(true);
@@ -80,33 +82,16 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const toggleVoiceMode = useCallback(async () => {
     const next = !voiceMode;
+    // Optimistic update; the server echoes the authoritative state back over
+    // `voice:status`. Voice mode is toggled via WS (legacy parity) — the REST
+    // endpoint does not exist on the backend.
     setVoiceMode(next);
-    setVoiceStatus('connecting');
     setListening(false);
     setSpeaking(false);
-
-    try {
-      const res = await fetch('/api/voice/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: next }),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        setVoiceMode(!next);
-        setVoiceStatus('error');
-        setError(data.error || 'Failed to toggle voice mode');
-      } else if (next) {
-        setVoiceStatus('connecting');
-      } else {
-        setVoiceStatus('idle');
-      }
-    } catch (err) {
-      setVoiceMode(!next);
-      setVoiceStatus('error');
-      setError(err instanceof Error ? err.message : 'Failed to toggle voice mode');
-    }
-  }, [voiceMode]);
+    setVoiceStatus(next ? 'connecting' : 'idle');
+    setError(null);
+    send('voice:toggle', { enabled: next });
+  }, [voiceMode, send]);
 
   const toggleMic = useCallback(() => {
     const next = !mic;

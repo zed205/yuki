@@ -1,97 +1,104 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { cn } from '@/lib/utils';
 import { useBrowser } from '@/context/browser-context';
-import { BrowserToolbar } from './browser-toolbar';
-import { Icon } from '@/components/ui/icon';
+import { useWebSocket } from '@/context/websocket-context';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 /**
- * Browser view container: floating panel with toolbar + iframe/screenshot.
- * React port of the SolidJS BrowserView.
+ * Browser panel (legacy `#browser-panel` parity): a floating 700x500 window,
+ * bottom-right. The server runs a real Playwright browser driven by the
+ * agent; this panel shows a screenshot of it. "Go" issues the navigation as a
+ * chat instruction (`Navigate to {url}`); the camera button fetches the latest
+ * server screenshot.
  */
 export function BrowserView() {
   const browser = useBrowser();
-  const [isMounted, setIsMounted] = useState(false);
+  const { send } = useWebSocket();
+  const [inputValue, setInputValue] = useState(browser.url || '');
 
-  // Animate mount to avoid flash
+  // Refresh the screenshot whenever the panel is opened.
   useEffect(() => {
-    const t = setTimeout(() => setIsMounted(true), 10);
-    return () => clearTimeout(t);
-  }, []);
+    if (browser.visible) void browser.takeScreenshot();
+  }, [browser.visible, browser.takeScreenshot]);
+
+  // Auto-open when the agent uses a browser tool (dispatched by session context).
+  useEffect(() => {
+    const onBrowserTool = () => browser.setVisible(true);
+    window.addEventListener('yukiweb:browser-tool', onBrowserTool);
+    return () => window.removeEventListener('yukiweb:browser-tool', onBrowserTool);
+  }, [browser.setVisible]);
 
   if (!browser.visible) return null;
 
+  const handleGo = () => {
+    const url = inputValue.trim();
+    if (!url) return;
+    browser.setUrl(url);
+    send('chat:message', { message: `Navigate to ${url}` });
+  };
+
   return (
-    <div
-      className={cn(
-        'fixed bottom-0 right-0 z-40 flex h-[500px] max-h-[70vh] w-[800px] max-w-[90vw] flex-col',
-        'rounded-tl-lg border-t border-r border-border bg-background shadow-2xl',
-        'transition-all duration-200 ease-out',
-        isMounted ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0',
-      )}
-    >
-      <BrowserToolbar />
+    <div className="fixed bottom-24 right-4 z-50 flex h-[500px] max-h-[80vh] w-[700px] max-w-[95vw] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted px-3 py-2">
+        <h2 className="text-sm font-semibold">Browser</h2>
+        <div className="flex items-center gap-2">
+          <Input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleGo();
+            }}
+            placeholder="Enter URL"
+            className="h-7 w-40 text-xs"
+          />
+          <Button size="sm" className="h-7 px-3 text-xs" onClick={handleGo}>
+            Go
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            title="Take screenshot"
+            disabled={browser.isLoading}
+            onClick={() => void browser.takeScreenshot()}
+          >
+            📷
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-3 text-xs hover:border-red-500 hover:text-red-500"
+            onClick={browser.closeBrowser}
+          >
+            Close
+          </Button>
+        </div>
+      </div>
 
-      <div className="relative flex-1 overflow-hidden">
-        {/* Iframe mode */}
-        {browser.viewMode === 'iframe' && (
-          <>
-            <iframe
-              src={browser.url || 'about:blank'}
-              title="Browser View"
-              className="h-full w-full bg-background"
-              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-              onLoad={() => browser.setLoading(false)}
-              onError={() => {
-                browser.setError('Failed to load page');
-                browser.setLoading(false);
-              }}
-            />
-            {browser.isLoading && (
-              <div className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-                <div className="flex flex-col items-center gap-3">
-                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  <span className="text-xs text-muted-foreground">Loading page...</span>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Screenshot mode */}
-        {browser.viewMode === 'screenshot' && (
-          <div className="flex h-full w-full flex-col items-center justify-center bg-muted">
-            {browser.screenshot ? (
-              <img
-                src={browser.screenshot.dataUrl}
-                alt="Browser screenshot"
-                className="max-h-full max-w-full object-contain"
-                onLoad={() => browser.setLoading(false)}
-              />
-            ) : (
-              <div className="flex flex-col items-center gap-3">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <span className="text-xs text-muted-foreground">Taking screenshot...</span>
-              </div>
-            )}
+      {/* Body */}
+      <div className="relative flex-1 overflow-hidden bg-background">
+        {browser.error ? (
+          <div className="flex h-full items-center justify-center p-4 text-center text-sm text-red-500">
+            {browser.error}
           </div>
-        )}
-
-        {/* Error state */}
-        {browser.error && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background">
-            <Icon name="x" size={24} className="text-red-500" />
-            <span className="text-sm text-red-500">{browser.error}</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => browser.navigate(browser.url)}
-            >
-              <Icon name="refresh" size={14} className="mr-1" />
-              Retry
-            </Button>
+        ) : browser.screenshot ? (
+          <img
+            src={browser.screenshot}
+            alt="Browser screenshot"
+            className="h-full w-full object-contain"
+          />
+        ) : browser.isLoading ? (
+          <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            Taking screenshot…
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
+            No screenshot yet — press 📷 or ask Yuki to browse a page.
           </div>
         )}
       </div>

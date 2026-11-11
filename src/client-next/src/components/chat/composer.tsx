@@ -13,6 +13,7 @@ import { Paperclip, MoreVertical, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
 import { useWebSocket } from '@/context/websocket-context';
+import { useAudio } from '@/context/audio-context';
 import { ToolsModal } from '@/components/modals/tools-modal';
 import { ModelsModal } from '@/components/modals/models-modal';
 
@@ -57,8 +58,11 @@ export function Composer(props: ComposerProps) {
     thinkingEnabled,
     compactContext,
     compactState,
+    notificationsEnabled,
+    setNotificationsEnabled,
   } = useSession();
   const { send } = useWebSocket();
+  const audio = useAudio();
   const [showTools, setShowTools] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [value, setValue] = useState('');
@@ -365,6 +369,7 @@ export function Composer(props: ComposerProps) {
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => void audio.toggleVoiceMode()}
                     >
                       <svg
                         width="16"
@@ -381,13 +386,16 @@ export function Composer(props: ComposerProps) {
                         <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
                       </svg>
                       <span className="flex-1">Voice Mode</span>
-                      <span className="text-xs text-[#8b949e]">Off</span>
+                      <span className="text-xs text-[#8b949e]">
+                        {audio.voiceMode ? 'On' : 'Off'}
+                      </span>
                     </button>
 
                     {/* Speak */}
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => audio.toggleMic()}
                     >
                       <svg
                         width="16"
@@ -404,13 +412,16 @@ export function Composer(props: ComposerProps) {
                         <line x1="8" y1="23" x2="16" y2="23" />
                       </svg>
                       <span className="flex-1">Speak</span>
-                      <span className="text-xs text-[#8b949e]">Idle</span>
+                      <span className="text-xs text-[#8b949e]">
+                        {audio.voiceListening ? 'Listening…' : 'Idle'}
+                      </span>
                     </button>
 
                     {/* Auto TTS */}
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => audio.toggleTts()}
                     >
                       <svg
                         width="16"
@@ -426,13 +437,16 @@ export function Composer(props: ComposerProps) {
                         <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
                       </svg>
                       <span className="flex-1">Auto TTS</span>
-                      <span className="text-xs text-[#8b949e]">Off</span>
+                      <span className="text-xs text-[#8b949e]">
+                        {audio.ttsEnabled ? 'On' : 'Off'}
+                      </span>
                     </button>
 
                     {/* Notifications */}
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => setNotificationsEnabled(!notificationsEnabled)}
                     >
                       <svg
                         width="16"
@@ -449,7 +463,9 @@ export function Composer(props: ComposerProps) {
                         <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                       </svg>
                       <span className="flex-1">Notifications</span>
-                      <span className="text-xs text-[#8b949e]">Off</span>
+                      <span className="text-xs text-[#8b949e]">
+                        {notificationsEnabled ? 'On' : 'Off'}
+                      </span>
                     </button>
 
                     <div className="border-t border-[#30363d] my-1" />
