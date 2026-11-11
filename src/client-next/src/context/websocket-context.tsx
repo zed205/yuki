@@ -72,6 +72,8 @@ export interface WebSocketMessage {
 interface WebSocketContextValue {
   isConnected: boolean;
   connectionState: 'connected' | 'connecting' | 'disconnected' | 'error';
+  /** The WebSocket endpoint URL used for the connection. */
+  endpoint: string;
   connect: () => void;
   disconnect: () => void;
   send: (type: string, data?: unknown) => boolean;
@@ -230,6 +232,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     () => ({
       isConnected,
       connectionState,
+      endpoint: defaultWsUrl(),
       connect,
       disconnect,
       send,

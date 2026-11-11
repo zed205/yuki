@@ -5,6 +5,9 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import { WebSocketProvider } from "@/context/websocket-context";
 import { ToasterProvider } from "@/components/toast/toaster-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AudioProvider } from "@/context/audio-context";
+import { ProjectProvider } from "@/context/project-context";
+import { SessionProvider } from "@/context/session-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -34,7 +37,13 @@ export default function RootLayout({
         <ThemeProvider>
           <WebSocketProvider>
             <ToasterProvider>
-              <TooltipProvider>{children}</TooltipProvider>
+              <AudioProvider>
+                <ProjectProvider>
+                  <SessionProvider>
+                    <TooltipProvider>{children}</TooltipProvider>
+                  </SessionProvider>
+                </ProjectProvider>
+              </AudioProvider>
             </ToasterProvider>
           </WebSocketProvider>
         </ThemeProvider>

@@ -78,6 +78,8 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  /** Session ids belonging to this project (session count for display). */
+  sessions?: string[];
   createdAt?: Date | number;
   updatedAt?: Date | number;
 }
