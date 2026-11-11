@@ -7,7 +7,6 @@ import { useWebSocket } from '@/context/websocket-context';
 import { MessageBubble } from './message-bubble';
 import { Composer, type FileAttachment } from './composer';
 import { useScrollToBottom } from './scroll-manager';
-import { IconButton } from '@/components/ui/icon-button';
 import { Text } from '@/components/ui/box';
 import { PlanBar } from './plan-bar';
 import type { Message } from '@/lib/types';
@@ -85,7 +84,7 @@ export function ChatPanel(props: ChatPanelProps) {
     forkSession,
     revertMessage,
   } = useSession();
-  const { voiceMode, voiceListening, toggleMic } = useAudio();
+  const { voiceMode } = useAudio();
   const { containerRef } = useScrollToBottom();
 
   const handleSend = (content: string, attachments: FileAttachment[]) => {
@@ -199,21 +198,6 @@ export function ChatPanel(props: ChatPanelProps) {
           voiceMode ? 'Voice mode is on — speak or tap the mic' : 'Type a message...'
         }
       />
-      {/* Voice mic shortcut row (kept minimal; full voice UI lands in Phase 7) */}
-      {voiceMode && (
-        <div className="flex items-center justify-center gap-2 border-t border-border/50 bg-background/50 px-4 py-1.5">
-          <IconButton
-            icon={voiceListening ? 'mic' : 'mic-off'}
-            size="sm"
-            tooltip={voiceListening ? 'Listening...' : 'Mic off'}
-            className={voiceListening ? 'animate-pulse text-primary' : undefined}
-            onClick={() => toggleMic()}
-          />
-          <Text size="xs" className="text-muted-foreground">
-            {voiceListening ? 'Listening…' : 'Voice mode active'}
-          </Text>
-        </div>
-      )}
     </main>
   );
 }

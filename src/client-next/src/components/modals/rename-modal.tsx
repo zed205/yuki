@@ -66,6 +66,27 @@ export function RenameModal(props: RenameModalProps) {
     }
   };
 
+  // Legacy parity: prefer the native directory picker (showDirectoryPicker),
+  // falling back to the server-side folder browser when it's unavailable.
+  const handleBrowse = async () => {
+    const picker = (window as unknown as {
+      showDirectoryPicker?: (opts?: { mode?: string }) => Promise<{ path?: string; name: string }>;
+    }).showDirectoryPicker;
+    if (typeof picker === 'function') {
+      try {
+        const handle = await picker.call(window, { mode: 'readonly' });
+        const dir = handle?.path || handle?.name || '';
+        if (dir) {
+          setPath(dir);
+          return;
+        }
+      } catch {
+        // Cancelled or unsupported → fall through to the folder browser.
+      }
+    }
+    setBrowseOpen(true);
+  };
+
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent className="max-w-md">
@@ -101,7 +122,7 @@ export function RenameModal(props: RenameModalProps) {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setBrowseOpen(true)}
+                  onClick={() => void handleBrowse()}
                 >
                   Browse…
                 </Button>

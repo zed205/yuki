@@ -48,6 +48,43 @@ function readAsDataUrl(file: File): Promise<string> {
 }
 
 /**
+ * Downscale an image data URL to at most maxDim on its longest edge and
+ * re-encode as JPEG (mirrors the legacy composer: maxDim 800, quality 0.5).
+ * Already-small or non-decodable inputs pass through untouched.
+ */
+function compressImage(dataUrl: string, maxDim = 800, quality = 0.5): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (!width || !height || (width <= maxDim && height <= maxDim)) {
+        resolve(dataUrl);
+        return;
+      }
+      if (width > height) {
+        height = Math.round((height * maxDim) / width);
+        width = maxDim;
+      } else {
+        width = Math.round((width * maxDim) / height);
+        height = maxDim;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+/**
  * Message input composer with textarea, send/stop buttons, and
  * file/image attachment support (paste, picker, drag-and-drop).
  */
@@ -85,15 +122,19 @@ export function Composer(props: ComposerProps) {
   const addFiles = useCallback(async (files: FileList | File[]) => {
     for (const file of Array.from(files)) {
       try {
-        const dataUrl = await readAsDataUrl(file);
+        const isImage = file.type.startsWith('image/');
+        const rawUrl = await readAsDataUrl(file);
+        // Compress pasted/dropped/picked images like the legacy client (maxDim 800, jpeg 0.5).
+        const dataUrl = isImage ? await compressImage(rawUrl, 800, 0.5) : rawUrl;
         setAttachments((prev) => [
           ...prev,
           {
-            type: file.type.startsWith('image/') ? 'image' : 'file',
+            type: isImage ? 'image' : 'file',
             name: file.name,
             dataUrl,
             file,
-            size: file.size,
+            // Approximate post-compression byte size for display (base64 → bytes).
+            size: isImage ? Math.round(dataUrl.length * 0.75) : file.size,
           },
         ]);
       } catch {
@@ -182,6 +223,18 @@ export function Composer(props: ComposerProps) {
   const hasAttachments = attachments.length > 0;
   const isBusy = isWaiting || isStreaming;
 
+  // Voice status pill (legacy parity — shown above the input only while voice is active).
+  const voicePill = (() => {
+    if (!audio.voiceMode || audio.voiceStatus === 'idle') return null;
+    const map: Record<string, { dot: string; label: string }> = {
+      listening: { dot: 'bg-[#3fb950]', label: 'Listening…' },
+      connecting: { dot: 'bg-yellow-400', label: 'Connecting…' },
+      speaking: { dot: 'bg-[#58a6ff]', label: 'Speaking…' },
+      error: { dot: 'bg-[#f85149]', label: 'Voice error' },
+    };
+    return map[audio.voiceStatus] ?? { dot: 'bg-[#3fb950]', label: 'Listening…' };
+  })();
+
   const placeholder = props.placeholder || 'Type a message...';
 
   return (
@@ -230,6 +283,16 @@ export function Composer(props: ComposerProps) {
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Voice status pill (legacy parity — above the input, hidden when voice is off) */}
+        {voicePill && (
+          <div className="mb-2 flex items-center justify-center">
+            <div className="flex items-center gap-2 rounded-full border border-[#30363d] bg-[#161b22] px-4 py-1.5 text-xs text-[#8b949e]">
+              <span className={cn('h-2 w-2 animate-pulse rounded-full', voicePill.dot)} />
+              <span>{voicePill.label}</span>
+            </div>
           </div>
         )}
 
