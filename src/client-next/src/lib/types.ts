@@ -52,6 +52,24 @@ export interface Message {
   source?: 'timer' | 'job';
   /** Client-side render flag: this message is actively streaming. */
   isStreaming?: boolean;
+  /**
+   * Client-only ephemeral entries (not persisted in the transcript):
+   * - observerFeedback: an amber "Observer" feedback block appended live
+   * - stoppedNotice: the centered "[Action stopped]" pill
+   * - agentId: a sub-agent bubble; live data is pulled from the subagents
+   *   state by agentId
+   */
+  observerFeedback?: ObserverFeedback;
+  stoppedNotice?: boolean;
+  agentId?: string;
+}
+
+// ─── Observer ────────────────────────────────────────────────────────────────
+
+export interface ObserverFeedback {
+  status?: 'on_track' | 'drifting' | 'stuck' | 'off_track' | 'complete' | string;
+  concern?: string;
+  suggestion?: string;
 }
 
 // ─── Session ─────────────────────────────────────────────────────────────────
@@ -64,6 +82,8 @@ export interface Session {
   title?: string;
   summary?: string;
   projectId?: string;
+  /** Message count for this session (from /api/tree). */
+  messageCount?: number;
   thinkingEnabled?: boolean;
   voiceMode?: boolean;
   disabledTools?: string[];
@@ -201,6 +221,33 @@ export interface ModelInfo {
   isDefault?: boolean;
 }
 
+// ─── Structured models (server getStructuredModels / /api/models) ────────────
+
+export interface StructuredVariant {
+  id: string;
+  name: string;
+  temperature: number | null;
+  thinkingEnabled: boolean | null;
+  preserveThinking: boolean | null;
+  reasoningEffort: string | null;
+  isDefault: boolean;
+  sortOrder: number;
+  /** Plain model name for the default variant, else "<model> / <variant>". */
+  qualifiedName: string;
+}
+
+export interface StructuredModel {
+  id: string;
+  name: string;
+  model: string;
+  endpoint: string;
+  apiKeyMasked?: string;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  sortOrder: number;
+  variants: StructuredVariant[];
+}
+
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 
 // ─── Sub-agents ──────────────────────────────────────────────────────────────
@@ -221,6 +268,8 @@ export interface SubAgentInfo {
   content?: string;
   /** Client-side streaming buffer for subagent:thinking chunks. */
   thinking?: string;
+  /** Tool calls issued by this sub-agent (subagent:tool_call / tool_result). */
+  toolCalls?: ToolCallEntry[];
 }
 
 export interface SubAgentSnapshot {

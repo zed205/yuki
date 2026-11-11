@@ -16,9 +16,11 @@ import type {
   Message,
   MCPServerStatus,
   ModelInfo,
+  ObserverFeedback,
   Plan,
   PlanStep,
   Session,
+  StructuredModel,
   SubAgentInfo,
   ToolCallEntry,
   ToolInfo,
@@ -94,6 +96,16 @@ export interface SessionContextValue {
   plan: Plan | null;
   subagents: SubAgentInfo[];
 
+  // Structured models (cards + variants) for the models modal
+  structuredModels: StructuredModel[];
+
+  // Compaction indicator state (Ready / Busy / Done / Failed)
+  compactState: 'ready' | 'busy' | 'done' | 'failed';
+
+  // When the server reverts a message it echoes the text back; the composer
+  // refills its input from this (nonce-bumped so repeats re-trigger).
+  revertFill: { text: string; nonce: number } | null;
+
   // Actions (WS-backed)
   sendMessage: (text: string) => boolean;
   stopResponse: () => void;
@@ -144,7 +156,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [mcpServers, setMcpServers] = useState<MCPServerStatus[]>([]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [subagents, setSubagents] = useState<SubAgentInfo[]>([]);
+  const [structuredModels, setStructuredModels] = useState<StructuredModel[]>([]);
+  const [compactState, setCompactState] = useState<'ready' | 'busy' | 'done' | 'failed'>('ready');
+  const [revertFill, setRevertFill] = useState<{ text: string; nonce: number } | null>(null);
   const { showToast, showSuccess, showError } = useToaster();
+
+  // Ref mirrors so WS handlers never read stale closures.
+  const isWaitingRef = useRef(false);
+  useEffect(() => {
+    isWaitingRef.current = isWaiting;
+  }, [isWaiting]);
+  const currentSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    currentSessionRef.current = currentSessionId;
+  }, [currentSessionId]);
+  const pendingCompactionRefreshRef = useRef(false);
 
   const setConfig = useCallback((v: Partial<SessionConfig>) => {
     setConfigState((prev) => ({ ...prev, ...v }));
@@ -195,6 +221,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Defer the post-compaction transcript refresh until the turn settles.
+  useEffect(() => {
+    if (!isWaiting && pendingCompactionRefreshRef.current) {
+      pendingCompactionRefreshRef.current = false;
+      const sid = currentSessionRef.current;
+      if (sid) void loadSession(sid);
+    }
+  }, [isWaiting, loadSession]);
+
   // Merge a sub-agent event into the subagents list.
   const upsertSubAgent = useCallback((agentId: string, patch: Partial<SubAgentInfo>) => {
     setSubagents((prev) => {
@@ -228,6 +263,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         };
         if (sd.models?.length) setModels(sd.models);
         if (sd.activeModel) setActiveModel(sd.activeModel);
+        // Structured models (cards + variants) for the models modal.
+        try {
+          const sm = (sd as Record<string, unknown>).structuredModels as
+            | StructuredModel[]
+            | undefined;
+          if (Array.isArray(sm) && sm.length) setStructuredModels(sm);
+        } catch {
+          /* ignore */
+        }
+        // Restore the persisted model choice (qualified variant name).
+        try {
+          const savedModel = localStorage.getItem('yukiweb_model');
+          if (savedModel && savedModel !== sd.activeModel) {
+            const sm = (sd as Record<string, unknown>).structuredModels as
+              | StructuredModel[]
+              | undefined;
+            const qualified = (sm || []).flatMap((m) =>
+              m.variants.map((v) => v.qualifiedName),
+            );
+            if (qualified.length ? qualified.includes(savedModel) : savedModel) {
+              send('model:switch', { modelName: savedModel });
+            }
+          }
+        } catch {
+          /* ignore */
+        }
         if (sd.sessionId) {
           setCurrentSessionId(sd.sessionId);
           setActiveSessionId(sd.sessionId);
@@ -299,7 +360,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           contextWindow?: number;
           thinkingEnabled?: boolean;
         };
-        if (md.activeModel) setActiveModel(md.activeModel);
+        if (md.activeModel) {
+          setActiveModel(md.activeModel);
+          // Persist the choice so it is restored on the next connect.
+          try {
+            localStorage.setItem('yukiweb_model', md.activeModel);
+          } catch {
+            /* ignore */
+          }
+        }
         if (md.contextWindow) setMaxTokens(md.contextWindow);
         if (typeof md.thinkingEnabled === 'boolean')
           setThinkingEnabled(md.thinkingEnabled);
@@ -312,6 +381,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           models?: Array<{ name: string; displayName?: string }>;
         };
         if (md.models?.length) setModels(md.models);
+        // Keep structured models fresh (server re-broadcasts after CRUD).
+        const sm = (data as Record<string, unknown>).models as unknown;
+        if (Array.isArray(sm) && sm.length && sm[0] && 'variants' in sm[0]) {
+          setStructuredModels(sm as StructuredModel[]);
+        } else {
+          // Fallback: refresh from the REST endpoint.
+          fetch('/api/models')
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+              if (d && Array.isArray(d.models)) setStructuredModels(d.models);
+            })
+            .catch(() => {});
+        }
       }),
     );
 
@@ -556,9 +638,47 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setIsWaiting(false);
         pendingChunkRef.current = '';
         streamingIdRef.current = null;
-        setMessages((prev) =>
-          prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+        setMessages((prev) => {
+          const next = prev.map((m) =>
+            m.isStreaming ? { ...m, isStreaming: false } : m,
+          );
+          return [
+            ...next,
+            {
+              id: `stopped-${Date.now()}`,
+              role: 'system' as const,
+              content: '',
+              timestamp: new Date(),
+              stoppedNotice: true,
+            },
+          ];
+        });
+        // Cancel any in-flight sub-agent bubbles (legacy parity).
+        setSubagents((prev) =>
+          prev.map((a) =>
+            a.status === 'running' || a.status === 'queued'
+              ? { ...a, status: 'cancelled' }
+              : a,
+          ),
         );
+      }),
+    );
+
+    unsubs.push(
+      on('observer:feedback', (data) => {
+        const od = data as { feedback?: ObserverFeedback; sessionId?: string };
+        const fb = od.feedback;
+        if (!fb || (!fb.concern && !fb.suggestion)) return;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `observer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'system' as const,
+            content: '',
+            timestamp: new Date(),
+            observerFeedback: fb,
+          },
+        ]);
       }),
     );
 
@@ -676,6 +796,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (rd.messageId) {
           setMessages((prev) => prev.filter((m) => m.id !== rd.messageId));
         }
+        // Refill + refocus the composer with the reverted text.
+        setRevertFill({ text: rd.text ?? '', nonce: Date.now() });
+        const sid = currentSessionRef.current;
+        if (sid) void loadSession(sid);
       }),
     );
 
@@ -751,19 +875,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // --- Context compaction ---
 
     unsubs.push(
-      on('context:compacted', (data) => {
-        const cd = data as { savedTokens?: number; messagesCompacted?: number };
-        showToast(
-          `Context compacted — ${cd.messagesCompacted ?? 0} messages summarized (saved ~${cd.savedTokens ?? 0} tokens)`,
-          'success',
-        );
+      on('context:compacted', () => {
+        setCompactState('done');
+        // Refresh the transcript so the freshly-written summary shows up in
+        // history; defer until the turn settles if the model is mid-turn.
+        const sid = currentSessionRef.current;
+        if (sid) {
+          if (!isWaitingRef.current) {
+            void loadSession(sid);
+          } else {
+            pendingCompactionRefreshRef.current = true;
+          }
+        }
+        setTimeout(() => {
+          if (!isWaitingRef.current) setCompactState('ready');
+        }, 3000);
       }),
     );
 
     unsubs.push(
       on('context:compact-failed', (data) => {
-        const cd = data as { error?: string };
-        showError(cd.error || 'Context compaction failed');
+        const cd = data as { error?: string; reason?: string };
+        showError(cd.error || cd.reason || 'Context compaction failed');
+        setCompactState('failed');
+        setTimeout(() => {
+          if (!isWaitingRef.current) setCompactState('ready');
+        }, 3000);
       }),
     );
 
@@ -797,10 +934,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     // --- Sub-agents ---
 
+    // Ensure an in-chat agent bubble exists for a live agent (idempotent).
+    const ensureAgentBubble = (agentId: string) => {
+      setMessages((prev) =>
+        prev.some((m) => m.agentId === agentId)
+          ? prev
+          : [
+              ...prev,
+              {
+                id: `agent-${agentId}`,
+                role: 'system' as const,
+                content: '',
+                timestamp: new Date(),
+                agentId,
+              },
+            ],
+      );
+    };
+
     unsubs.push(
       on('subagent:list', (data) => {
         const sd = data as { agents?: SubAgentInfo[] };
-        if (sd.agents) setSubagents(sd.agents);
+        if (sd.agents) {
+          setSubagents(sd.agents);
+          // Recreate feed bubbles for agents that are still alive (after a
+          // session switch the old bubbles are gone).
+          for (const a of sd.agents) {
+            if (a.status === 'running' || a.status === 'queued') {
+              ensureAgentBubble(a.agentId);
+            }
+          }
+        }
       }),
     );
 
@@ -819,6 +983,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         } else {
           upsertSubAgent(agentId, rest);
         }
+        // A spawn (or a still-alive agent announced via status) gets its own
+        // light-blue bubble in the message stream.
+        if (type === 'subagent:spawn' || type === 'subagent:status') {
+          ensureAgentBubble(agentId);
+        }
       });
 
     unsubs.push(
@@ -826,6 +995,63 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       subAgentUpsert('subagent:status'),
       subAgentUpsert('subagent:done'),
       subAgentUpsert('subagent:kill-result'),
+    );
+
+    unsubs.push(
+      on('subagent:tool_call', (data) => {
+        const d = data as {
+          agentId?: string;
+          toolCall?: { id: string; name: string; parameters?: Record<string, unknown> };
+        };
+        if (!d.agentId || !d.toolCall?.id) return;
+        const tc = d.toolCall;
+        setSubagents((prev) =>
+          prev.map((a) => {
+            if (a.agentId !== d.agentId) return a;
+            const existing = a.toolCalls || [];
+            if (existing.some((t) => t.id === tc.id)) return a;
+            return {
+              ...a,
+              toolCalls: [
+                ...existing,
+                {
+                  id: tc.id,
+                  name: tc.name,
+                  parameters: tc.parameters || {},
+                  status: 'running' as const,
+                },
+              ],
+            };
+          }),
+        );
+      }),
+    );
+
+    unsubs.push(
+      on('subagent:tool_result', (data) => {
+        const d = data as {
+          agentId?: string;
+          toolCallId?: string;
+          result?: string;
+          status?: string;
+        };
+        if (!d.agentId || !d.toolCallId) return;
+        const status: ToolCallEntry['status'] =
+          d.status === 'error' ? 'error' : 'completed';
+        setSubagents((prev) =>
+          prev.map((a) => {
+            if (a.agentId !== d.agentId || !a.toolCalls?.length) return a;
+            return {
+              ...a,
+              toolCalls: a.toolCalls.map((t) =>
+                t.id === d.toolCallId
+                  ? { ...t, result: d.result, status }
+                  : t,
+              ),
+            };
+          }),
+        );
+      }),
     );
 
     unsubs.push(
@@ -918,9 +1144,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const switchSession = useCallback(
     (sessionId: string, projectId?: string) => {
+      // Guard: don't yank the user away mid-turn (legacy parity).
+      if (isWaitingRef.current && sessionId !== currentSessionRef.current) {
+        showToast('Yuki is still working — wait for it to finish or press Stop first');
+        return;
+      }
       send('session:switch', { sessionId, projectId });
     },
-    [send],
+    [send, showToast],
   );
 
   const createSession = useCallback(() => {
@@ -963,6 +1194,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const compactContext = useCallback(() => {
+    setCompactState('busy');
     send('context:compact', {});
   }, [send]);
 
@@ -1034,6 +1266,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       mcpServers,
       plan,
       subagents,
+      structuredModels,
+      compactState,
+      revertFill,
       sendMessage,
       stopResponse,
       switchSession,
@@ -1054,7 +1289,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       messages, isWaiting, isStreaming, thinkingEnabled, compactMode,
       notificationsEnabled, activeModel, models, config, currentSessionId,
       currentProjectId, activeSessionId, sessions, voiceMode, promptTokens,
-      maxTokens, tools, mcpServers, plan, subagents, setConfig, sendMessage,
+      maxTokens, tools, mcpServers, plan, subagents, structuredModels,
+      compactState, revertFill, setConfig, sendMessage,
       stopResponse, switchSession, createSession, deleteSession,
       renameSession, switchModel, forkSession, moveSession, compactContext,
       revertMessage, toggleTool, toggleMcp, refreshMcp, killSubAgent,

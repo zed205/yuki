@@ -59,6 +59,8 @@ export function SessionSync() {
             return {
               id: s.id,
               title: s.title || `${s.messageCount ?? 0} messages`,
+              summary: s.summary || undefined,
+              messageCount: s.messageCount ?? 0,
               projectId: s.projectId || p.id,
               messages: [],
               createdAt: ts,
