@@ -8,6 +8,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AudioProvider } from "@/context/audio-context";
 import { ProjectProvider } from "@/context/project-context";
 import { SessionProvider } from "@/context/session-context";
+import { BrowserProvider } from "@/context/browser-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,7 +41,9 @@ export default function RootLayout({
               <AudioProvider>
                 <ProjectProvider>
                   <SessionProvider>
-                    <TooltipProvider>{children}</TooltipProvider>
+                    <BrowserProvider>
+                      <TooltipProvider>{children}</TooltipProvider>
+                    </BrowserProvider>
                   </SessionProvider>
                 </ProjectProvider>
               </AudioProvider>

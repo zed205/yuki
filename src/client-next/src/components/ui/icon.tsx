@@ -55,6 +55,10 @@ import {
   Waves,
   Pause,
   Pencil,
+  Activity,
+  Volume,
+  Camera,
+  ArrowRight,
   type LucideProps,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -73,6 +77,11 @@ const ICON_MAP: Record<string, ComponentType<LucideProps>> = {
   'volume-2': Volume2,
   'volume-x': VolumeX,
   'volume-1': Volume1,
+  volume: Volume,
+  activity: Activity,
+  camera: Camera,
+  'arrow-right': ArrowRight,
+  refresh: RefreshCw,
   settings: Settings,
   play: Play,
   square: Square,

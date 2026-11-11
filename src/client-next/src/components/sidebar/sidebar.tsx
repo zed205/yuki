@@ -24,6 +24,7 @@ interface SidebarProps {
   onProjectSelect?: (projectId: string) => void;
   onAddProject?: () => void;
   onToggleCollapse?: () => void;
+  onOpenSettings?: () => void;
 }
 
 type Section = 'sessions' | 'projects';
@@ -145,6 +146,7 @@ export function Sidebar(props: SidebarProps) {
     onProjectSelect,
     onAddProject,
     onToggleCollapse,
+    onOpenSettings,
   } = props;
 
   const [isOpen, setIsOpen] = useState(true);
@@ -291,6 +293,17 @@ export function Sidebar(props: SidebarProps) {
               <Switch checked={opt.checked} onCheckedChange={opt.onChange} />
             </div>
           ))}
+          <div className="mt-1 border-t border-border/50 pt-1">
+            <button
+              className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted/50"
+              onClick={() => {
+                setOptionsOpen(false);
+                onOpenSettings?.();
+              }}
+            >
+              <Text size="sm">Open Settings…</Text>
+            </button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>
@@ -381,7 +394,7 @@ export function Sidebar(props: SidebarProps) {
             tooltip={voiceMode ? 'Voice mode on' : 'Voice mode off'}
           />
           <div className="my-1 w-5 border-t border-border/50" />
-          <IconButton icon="settings" size="sm" tooltip="Settings" onClick={() => setOptionsOpen((v) => !v)} />
+          <IconButton icon="settings" size="sm" tooltip="Settings" onClick={() => onOpenSettings?.()} />
         </div>
       )}
     </div>

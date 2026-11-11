@@ -8,6 +8,10 @@ import { useProject } from '@/context/project-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { Sidebar } from '@/components/sidebar/sidebar';
 import { ChatPanel } from '@/components/chat/chat-panel';
+import { SettingsModal } from '@/components/settings/settings-modal';
+import { VoicePanel } from '@/components/voice/voice-panel';
+import { BrowserView } from '@/components/browser/browser-view';
+import { SessionSync } from '@/components/session-sync';
 import { IconButton } from '@/components/ui/icon-button';
 import { Text } from '@/components/ui/box';
 import {
@@ -179,6 +183,7 @@ function StatusBarMobile() {
 export function MainLayout({ className }: { className?: string }) {
   const { sessions, switchSession, renameSession, deleteSession } = useSession();
   const { addProject: addProjectCtx, setCurrentProject } = useProject();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const handleSessionSelect = (sessionId: string, projectId: string) => {
     switchSession(sessionId, projectId);
@@ -227,6 +232,7 @@ export function MainLayout({ className }: { className?: string }) {
             void setCurrentProject(projectId).catch(() => {});
           }}
           onAddProject={handleAddProject}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       </div>
 
@@ -234,8 +240,14 @@ export function MainLayout({ className }: { className?: string }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <ChatPanel />
+        <VoicePanel />
         <StatusBarMobile />
       </div>
+
+      {/* Overlays & sync */}
+      <SessionSync />
+      <BrowserView />
+      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }
