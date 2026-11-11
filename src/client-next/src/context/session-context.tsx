@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useWebSocket } from './websocket-context';
-import type { Message, ModelInfo, Session, Session as SessionType } from '@/lib/types';
+import type { Message, ModelInfo, Session, ToolCallEntry } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -122,9 +122,48 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // Track id of the assistant message being streamed (for chat:chunk)
   const streamingIdRef = useRef<string | null>(null);
-  // Last chunk timestamp for debounce-free appends
+  // Pending chunk buffer for rAF-batched appends
   const pendingChunkRef = useRef<string>('');
   const chunkFlushScheduled = useRef(false);
+  // Monotonic token so a slow fetch can't overwrite a newer session's history
+  const loadSeqRef = useRef(0);
+
+  // Load a session's transcript from the REST API (the server only sends
+  // session metadata over WS, so the transcript itself comes from here).
+  const loadSession = useCallback(async (sessionId: string) => {
+    if (!sessionId) return;
+    const seq = ++loadSeqRef.current;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        messages?: Array<Partial<Message> & { role: string }>;
+      };
+      if (seq !== loadSeqRef.current) return;
+
+      const history = (data.messages || [])
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m, i) => ({
+          id: m.id || `hist-${i}`,
+          role: (m.role === 'user' ? 'user' : 'assistant') as Message['role'],
+          content: m.content || '',
+          timestamp: m.timestamp ? new Date(m.timestamp as never) : new Date(),
+          toolCalls: m.toolCalls as Message['toolCalls'],
+          reasoningContent: m.reasoningContent as string | undefined,
+          images: m.images as string[] | undefined,
+          attachments: m.attachments as Message['attachments'],
+          compacted: m.compacted as boolean | undefined,
+          isStreaming: false,
+        }));
+
+      streamingIdRef.current = null;
+      pendingChunkRef.current = '';
+      setIsStreaming(false);
+      setMessages(history);
+    } catch (err) {
+      console.error('[SessionContext] failed to load session', sessionId, err);
+    }
+  }, []);
 
   // -----------------------------------------------------------------
   // WebSocket wiring (server → client)
@@ -149,6 +188,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (sd.sessionId) {
           setCurrentSessionId(sd.sessionId);
           setActiveSessionId(sd.sessionId);
+          void loadSession(sd.sessionId);
         }
         if (sd.activeProjectId) setCurrentProjectId(sd.activeProjectId);
         if (typeof sd.thinkingEnabled === 'boolean')
@@ -180,7 +220,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (sd.sessionId) {
           setCurrentSessionId(sd.sessionId);
           setActiveSessionId(sd.sessionId);
-          setMessages([]);
+          void loadSession(sd.sessionId);
         }
         if (sd.projectId) setCurrentProjectId(sd.projectId);
         if (typeof sd.thinkingEnabled === 'boolean')
@@ -201,7 +241,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (pd.sessionId) {
           setCurrentSessionId(pd.sessionId);
           setActiveSessionId(pd.sessionId);
-          setMessages([]);
+          void loadSession(pd.sessionId);
         }
         if (typeof pd.thinkingEnabled === 'boolean')
           setThinkingEnabled(pd.thinkingEnabled);
@@ -295,11 +335,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     );
 
     unsubs.push(
-      on('session:cleared', (data) => {
-        const sd = data as { sessionId?: string };
-        if (sd.sessionId && sd.sessionId === currentSessionId) {
-          setMessages([]);
-        }
+      on('session:cleared', () => {
+        streamingIdRef.current = null;
+        pendingChunkRef.current = '';
+        setMessages([]);
       }),
     );
 
@@ -363,13 +402,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     unsubs.push(
       on('chat:message', (data) => {
-        const cd = data as { message?: string; sessionId?: string };
+        const cd = data as {
+          message?: string;
+          messageId?: string;
+          sessionId?: string;
+          steer?: boolean;
+        };
         if (!cd.message) return;
         const userMsg: Message = {
-          id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id: cd.messageId || `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'user',
           content: cd.message,
           timestamp: new Date(),
+          sessionId: cd.sessionId,
         };
         setMessages((prev) => [...prev, userMsg]);
         setIsWaiting(true);
@@ -405,14 +450,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 ...prev,
                 {
                   id: targetId!,
-                  role: 'assistant',
+                  role: 'assistant' as const,
                   content: chunk,
                   timestamp: new Date(),
+                  isStreaming: true,
                 },
               ];
             }
             const next = [...prev];
-            next[idx] = { ...next[idx], content: (next[idx].content || '') + chunk };
+            next[idx] = {
+              ...next[idx],
+              content: (next[idx].content || '') + chunk,
+              isStreaming: true,
+            };
             return next;
           });
         });
@@ -442,11 +492,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             role: 'assistant',
             content: rd.message ?? '',
             timestamp: new Date(),
-            toolCalls: rd.toolCalls,
+            toolCalls: rd.toolCalls as Message['toolCalls'],
+            isStreaming: false,
           };
           if (idx === -1) return [...prev, doneMsg];
           const next = [...prev];
-          next[idx] = { ...next[idx], ...doneMsg, content: rd.message ?? next[idx].content };
+          next[idx] = {
+            ...next[idx],
+            ...doneMsg,
+            content: rd.message ?? next[idx].content,
+          };
           return next;
         });
       }),
@@ -458,6 +513,117 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setIsWaiting(false);
         pendingChunkRef.current = '';
         streamingIdRef.current = null;
+        setMessages((prev) =>
+          prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+        );
+      }),
+    );
+
+    // --- Tool events ---
+
+    unsubs.push(
+      on('tool:call', (data) => {
+        const td = data as {
+          toolCall?: {
+            id: string;
+            name: string;
+            arguments?: Record<string, unknown>;
+            parameters?: Record<string, unknown>;
+            status?: string;
+          };
+        };
+        const tc = td.toolCall;
+        if (!tc?.id) return;
+        setMessages((prev) => {
+          const idx = prev.findIndex(
+            (m) => m.role === 'assistant' && (m.isStreaming || m.id === streamingIdRef.current),
+          );
+          if (idx === -1) return prev;
+          const status: ToolCallEntry['status'] =
+            tc.status === 'error' ? 'error'
+            : tc.status === 'running' ? 'running'
+            : tc.status === 'completed' ? 'completed'
+            : 'pending';
+          const parameters = tc.arguments ?? tc.parameters ?? {};
+          const existing = prev[idx].toolCalls || [];
+          const existingIdx = existing.findIndex((t) => t.id === tc.id);
+          const next = [...prev];
+          if (existingIdx >= 0) {
+            next[idx] = {
+              ...next[idx],
+              toolCalls: existing.map((t, i) =>
+                i === existingIdx
+                  ? { ...t, status, parameters: parameters }
+                  : t,
+              ),
+            };
+          } else {
+            next[idx] = {
+              ...next[idx],
+              toolCalls: [
+                ...existing,
+                { id: tc.id, name: tc.name, parameters, status },
+              ],
+            };
+          }
+          return next;
+        });
+      }),
+    );
+
+    unsubs.push(
+      on('tool:result', (data) => {
+        const td = data as { toolCallId?: string; result?: string; status?: string };
+        if (!td.toolCallId) return;
+        const status: ToolCallEntry['status'] = td.status === 'error' ? 'error' : 'completed';
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (!m.toolCalls?.length) return m;
+            return {
+              ...m,
+              toolCalls: m.toolCalls.map((t) =>
+                t.id === td.toolCallId
+                  ? { ...t, result: td.result, status }
+                  : t,
+              ),
+            };
+          }),
+        );
+      }),
+    );
+
+    // --- Thinking (reasoning) stream ---
+
+    unsubs.push(
+      on('thinking:chunk', (data) => {
+        const td = data as { chunk?: string; messageId?: string };
+        if (!td.chunk) return;
+        const id = td.messageId || streamingIdRef.current;
+        if (!id) return;
+        streamingIdRef.current = id;
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === id);
+          if (idx === -1) {
+            return [
+              ...prev,
+              {
+                id,
+                role: 'assistant' as const,
+                content: '',
+                timestamp: new Date(),
+                reasoningContent: td.chunk,
+                isStreaming: true,
+              },
+            ];
+          }
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            reasoningContent: (next[idx].reasoningContent || '') + td.chunk!,
+            isStreaming: true,
+          };
+          return next;
+        });
       }),
     );
 
@@ -471,7 +637,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     );
 
     return () => unsubs.forEach((u) => u());
-  }, [messageRouter, setConfig, currentSessionId]);
+  }, [messageRouter, setConfig, loadSession]);
 
   // -----------------------------------------------------------------
   // Actions

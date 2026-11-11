@@ -50,6 +50,8 @@ export interface Message {
   parentSessionId?: string;
   syntheticPrefix?: string;
   source?: 'timer' | 'job';
+  /** Client-side render flag: this message is actively streaming. */
+  isStreaming?: boolean;
 }
 
 // ─── Session ─────────────────────────────────────────────────────────────────
