@@ -15,6 +15,7 @@ import { SessionSync } from '@/components/session-sync';
 import { RenameModal } from '@/components/modals/rename-modal';
 import { ConfirmModal } from '@/components/modals/confirm-modal';
 import { SearchModal } from '@/components/modals/search-modal';
+import { AddProjectModal } from '@/components/modals/add-project-modal';
 
 // ---------------------------------------------------------------------------
 // Mobile top bar (legacy `#top-bar`): hamburger + logo + context ring
@@ -87,6 +88,7 @@ export function MainLayout({ className }: { className?: string }) {
     projects,
     addProject: addProjectCtx,
     renameProject,
+    updateProjectPath,
     removeProject,
   } = useProject();
   const { send } = useWebSocket();
@@ -201,10 +203,15 @@ export function MainLayout({ className }: { className?: string }) {
         }}
         title="Modify Project"
         currentValue={modifyProject?.name}
+        currentPath={modifyProject?.path}
+        allowPath
         placeholder="Project name"
-        onSave={(name) => {
+        onSave={(name, path) => {
           if (modifyProjectId) {
             void renameProject(modifyProjectId, name).catch(() => {});
+            if (path && path !== modifyProject?.path) {
+              void updateProjectPath(modifyProjectId, path).catch(() => {});
+            }
           }
           setModifyProjectId(null);
         }}
@@ -229,15 +236,11 @@ export function MainLayout({ className }: { className?: string }) {
       />
 
       {/* New project */}
-      <RenameModal
+      <AddProjectModal
         open={addProjectOpen}
         onOpenChange={setAddProjectOpen}
-        title="New project"
-        currentValue=""
-        placeholder="Project name"
-        onSave={(name) => {
-          setAddProjectOpen(false);
-          void addProjectCtx(name).catch(() => {});
+        onSave={(name, path) => {
+          void addProjectCtx(name, path).catch(() => {});
         }}
       />
     </div>

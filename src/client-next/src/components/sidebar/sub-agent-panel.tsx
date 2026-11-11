@@ -3,7 +3,6 @@
 import { useEffect, useReducer } from 'react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
-import { Text } from '@/components/ui/box';
 import { formatAgentElapsed } from '@/lib/model-label';
 
 /**

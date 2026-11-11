@@ -177,7 +177,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       setConnectionState('connecting');
       connect();
     }, delay);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connect]);
 
   const disconnect = useCallback(() => {

@@ -10,27 +10,36 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { FolderBrowse } from '@/components/modals/folder-browse';
 
 export interface RenameModalProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   title?: string;
   currentValue?: string;
-  onSave?: (newValue: string) => void;
+  /** Optional directory (projects only) — shown when `allowPath` is set. */
+  currentPath?: string;
+  allowPath?: boolean;
+  pathPlaceholder?: string;
+  onSave?: (newValue: string, path?: string) => void;
   placeholder?: string;
 }
 
 export function RenameModal(props: RenameModalProps) {
   const [value, setValue] = useState(props.currentValue || '');
+  const [path, setPath] = useState(props.currentPath || '');
   const [error, setError] = useState('');
+  const [browseOpen, setBrowseOpen] = useState(false);
 
   // Reset value when the modal opens
   useEffect(() => {
     if (props.open) {
       setValue(props.currentValue || '');
+      setPath(props.currentPath || '');
       setError('');
+      setBrowseOpen(false);
     }
-  }, [props.open, props.currentValue]);
+  }, [props.open, props.currentValue, props.currentPath]);
 
   const handleSave = () => {
     const trimmed = value.trim();
@@ -42,7 +51,8 @@ export function RenameModal(props: RenameModalProps) {
       setError('Name must be less than 100 characters');
       return;
     }
-    props.onSave?.(trimmed);
+    const trimmedPath = props.allowPath ? path.trim() : undefined;
+    props.onSave?.(trimmed, trimmedPath);
     props.onOpenChange?.(false);
   };
 
@@ -74,8 +84,29 @@ export function RenameModal(props: RenameModalProps) {
             placeholder={props.placeholder || 'Enter new name...'}
             className={error ? 'border-destructive' : ''}
           />
-          {error && (
-            <p className="text-xs text-destructive">{error}</p>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          {props.allowPath && (
+            <div className="mt-2">
+              <label className="mb-1 block text-xs text-muted-foreground">
+                Directory (optional)
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  placeholder={props.pathPlaceholder || 'Directory (leave empty to keep current)'}
+                  className="min-w-0 flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setBrowseOpen(true)}
+                >
+                  Browse…
+                </Button>
+              </div>
+            </div>
           )}
         </div>
         <DialogFooter>
@@ -87,6 +118,16 @@ export function RenameModal(props: RenameModalProps) {
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <FolderBrowse
+        open={browseOpen}
+        initialDir={path || undefined}
+        onOpenChange={setBrowseOpen}
+        onPick={(dir) => {
+          setPath(dir);
+          setBrowseOpen(false);
+        }}
+      />
     </Dialog>
   );
 }

@@ -12,6 +12,9 @@ import {
 import { Paperclip, MoreVertical, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
+import { useWebSocket } from '@/context/websocket-context';
+import { ToolsModal } from '@/components/modals/tools-modal';
+import { ModelsModal } from '@/components/modals/models-modal';
 
 export interface FileAttachment {
   type: 'image' | 'file';
@@ -48,7 +51,16 @@ function readAsDataUrl(file: File): Promise<string> {
  * file/image attachment support (paste, picker, drag-and-drop).
  */
 export function Composer(props: ComposerProps) {
-  const { isStreaming, isWaiting } = useSession();
+  const {
+    isStreaming,
+    isWaiting,
+    thinkingEnabled,
+    compactContext,
+    compactState,
+  } = useSession();
+  const { send } = useWebSocket();
+  const [showTools, setShowTools] = useState(false);
+  const [showModels, setShowModels] = useState(false);
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -269,6 +281,10 @@ export function Composer(props: ComposerProps) {
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => {
+                        send('thinking:toggle', { enabled: !thinkingEnabled });
+                        setShowOptions(false);
+                      }}
                     >
                       <svg
                         width="16"
@@ -286,7 +302,7 @@ export function Composer(props: ComposerProps) {
                       </svg>
                       <span className="flex-1">Thinking</span>
                       <span className="text-xs text-[#8b949e]">
-                        {isStreaming ? 'On' : 'Off'}
+                        {thinkingEnabled ? 'On' : 'Off'}
                       </span>
                     </button>
 
@@ -294,6 +310,10 @@ export function Composer(props: ComposerProps) {
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => {
+                        setShowTools(true);
+                        setShowOptions(false);
+                      }}
                     >
                       <svg
                         width="16"
@@ -307,9 +327,7 @@ export function Composer(props: ComposerProps) {
                         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                       </svg>
                       <span className="flex-1">Tools</span>
-                      <span className="text-xs text-[#8b949e]">
-                        {isStreaming ? 'On' : 'Off'}
-                      </span>
+                      <span className="text-xs text-[#8b949e]">Manage</span>
                     </button>
 
                     <div className="border-t border-[#30363d] my-1" />
@@ -318,6 +336,10 @@ export function Composer(props: ComposerProps) {
                     <button
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      onClick={() => {
+                        setShowModels(true);
+                        setShowOptions(false);
+                      }}
                     >
                       <svg
                         width="16"
@@ -437,6 +459,10 @@ export function Composer(props: ComposerProps) {
                       type="button"
                       className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
                       disabled={isBusy}
+                      onClick={() => {
+                        compactContext();
+                        setShowOptions(false);
+                      }}
                     >
                       <svg
                         width="16"
@@ -455,7 +481,7 @@ export function Composer(props: ComposerProps) {
                       </svg>
                       <span className="flex-1">Compaction</span>
                       <span className="text-xs text-[#8b949e]">
-                        {isBusy ? 'Busy' : 'Ready'}
+                        {compactState === 'busy' ? 'Busy' : 'Ready'}
                       </span>
                     </button>
                   </div>
@@ -515,6 +541,10 @@ export function Composer(props: ComposerProps) {
           <span>for newline</span>
         </div>
       </div>
+
+      {/* Tools & Models modals (portaled) */}
+      <ToolsModal open={showTools} onOpenChange={setShowTools} />
+      <ModelsModal open={showModels} onOpenChange={setShowModels} />
     </div>
   );
 }

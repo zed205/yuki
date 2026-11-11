@@ -4,7 +4,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type ReactNode,
 } from 'react';
 
 export interface FloatingMenuItem {
