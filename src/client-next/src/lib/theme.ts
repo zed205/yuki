@@ -114,7 +114,7 @@ function applyBrandOverrides(colors: Record<string, string>): void {
     'yuki-thinking-bg': colors['thinking-bg'] ?? 'hsl(222, 47%, 11%)',
     'yuki-thinking-text': colors['thinking-text'] ?? 'hsl(215, 20%, 65%)',
     'yuki-thinking-accent': colors['thinking-accent'] ?? 'hsl(45, 90%, 55%)',
-    'yuki-heading': colors['heading'] ?? 'hsl(35, 95%, 45%)',
+    'yuki-heading': colors['heading'] ?? '#d4760a',
     'yuki-highlight': colors['highlight'] ?? 'hsl(217, 91%, 60%)',
     'yuki-code-bg': colors['code-bg'] ?? 'hsl(217, 33%, 17%)',
     'yuki-code-inline-bg': colors['code-inline-bg'] ?? 'hsl(217, 33%, 17%)',

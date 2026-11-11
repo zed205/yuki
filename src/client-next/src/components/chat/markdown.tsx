@@ -94,20 +94,20 @@ const components: Components = {
     return <p className="my-1.5 leading-relaxed" {...props}>{children}</p>;
   },
   h1({ children, ...props }) {
-    return <h1 className="mb-2 mt-3 text-lg font-semibold text-[#e6edf3]" {...props}>{children}</h1>;
+    return <h1 className="mb-2 mt-3 text-lg font-semibold text-[var(--yuki-heading)]" {...props}>{children}</h1>;
   },
   h2({ children, ...props }) {
-    return <h2 className="mb-2 mt-3 text-base font-semibold text-[#e6edf3]" {...props}>{children}</h2>;
+    return <h2 className="mb-2 mt-3 text-base font-semibold text-[var(--yuki-heading)]" {...props}>{children}</h2>;
   },
   h3({ children, ...props }) {
-    return <h3 className="mb-1.5 mt-2 text-sm font-semibold text-[#e6edf3]" {...props}>{children}</h3>;
+    return <h3 className="mb-1.5 mt-2 text-sm font-semibold text-[var(--yuki-heading)]" {...props}>{children}</h3>;
   },
 };
 
 export function MarkdownContent({ content }: { content: string }) {
   if (!content) return null;
   return (
-    <div className="message-content text-sm text-[#c9d1d9]">
+    <div className="message-content text-sm">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}

@@ -414,9 +414,9 @@ export function MessageBubble(props: MessageBubbleProps) {
           className={cn(
             'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
             isUser &&
-              'rounded-br-md border border-[#2e5a8f] bg-[#1c3a5f] text-[#e6edf3]',
+              'rounded-br-md border border-[var(--yuki-user-bubble-border)] bg-[var(--yuki-user-bubble-bg)] text-[var(--yuki-user-bubble-text)]',
             isAssistant &&
-              'rounded-2xl border border-[#30363d] bg-[#161b22] text-[#c9d1d9]',
+              'rounded-2xl border border-[var(--yuki-asst-bubble-border)] bg-[var(--yuki-asst-bubble-bg)] text-[var(--yuki-asst-bubble-text)]',
             isSystem &&
               'rounded-xl border border-[#30363d] bg-[#1c2028] text-xs text-[#8b949e]',
             ttBorder,

@@ -38,7 +38,7 @@
     "agent-completed": "hsl(145, 72%, 45%)",
     "agent-cancelled": "hsl(0, 85%, 60%)",
     "agent-error": "hsl(0, 85%, 60%)",
-    "heading": "hsl(35, 95%, 45%)",
+    "heading": "#d4760a",
     "highlight": "hsl(217, 91%, 60%)",
     "code-bg": "hsl(217, 33%, 17%)",
     "code-inline-bg": "hsl(217, 33%, 17%)",
