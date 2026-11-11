@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig, getStructuredModels, addModel, updateModel, deleteModel, addVariant, updateVariant, deleteVariant } from './config';
@@ -64,9 +64,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve built client-v2 (Vite output) first (primary SPA), then legacy client for any remaining assets
-app.use(express.static(path.join(__dirname, '..', 'client-v2')));
-app.use(express.static(path.join(__dirname, '..', 'client')));
+// The static client middleware is only registered when the Next.js build is
+// absent (see below); when Next serves the UI it owns all asset paths.
 
 const sessionDataDir = sessionsDir;
 const attachmentsDir = pathsAttachmentsDir;
@@ -777,13 +776,61 @@ app.get('/api/browser/screenshot', async (_req, res) => {
   }
 });
 
-app.get('/', (_req, res) => {
+// --- Next.js client (primary) with legacy static fallback ---
+// Production layout: dist/client-next contains the compiled Next build
+// (.next/) copied by scripts/copy-client.js. When present, all non-API
+// routes are served through the Next request handler (single port).
+const nextClientDir = path.join(__dirname, '..', 'client-next');
+let nextHandler: ((req: Request, res: Response) => Promise<void>) | null = null;
+let nextReady: Promise<void> | null = null;
+const hasNextBuild = fs.existsSync(path.join(nextClientDir, '.next', 'BUILD_ID'));
+if (!hasNextBuild) {
+  // No Next.js build: serve the legacy Vite client (client-v2) + legacy client assets
+  app.use(express.static(path.join(__dirname, '..', 'client-v2')));
+  app.use(express.static(path.join(__dirname, '..', 'client')));
+}
+if (hasNextBuild) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Next = require('next') as new (opts: { dev: boolean; dir: string }) => {
+      prepare(): Promise<void>;
+      getRequestHandler(): (req: Request, res: Response) => Promise<void>;
+    };
+    const nextApp = new Next({ dev: false, dir: nextClientDir });
+    nextReady = nextApp
+      .prepare()
+      .then(() => {
+        nextHandler = nextApp.getRequestHandler();
+        console.log(`Serving Next.js client from ${nextClientDir}`);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to initialize Next.js handler; falling back to static client:', err);
+      });
+  } catch (err) {
+    console.error('Failed to load Next.js (is `next` installed at the root?); falling back to static client:', err);
+  }
+} else {
+  console.log('No Next.js build found at dist/client-next; serving legacy static client.');
+}
+
+// Serve the Next.js app once ready (waits out the async prepare() so
+// early requests don't leak to the legacy fallback).
+const serveClient = async (req: Request, res: Response) => {
+  if (nextReady) await nextReady;
+  if (nextHandler) {
+    await nextHandler(req, res);
+    return;
+  }
   res.sendFile(path.join(__dirname, '..', 'client-v2', 'index.html'));
+};
+
+app.get('/', (req, res) => {
+  serveClient(req, res);
 });
 
-// SPA fallback: serve index.html for all non-API, non-static routes
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client-v2', 'index.html'));
+// SPA fallback: Next.js handler, else legacy index.html
+app.get('*', (req, res) => {
+  serveClient(req, res);
 });
 
 // Version stamp (written by scripts/write-version.js at build time) so the

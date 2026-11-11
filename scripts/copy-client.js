@@ -20,11 +20,27 @@ function copyDir(src, dest) {
   }
 }
 
-// Copy legacy client (kept for any remaining static assets)
+// Copy legacy client (kept for fallback static assets)
 removeDir('dist/client');
 copyDir('src/client', 'dist/client');
 console.log('Legacy client files copied to dist/client');
 
-// Vite build already outputs directly to dist/client-v2/ (from vite.config.ts outDir)
-// No copy needed — just ensure the directory exists.
-// This file is kept for legacy client only.
+// Stage the Next.js production build so the Express server can serve it
+// via the next() handler (dist/client-next = .next build + config).
+const nextSrc = path.join('src', 'client-next');
+const nextBuild = path.join(nextSrc, '.next');
+const nextDest = path.join('dist', 'client-next');
+if (fs.existsSync(path.join(nextBuild, 'BUILD_ID'))) {
+  removeDir(nextDest);
+  fs.mkdirSync(nextDest, { recursive: true });
+  copyDir(nextBuild, path.join(nextDest, '.next'));
+  // Minimal runtime config (the .next build already contains what it needs;
+  // this keeps the next() handler happy in the pruned deploy layout).
+  fs.writeFileSync(
+    path.join(nextDest, 'next.config.js'),
+    "module.exports = {};\n",
+  );
+  console.log('Next.js build staged to dist/client-next');
+} else {
+  console.warn('WARNING: src/client-next/.next/BUILD_ID not found — skip staging Next.js build');
+}
