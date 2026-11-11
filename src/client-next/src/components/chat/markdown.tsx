@@ -1,7 +1,10 @@
 'use client';
 
+import 'katex/dist/katex.min.css';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import type { Components } from 'react-markdown';
 import { CodeBlock } from './code-block';
 
@@ -105,7 +108,11 @@ export function MarkdownContent({ content }: { content: string }) {
   if (!content) return null;
   return (
     <div className="message-content text-sm text-[#c9d1d9]">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </div>

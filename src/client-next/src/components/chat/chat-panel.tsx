@@ -1,7 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { useSession } from '@/context/session-context';
+import { useSession, isSummaryMessage } from '@/context/session-context';
 import { useAudio } from '@/context/audio-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { MessageBubble } from './message-bubble';
@@ -9,6 +9,21 @@ import { Composer, type FileAttachment } from './composer';
 import { useScrollToBottom } from './scroll-manager';
 import { IconButton } from '@/components/ui/icon-button';
 import { Text } from '@/components/ui/box';
+import { PlanBar } from './plan-bar';
+import type { Message } from '@/lib/types';
+
+/**
+ * A "working" assistant turn (thinking and/or tool calls, no final text yet)
+ * collapses into a single dashed TT-group pill (legacy collapseThinkingTools).
+ */
+function isTTMessage(m: Message): boolean {
+  if (m.role !== 'assistant') return false;
+  if (m.stoppedNotice || m.observerFeedback || m.agentId) return false;
+  if (isSummaryMessage(m)) return false;
+  const hasOps = (m.toolCalls && m.toolCalls.length > 0) || !!m.reasoningContent;
+  const hasText = typeof m.content === 'string' && m.content.trim().length > 0;
+  return hasOps && !hasText;
+}
 
 interface ChatPanelProps {
   className?: string;
@@ -55,7 +70,21 @@ function EmptyChatState() {
 export function ChatPanel(props: ChatPanelProps) {
   const { className } = props;
   const { send } = useWebSocket();
-  const { messages, sendMessage, stopResponse, isStreaming } = useSession();
+  const {
+    messages,
+    sendMessage,
+    stopResponse,
+    isStreaming,
+    plan,
+    subagents,
+    currentSessionId,
+    forkedParentId,
+    messageForks,
+    switchSession,
+    compactContext,
+    forkSession,
+    revertMessage,
+  } = useSession();
   const { voiceMode, voiceListening, toggleMic } = useAudio();
   const { containerRef } = useScrollToBottom();
 
@@ -93,24 +122,71 @@ export function ChatPanel(props: ChatPanelProps) {
 
   return (
     <main className={cn('flex h-full flex-col bg-background', className)}>
+      {/* Plan bar */}
+      <PlanBar plan={plan} />
+
       {/* Messages area */}
       <div ref={containerRef} className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <EmptyChatState />
         ) : (
           <div className="py-4">
-            {messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                role={msg.role}
-                content={msg.content}
-                toolCalls={msg.toolCalls}
-                reasoningContent={msg.reasoningContent}
-                isStreaming={msg.isStreaming}
-                compacted={msg.compacted}
-                timestamp={msg.timestamp}
-              />
-            ))}
+            {messages.map((msg) => {
+              // Fork-note marker: render the inline "⟿ Fork → original" indicator
+              // at the fork point (matches the legacy per-message indicator).
+              if (msg.forkNote && forkedParentId) {
+                return (
+                  <div
+                    key={msg.id}
+                    className="mt-1.5 flex items-center gap-1.5 px-1 text-xs"
+                  >
+                    <span className="text-[#58a6ff]/60">⟿</span>
+                    <button
+                      type="button"
+                      className="text-[#58a6ff] underline-offset-2 hover:text-[#c9d1d9] hover:underline"
+                      onClick={() => switchSession(forkedParentId)}
+                    >
+                      Fork
+                    </button>
+                  </div>
+                );
+              }
+              return (
+                <MessageBubble
+                  key={msg.id}
+                  role={msg.role}
+                  content={msg.content}
+                  toolCalls={msg.toolCalls}
+                  reasoningContent={msg.reasoningContent}
+                  isStreaming={msg.isStreaming}
+                  compacted={msg.compacted}
+                  timestamp={msg.timestamp}
+                  agentId={msg.agentId}
+                  subAgent={msg.agentId ? subagents.find((a) => a.agentId === msg.agentId) : undefined}
+                  observerFeedback={msg.observerFeedback}
+                  stoppedNotice={msg.stoppedNotice}
+                  isTTGroup={isTTMessage(msg)}
+                  forks={msg.id ? messageForks[msg.id] : undefined}
+                  onForkNavigate={(sessionId) => switchSession(sessionId)}
+                  onRevert={() => {
+                    if (msg.role === 'user' && msg.id) {
+                      revertMessage(msg.id);
+                    }
+                  }}
+                  onCompact={() => {
+                    compactContext();
+                  }}
+                  onFork={() => {
+                    if (currentSessionId && msg.serverIndex != null && msg.role === 'assistant') {
+                      forkSession(currentSessionId, msg.serverIndex);
+                    }
+                  }}
+                  onRead={() => {
+                    // Read full message (voice) — handled in Phase 6
+                  }}
+                />
+              );
+            })}
           </div>
         )}
       </div>

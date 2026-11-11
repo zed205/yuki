@@ -53,6 +53,11 @@ export interface Message {
   /** Client-side render flag: this message is actively streaming. */
   isStreaming?: boolean;
   /**
+   * Client-only: index of this message in the server's full transcript array.
+   * Preserved on load so session:fork can pass the server-expected index.
+   */
+  serverIndex?: number;
+  /**
    * Client-only ephemeral entries (not persisted in the transcript):
    * - observerFeedback: an amber "Observer" feedback block appended live
    * - stoppedNotice: the centered "[Action stopped]" pill
@@ -62,6 +67,14 @@ export interface Message {
   observerFeedback?: ObserverFeedback;
   stoppedNotice?: boolean;
   agentId?: string;
+  /**
+   * Client-only: this is the fork-note marker (rendered as the inline
+   * "⟿ Fork" indicator at the fork point of a forked session). Navigation
+   * target is forkedParentId.
+   */
+  forkNote?: boolean;
+  /** Client-only: forks created from this message (original-session view). */
+  forks?: Array<{ sessionId: string; title?: string }>;
 }
 
 // ─── Observer ────────────────────────────────────────────────────────────────

@@ -26,6 +26,16 @@ import type {
   ToolInfo,
 } from '@/lib/types';
 
+/**
+ * Compaction summary messages are system messages whose content begins with
+ * this prefix. They render as a teal "Compaction" card (legacy parity).
+ */
+export const SUMMARY_PREFIX = 'Summary of previous conversation:';
+export const isSummaryMessage = (m: Partial<Message> & { role: string }) =>
+  m.role === 'system' &&
+  typeof m.content === 'string' &&
+  m.content.startsWith(SUMMARY_PREFIX);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -77,6 +87,10 @@ export interface SessionContextValue {
   setConfig: (v: Partial<SessionConfig>) => void;
   currentSessionId: string | null;
   setCurrentSessionId: (v: string | null) => void;
+  /** Parent session id when the current session is a fork (null otherwise). */
+  forkedParentId: string | null;
+  /** Forks per source-message id (populated for the original session view). */
+  messageForks: Record<string, Array<{ sessionId: string; title?: string }>>;
   currentProjectId: string;
   setCurrentProjectId: (v: string) => void;
   activeSessionId: string | null;
@@ -155,6 +169,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState('default');
+  // Parent session id when the current session is a fork (null otherwise).
+  const [forkedParentId, setForkedParentId] = useState<string | null>(null);
+  const [messageForks, setMessageForks] = useState<Record<string, Array<{ sessionId: string; title?: string }>>>({});
   const [sessions, setSessions] = useState<Session[]>([]);
   const [voiceMode, setVoiceMode] = useState(false);
   const [promptTokens, setPromptTokens] = useState(0);
@@ -202,14 +219,31 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (!res.ok) return;
       const data = (await res.json()) as {
         messages?: Array<Partial<Message> & { role: string }>;
+        forkedFrom?: string | null;
       };
       if (seq !== loadSeqRef.current) return;
 
+      // Session-level fork marker + per-message fork tracking.
+      setForkedParentId(data.forkedFrom || null);
+      setMessageForks({});
+
+      const isForkNote = (m: Partial<Message> & { role: string }) =>
+        m.role === 'system' &&
+        typeof m.content === 'string' &&
+        m.content.startsWith('Session forked from');
+
+      const keep = (m: Partial<Message> & { role: string }) =>
+        isForkNote(m) ||
+        m.role === 'user' || m.role === 'assistant' || isSummaryMessage(m);
+
+      // Map over the FULL transcript (to preserve server-side indices for
+      // session:fork), then filter to the renderable subset.
       const history = (data.messages || [])
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m, i) => ({
-          id: m.id || `hist-${i}`,
-          role: (m.role === 'user' ? 'user' : 'assistant') as Message['role'],
+        .map((m, i) => ({ m, serverIndex: i }))
+        .filter(({ m }) => keep(m))
+        .map(({ m, serverIndex }) => ({
+          id: m.id || `hist-${serverIndex}`,
+          role: (m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : 'assistant') as Message['role'],
           content: m.content || '',
           timestamp: m.timestamp ? new Date(m.timestamp as never) : new Date(),
           toolCalls: m.toolCalls as Message['toolCalls'],
@@ -217,6 +251,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           images: m.images as string[] | undefined,
           attachments: m.attachments as Message['attachments'],
           compacted: m.compacted as boolean | undefined,
+          forkedFrom: m.forkedFrom as string | undefined,
+          forkNote: isForkNote(m) ? true : undefined,
+          serverIndex,
           isStreaming: false,
         }));
 
@@ -224,6 +261,52 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       pendingChunkRef.current = '';
       setIsStreaming(false);
       setMessages(history);
+
+      // For a non-fork (original) session, load its forks so the source
+      // messages can show "(N) [fork links]" (legacy parity). The forks list
+      // lacks the parent message id, so fetch each fork's fork-note to recover it.
+      // Only fork-capable backends include the `forkedFrom` key in the session
+      // object; gate on it to avoid 404s against backends without fork support.
+      const supportsForks = 'forkedFrom' in data;
+      if (!data.forkedFrom && supportsForks) {
+        void (async () => {
+          try {
+            const fr = await fetch(
+              `/api/sessions/${encodeURIComponent(sessionId)}/forks`,
+            );
+            if (!fr.ok) return;
+            const forkList = (await fr.json()) as Array<{
+              id: string;
+              title?: string;
+            }>;
+            if (!forkList?.length) return;
+            const grouped: Record<string, Array<{ sessionId: string; title?: string }>> = {};
+            for (const f of forkList) {
+              try {
+                const fs = await (
+                  await fetch(`/api/sessions/${encodeURIComponent(f.id)}`)
+                ).json();
+                const note = (fs.messages || []).find(
+                  (mm: { id?: string; content?: string }) =>
+                    mm.id && String(mm.id).includes('fork-note'),
+                );
+                const mMatch = note?.content?.match(
+                  /at message ([a-zA-Z0-9_-]+)/,
+                );
+                if (mMatch) {
+                  if (!grouped[mMatch[1]]) grouped[mMatch[1]] = [];
+                  grouped[mMatch[1]].push({ sessionId: f.id, title: f.title });
+                }
+              } catch {
+                /* skip a fork we can't read */
+              }
+            }
+            if (seq === loadSeqRef.current) setMessageForks(grouped);
+          } catch {
+            /* ignore fork-load failures */
+          }
+        })();
+      }
     } catch (err) {
       console.error('[SessionContext] failed to load session', sessionId, err);
     }
@@ -530,8 +613,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           sessionId?: string;
           title?: string;
           projectId?: string;
+          parentSessionId?: string;
+          parentMessageId?: string;
         };
         if (!fd.sessionId) return;
+        // Track forks on the source message (drives the original-session
+        // "(N) [fork links]" indicator) when we're viewing the parent.
+        if (
+          fd.parentSessionId &&
+          fd.parentMessageId &&
+          fd.parentSessionId === currentSessionRef.current
+        ) {
+          const msgKey = fd.parentMessageId;
+          const forkRef = { sessionId: fd.sessionId!, title: fd.title };
+          setMessageForks((prev) => ({
+            ...prev,
+            [msgKey]: [...(prev[msgKey] || []), forkRef],
+          }));
+        }
         const fork: Session = {
           id: fd.sessionId,
           messages: [],
@@ -975,7 +1074,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     unsubs.push(
       on('subagent:list', (data) => {
-        const sd = data as { agents?: SubAgentInfo[] };
         const d2 = data as { agents?: SubAgentInfo[]; slots?: number };
         if (typeof d2.slots === 'number') setSubAgentSlots(d2.slots);
         if (d2.agents) {
@@ -1275,6 +1373,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setConfig,
       currentSessionId,
       setCurrentSessionId,
+      forkedParentId,
+      messageForks,
       currentProjectId,
       setCurrentProjectId,
       activeSessionId,
@@ -1312,7 +1412,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [
       messages, isWaiting, isStreaming, thinkingEnabled, compactMode,
       notificationsEnabled, activeModel, models, config, currentSessionId,
-      currentProjectId, activeSessionId, sessions, voiceMode, promptTokens,
+      forkedParentId, messageForks, currentProjectId, activeSessionId, sessions, voiceMode, promptTokens,
       maxTokens, tools, mcpServers, plan, subagents, structuredModels,
       subAgentSlots, compactState, revertFill, setConfig, sendMessage,
       stopResponse, switchSession, createSession, deleteSession,

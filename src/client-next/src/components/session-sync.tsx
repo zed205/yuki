@@ -105,6 +105,7 @@ export function SessionSync() {
       'session:cleared',
       'session:created',
       'session:deleted',
+      'session:forked',
       'project:switched',
       'chat:response',
     ];
