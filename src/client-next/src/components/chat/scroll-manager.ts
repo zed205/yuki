@@ -2,78 +2,89 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export interface ScrollToBottomOptions {
-  /** Whether to auto-scroll to bottom on new content (default: true) */
-  enabled?: boolean;
-  /** Minimum distance from bottom (px) to consider "at bottom" (default: 50) */
-  threshold?: number;
+// Legacy parity: only follow (pin the view to the bottom) while the user is
+// within this many pixels of the bottom edge.
+const FOLLOW_THRESHOLD_PX = 80;
+
+export interface UseScrollToBottomOptions {
+  /**
+   * A value that changes whenever the transcript grows (e.g. the messages
+   * array). When it changes we re-check whether to follow the new content —
+   * mirrors the legacy `scrollToBottom()` calls made on every new chunk/message.
+   */
+  content?: unknown;
+  /** Session id — when it changes we start pinned to the bottom of the new view. */
+  resetKey?: string | null;
 }
 
 export interface ScrollToBottom {
   /** Attach to the scroll container element. */
   containerRef: React.RefObject<HTMLDivElement | null>;
-  /** User is pinned to bottom (sticky follow mode). */
-  isPinned: boolean;
-  togglePin: () => void;
-  scrollToBottom: () => void;
+  /** Whether the view is currently following (pinned to) the bottom. */
+  isFollowing: boolean;
+  /**
+   * Scroll to the bottom. Pass force=true to jump unconditionally (e.g. the
+   * user just sent a message) — mirrors the legacy `scrollToBottom(true)`.
+   */
+  scrollToBottom: (force?: boolean) => void;
 }
 
 /**
- * Scroll-to-bottom behavior for chat containers.
+ * Smart-sticky scroll for the chat transcript (legacy parity):
+ * - stays pinned to the bottom while the user is near it (<= threshold) and
+ *   new content streams in;
+ * - never yanks the view while the user has scrolled up;
+ * - force-scrolls when the user sends a message or switches sessions.
  *
- * Auto-scrolls on new content when the user is at (or pinned to) the bottom;
- * never yanks the view while the user is scrolled up.
- * React port of the SolidJS useScrollToBottom hook.
+ * React port of the legacy `followScroll` / `scrollToBottom(force)` behavior
+ * from src/client/app.js (no jump-to-bottom button, as in the legacy).
  */
-export function useScrollToBottom(
-  options: ScrollToBottomOptions = {},
-): ScrollToBottom {
-  const threshold = options.threshold ?? 50;
-  const enabled = options.enabled ?? true;
+export function useScrollToBottom(options?: UseScrollToBottomOptions): ScrollToBottom {
+  const content = options?.content;
+  const resetKey = options?.resetKey;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [isPinned, setIsPinned] = useState(false);
-  const atBottomRef = useRef(true);
-  const pinnedRef = useRef(false);
-  pinnedRef.current = isPinned;
+  const followRef = useRef(true);
+  const [isFollowing, setIsFollowing] = useState(true);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((force = false) => {
     const el = containerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (force || followRef.current) {
+      el.scrollTop = el.scrollHeight;
+      followRef.current = true;
+      setIsFollowing(true);
+    }
   }, []);
 
-  const togglePin = useCallback(() => {
-    setIsPinned((prev) => {
-      const next = !prev;
-      if (next) scrollToBottom();
-      return next;
-    });
-  }, [scrollToBottom]);
-
-  // Track user scroll position
+  // Track the user's scroll position: we only follow while near the bottom.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const handleScroll = () => {
-      atBottomRef.current =
-        el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight);
+      const following = gap <= FOLLOW_THRESHOLD_PX;
+      followRef.current = following;
+      setIsFollowing(following);
     };
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
-  }, [threshold]);
+  }, [resetKey]);
 
-  // Auto-scroll when content grows and user is near (or pinned to) bottom.
+  // Follow the stream: when the transcript grows, keep the view pinned if we
+  // are following (legacy calls scrollToBottom() on each new chunk/message).
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !enabled) return;
-    const observer = new ResizeObserver(() => {
-      if (pinnedRef.current || atBottomRef.current) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [enabled]);
+    if (followRef.current) scrollToBottom();
+  }, [content, scrollToBottom]);
 
-  return { containerRef, isPinned, togglePin, scrollToBottom };
+  // On session switch (resetKey change), start pinned to the bottom.
+  useEffect(() => {
+    followRef.current = true;
+    setIsFollowing(true);
+    // Defer until the new messages have rendered, then jump to the bottom.
+    const raf = requestAnimationFrame(() => scrollToBottom(true));
+    return () => cancelAnimationFrame(raf);
+  }, [resetKey, scrollToBottom]);
+
+  return { containerRef, isFollowing, scrollToBottom };
 }

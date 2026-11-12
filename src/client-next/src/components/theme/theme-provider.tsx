@@ -45,12 +45,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Initialize from persistence / system preference on mount
   useEffect(() => {
     const persisted = loadPersistedTheme();
-    const initial =
-      persisted && persisted !== 'system'
-        ? persisted
-        : detectSystemPreference() === 'dark'
-          ? 'yuki-dark'
-          : 'yuki-light';
+    // Default to the dark theme (matches the legacy client, which is always
+    // dark). The user can switch to light via the composer options menu;
+    // that choice is persisted and respected on subsequent loads.
+    const initial = persisted && persisted !== 'system' ? persisted : 'yuki-dark';
 
     const theme = applyTheme(initial);
     setState({

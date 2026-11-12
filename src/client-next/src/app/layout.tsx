@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { WebSocketProvider } from "@/context/websocket-context";
@@ -9,16 +8,6 @@ import { AudioProvider } from "@/context/audio-context";
 import { ProjectProvider } from "@/context/project-context";
 import { SessionProvider } from "@/context/session-context";
 import { BrowserProvider } from "@/context/browser-context";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Yuki",
@@ -32,9 +21,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased font-sans text-[13px]`}
-      >
+      <body className="antialiased">
         <ThemeProvider>
           <WebSocketProvider>
             <ToasterProvider>

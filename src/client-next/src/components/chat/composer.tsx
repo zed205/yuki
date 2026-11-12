@@ -5,88 +5,29 @@ import {
   useEffect,
   useRef,
   useState,
-  type DragEvent,
   type KeyboardEvent,
-  type ClipboardEvent,
 } from 'react';
-import { Paperclip, MoreVertical, Square } from 'lucide-react';
+import { MoreVertical, Square, Moon, Sun } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { useAudio } from '@/context/audio-context';
+import { useTheme } from '@/components/theme/theme-provider';
 import { ToolsModal } from '@/components/modals/tools-modal';
 import { ModelsModal } from '@/components/modals/models-modal';
 
-export interface FileAttachment {
-  type: 'image' | 'file';
-  name: string;
-  dataUrl?: string;
-  file?: File;
-  size?: number;
-}
-
 export interface ComposerProps {
-  onSubmit: (content: string, attachments: FileAttachment[]) => void;
+  onSubmit: (content: string) => void;
   onStop?: () => void;
   placeholder?: string;
   disabled?: boolean;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
 /**
- * Downscale an image data URL to at most maxDim on its longest edge and
- * re-encode as JPEG (mirrors the legacy composer: maxDim 800, quality 0.5).
- * Already-small or non-decodable inputs pass through untouched.
- */
-function compressImage(dataUrl: string, maxDim = 800, quality = 0.5): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      let { width, height } = img;
-      if (!width || !height || (width <= maxDim && height <= maxDim)) {
-        resolve(dataUrl);
-        return;
-      }
-      if (width > height) {
-        height = Math.round((height * maxDim) / width);
-        width = maxDim;
-      } else {
-        width = Math.round((width * maxDim) / height);
-        height = maxDim;
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(dataUrl);
-        return;
-      }
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', quality));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
-}
-
-/**
- * Message input composer with textarea, send/stop buttons, and
- * file/image attachment support (paste, picker, drag-and-drop).
+ * Message input composer with textarea, an options (⋮) menu on the left
+ * (theme, thinking, tools, models, voice, TTS, notifications, compaction)
+ * and a Stop button on the right. Legacy parity: no Send button, no
+ * attach-file (paperclip), Enter to send / Shift+Enter for a newline.
  */
 export function Composer(props: ComposerProps) {
   const {
@@ -102,16 +43,16 @@ export function Composer(props: ComposerProps) {
   const toolsOn = tools.some((t) => t.enabled);
   const { send } = useWebSocket();
   const audio = useAudio();
+  const { state: themeState, toggleTheme } = useTheme();
+  const isDark = themeState.isDark;
+
   const [showTools, setShowTools] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [value, setValue] = useState('');
-  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const optionsMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Auto-resize the textarea
   useEffect(() => {
@@ -121,38 +62,13 @@ export function Composer(props: ComposerProps) {
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, [value]);
 
-  const addFiles = useCallback(async (files: FileList | File[]) => {
-    for (const file of Array.from(files)) {
-      try {
-        const isImage = file.type.startsWith('image/');
-        const rawUrl = await readAsDataUrl(file);
-        // Compress pasted/dropped/picked images like the legacy client (maxDim 800, jpeg 0.5).
-        const dataUrl = isImage ? await compressImage(rawUrl, 800, 0.5) : rawUrl;
-        setAttachments((prev) => [
-          ...prev,
-          {
-            type: isImage ? 'image' : 'file',
-            name: file.name,
-            dataUrl,
-            file,
-            // Approximate post-compression byte size for display (base64 → bytes).
-            size: isImage ? Math.round(dataUrl.length * 0.75) : file.size,
-          },
-        ]);
-      } catch {
-        /* skip unreadable files */
-      }
-    }
-  }, []);
-
-  const handleSubmit = () => {
+  const handleSubmit = useCallback(() => {
     const content = value.trim();
-    if (!content && attachments.length === 0) return;
+    if (!content) return;
     if (isStreaming) return;
-    props.onSubmit(content, attachments);
+    props.onSubmit(content);
     setValue('');
-    setAttachments([]);
-  };
+  }, [value, isStreaming, props]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -186,43 +102,6 @@ export function Composer(props: ComposerProps) {
     return () => document.removeEventListener('mousedown', handler);
   }, [showOptions]);
 
-  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const imageFiles: File[] = [];
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) imageFiles.push(file);
-      }
-    }
-    if (imageFiles.length > 0) {
-      e.preventDefault();
-      void addFiles(imageFiles);
-    }
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) void addFiles(e.target.files);
-    e.target.value = '';
-  };
-
-  const handleDragOver = (e: DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-  const handleDragLeave = () => setIsDragging(false);
-  const handleDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
-  };
-
-  const removeAttachment = (index: number) =>
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
-
-  const hasContent = value.trim().length > 0;
-  const hasAttachments = attachments.length > 0;
   const isBusy = isWaiting || isStreaming;
 
   // Voice status pill (legacy parity — shown above the input only while voice is active).
@@ -240,54 +119,8 @@ export function Composer(props: ComposerProps) {
   const placeholder = props.placeholder || 'Type a message...';
 
   return (
-    <div
-      className="border-t border-[#30363d] bg-[#0d1117] px-3 py-3"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      <div className="relative mx-auto max-w-4xl">
-        {/* Attachment previews */}
-        {hasAttachments && (
-          <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
-            {attachments.map((attachment, index) => (
-              <div key={`${attachment.name}-${index}`} className="group relative flex-shrink-0">
-                {attachment.type === 'image' && attachment.dataUrl ? (
-                  <div className="relative overflow-hidden rounded-lg border border-[#30363d]">
-                    <img
-                      src={attachment.dataUrl}
-                      alt={attachment.name}
-                      className="h-20 w-auto rounded-lg object-cover"
-                    />
-                    <button
-                      onClick={() => removeAttachment(index)}
-                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#da3633] text-[10px] text-white opacity-0 transition-opacity hover:bg-[#f85149] group-hover:opacity-100"
-                      title="Remove attachment"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22] px-3 py-2 text-sm text-[#8b949e]">
-                    <Paperclip size={10} />
-                    <span className="max-w-[150px] truncate">{attachment.name}</span>
-                    {attachment.size ? (
-                      <span className="text-xs">{formatFileSize(attachment.size)}</span>
-                    ) : null}
-                    <button
-                      onClick={() => removeAttachment(index)}
-                      className="text-xs text-[#8b949e] hover:text-[#f85149]"
-                      title="Remove attachment"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
+    <div className="border-t border-[#30363d] bg-[#0d1117] px-3 py-3">
+      <div className="relative mx-auto max-w-5xl">
         {/* Voice status pill (legacy parity — above the input, hidden when voice is off) */}
         {voicePill && (
           <div className="mb-2 flex items-center justify-center">
@@ -302,9 +135,7 @@ export function Composer(props: ComposerProps) {
         <div
           className={cn(
             'flex items-end gap-2 rounded-xl border transition-colors',
-            isDragging
-              ? 'border-[#58a6ff] bg-[rgba(88,166,255,0.08)]'
-              : 'border-[#30363d] bg-[#161b22]',
+            'border-[#30363d] bg-[#161b22]',
             isFocused && 'border-[#58a6ff]/50',
           )}
         >
@@ -315,7 +146,6 @@ export function Composer(props: ComposerProps) {
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               disabled={props.disabled}
@@ -345,6 +175,26 @@ export function Composer(props: ComposerProps) {
               {showOptions && (
                 <div className="absolute bottom-full left-0 mb-2 w-[260px] rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl z-50">
                   <div className="space-y-0.5">
+                    {/* Theme toggle (light / dark) */}
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-sm text-[#c9d1d9] hover:bg-[#21262d] rounded-lg transition-colors text-left"
+                      title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+                      onClick={() => toggleTheme()}
+                    >
+                      {isDark ? (
+                        <Sun size={16} className="shrink-0" />
+                      ) : (
+                        <Moon size={16} className="shrink-0" />
+                      )}
+                      <span className="flex-1">Theme</span>
+                      <span className="text-xs text-[#8b949e]">
+                        {isDark ? 'Dark' : 'Light'}
+                      </span>
+                    </button>
+
+                    <div className="border-t border-[#30363d] my-1" />
+
                     {/* Thinking toggle */}
                     <button
                       type="button"
@@ -579,25 +429,8 @@ export function Composer(props: ComposerProps) {
 
           </div>
 
-          {/* Right actions: paperclip (new-client enhancement) + Stop (legacy parity — always visible, disabled when idle) */}
+          {/* Right actions: Stop (legacy parity — always visible, disabled when idle) */}
           <div className="order-3 flex items-center gap-0.5 pr-1 pb-1">
-            {/* Paperclip */}
-            <button
-              type="button"
-              className="rounded-md p-1.5 text-[#8b949e] transition-colors hover:bg-[#21262d] hover:text-[#c9d1d9]"
-              title="Attach file"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Paperclip size={16} />
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={handleFileSelect}
-                accept="image/*,.pdf,.txt,.json,.xml,.yaml,.yml,.md,.csv"
-              />
-            </button>
             <button
               type="button"
               className={cn(
@@ -612,25 +445,6 @@ export function Composer(props: ComposerProps) {
               <Square size={10} /> Stop
             </button>
           </div>
-        </div>
-
-        {/* Drop zone overlay */}
-        {isDragging && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-[#58a6ff] bg-[#0d1117]/80">
-            <div className="text-center text-[#58a6ff]">
-              <span className="text-lg">📁</span>
-              <p className="mt-1 text-sm">Drop files here</p>
-            </div>
-          </div>
-        )}
-
-        {/* Footer hint */}
-        <div className="mt-2 flex items-center justify-center gap-1 text-[10px] text-[#484f58]">
-          <span>Enter</span>
-          <span>to send</span>
-          <span className="mx-0.5">·</span>
-          <span>Shift+Enter</span>
-          <span>for newline</span>
         </div>
       </div>
 

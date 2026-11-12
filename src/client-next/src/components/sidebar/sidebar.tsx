@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FolderPlus, Search, Settings, Globe } from 'lucide-react';
+import { FolderPlus, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/context/session-context';
 import { useWebSocket } from '@/context/websocket-context';
@@ -152,14 +152,6 @@ function SidebarInner({
         </div>
         <button
           type="button"
-          className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="Settings"
-          onClick={props.onOpenSettings}
-        >
-          <Settings size={16} />
-        </button>
-        <button
-          type="button"
           className="shrink-0 rounded p-1 text-sm leading-none text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Collapse sidebar"
           onClick={props.onCollapse}
@@ -216,14 +208,6 @@ function SidebarInner({
           >
             <Search size={16} className="-mt-0.5" />
             Search
-          </button>
-          <button
-            type="button"
-            className="flex shrink-0 items-center justify-center rounded-md border border-border px-3 py-2 text-sm transition-colors hover:bg-muted hover:text-primary"
-            title="Browser panel"
-            onClick={props.onToggleBrowser}
-          >
-            <Globe size={16} className="-mt-0.5" />
           </button>
         </div>
       </div>

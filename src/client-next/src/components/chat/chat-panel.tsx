@@ -5,7 +5,7 @@ import { useSession, isSummaryMessage } from '@/context/session-context';
 import { useAudio } from '@/context/audio-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { MessageBubble } from './message-bubble';
-import { Composer, type FileAttachment } from './composer';
+import { Composer } from './composer';
 import { useScrollToBottom } from './scroll-manager';
 import { Text } from '@/components/ui/box';
 import { PlanBar } from './plan-bar';
@@ -87,38 +87,21 @@ export function ChatPanel(props: ChatPanelProps) {
   } = useSession();
   const { voiceMode, speak } = useAudio();
   const busy = isWaiting || isStreaming;
-  const { containerRef } = useScrollToBottom();
+  const { containerRef, scrollToBottom } = useScrollToBottom({
+    content: messages,
+    resetKey: currentSessionId,
+  });
 
-  const handleSend = (content: string, attachments: FileAttachment[]) => {
-    const images = attachments
-      .filter((a) => a.type === 'image' && a.dataUrl)
-      .map((a) => a.dataUrl!);
-    const files = attachments
-      .filter((a) => a.type === 'file' && a.dataUrl)
-      .map((a) => ({
-        name: a.name,
-        type: a.file?.type || 'application/octet-stream',
-        dataUrl: a.dataUrl!,
-      }));
-
+  const handleSend = (content: string) => {
     if (isStreaming) {
       // Steer the in-flight turn (text only)
       send('chat:message', { message: content });
+      scrollToBottom(true);
       return;
     }
-
-    const ok =
-      images.length > 0 || files.length > 0
-        ? send('chat:message', {
-            message: content,
-            images,
-            files,
-          })
-        : sendMessage(content);
-    if (ok) {
-      // Optimistic: the server echoes the message back over WS, but flag
-      // waiting immediately for snappier UI.
-    }
+    sendMessage(content);
+    // Force the view to the bottom (legacy: scrollToBottom(true) on send).
+    scrollToBottom(true);
   };
 
   return (
@@ -126,8 +109,8 @@ export function ChatPanel(props: ChatPanelProps) {
       {/* Plan bar */}
       <PlanBar plan={plan} />
 
-      {/* Messages area */}
-      <div ref={containerRef} className="flex-1 overflow-y-auto">
+      {/* Messages area (centered column, legacy `max-w-5xl mx-auto` parity) */}
+      <div ref={containerRef} className="mx-auto flex w-full max-w-5xl flex-1 flex-col overflow-y-auto">
         {messages.length === 0 && !busy ? (
           <EmptyChatState />
         ) : (
