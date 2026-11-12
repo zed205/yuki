@@ -84,6 +84,9 @@ function SidebarInner({
       : connectionState === 'connecting'
         ? 'Connecting...'
         : 'Disconnected';
+  // Match legacy: green when connected, red otherwise (app.js updateStatus).
+  const statusClass =
+    connectionState === 'connected' ? 'text-success' : 'text-destructive';
 
   // --- Collapsed rail: Y avatar + expand + session initial-avatars (hover tooltips) ---
   if (collapsed) {
@@ -148,7 +151,7 @@ function SidebarInner({
         </div>
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-bold leading-tight">Yuki</h1>
-          <div className="mt-0.5 text-sm text-muted-foreground">{statusText}</div>
+          <div className={`mt-0.5 text-sm ${statusClass}`}>{statusText}</div>
         </div>
         <button
           type="button"

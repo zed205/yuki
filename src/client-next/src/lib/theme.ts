@@ -83,6 +83,7 @@ function applySemanticColors(colors: Record<string, string>): void {
     'accent-foreground': colors['accent-foreground'] ?? 'hsl(210, 40%, 98%)',
     destructive: colors['destructive'] ?? 'hsl(0, 63%, 31%)',
     'destructive-foreground': colors['destructive-foreground'] ?? 'hsl(210, 40%, 98%)',
+    success: colors['success'] ?? 'hsl(142, 67%, 46%)',
     border: colors['border'] ?? 'hsl(217, 33%, 18%)',
     input: colors['input'] ?? 'hsl(217, 33%, 18%)',
     ring: colors['ring'] ?? 'hsl(213, 27%, 84%)',
