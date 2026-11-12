@@ -246,7 +246,7 @@ function SummaryCard({ content, compacted }: { content: string; compacted?: bool
       <details
         open={open}
         onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-        className="group max-w-[85%] rounded-xl border border-[#4d5b5e] bg-[#394548] text-sm"
+        className="group w-full rounded-xl border border-[#4d5b5e] bg-[#394548] text-sm"
       >
         <summary className="flex cursor-pointer select-none items-center gap-2 rounded-xl px-4 py-2.5 text-[#c9d1d9] list-none">
           <ChevronRight
@@ -282,7 +282,7 @@ function TTGroup({
   const label = lastTool ? `${lastTool.name} ${lastTool.status}` : 'Thought';
   return (
     <div className="my-1 flex justify-start">
-      <div className="w-full max-w-[90%] md:max-w-[80%] lg:max-w-[75%]">
+      <div className="w-full">
         <button
           type="button"
           className="flex cursor-pointer items-center gap-1.5 rounded-full border border-dashed border-[#30363d] px-3 py-1.5 text-left text-xs text-[#8b949e] transition-colors hover:border-[#58a6ff]/40 hover:bg-[#21262d]/50 hover:text-[#c9d1d9]"
@@ -377,7 +377,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   if (isAgent) {
     return (
       <div className={cn('mb-2 flex justify-start', compacted && 'opacity-40')}>
-        <div className="w-full max-w-[90%] md:max-w-[80%] lg:max-w-[75%]">
+        <div className="w-full">
           <SubAgentBubble subAgent={subAgent} />
         </div>
       </div>
@@ -407,7 +407,7 @@ export function MessageBubble(props: MessageBubbleProps) {
     >
       <div
         className={cn(
-          'relative group max-w-[90%] md:max-w-[80%] lg:max-w-[75%]',
+          'relative group w-full',
         )}
       >
         <div

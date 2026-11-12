@@ -120,7 +120,7 @@ export function Composer(props: ComposerProps) {
 
   return (
     <div className="border-t border-[#30363d] bg-[#0d1117] px-3 py-3">
-      <div className="relative mx-auto max-w-5xl">
+      <div className="relative w-full">
         {/* Voice status pill (legacy parity — above the input, hidden when voice is off) */}
         {voicePill && (
           <div className="mb-2 flex items-center justify-center">

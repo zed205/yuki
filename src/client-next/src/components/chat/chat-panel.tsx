@@ -109,8 +109,8 @@ export function ChatPanel(props: ChatPanelProps) {
       {/* Plan bar */}
       <PlanBar plan={plan} />
 
-      {/* Messages area (centered column, legacy `max-w-5xl mx-auto` parity) */}
-      <div ref={containerRef} className="mx-auto flex w-full max-w-5xl flex-1 flex-col overflow-y-auto">
+      {/* Messages area (full-width, fills the main area) */}
+      <div ref={containerRef} className="flex w-full flex-1 flex-col overflow-y-auto px-4">
         {messages.length === 0 && !busy ? (
           <EmptyChatState />
         ) : (
