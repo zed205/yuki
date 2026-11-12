@@ -97,7 +97,9 @@ export function Composer(props: ComposerProps) {
     compactState,
     notificationsEnabled,
     setNotificationsEnabled,
+    tools,
   } = useSession();
+  const toolsOn = tools.some((t) => t.enabled);
   const { send } = useWebSocket();
   const audio = useAudio();
   const [showTools, setShowTools] = useState(false);
@@ -393,7 +395,9 @@ export function Composer(props: ComposerProps) {
                         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                       </svg>
                       <span className="flex-1">Tools</span>
-                      <span className="text-xs text-[#8b949e]">Manage</span>
+                      <span className="text-xs text-[#8b949e]">
+                        {toolsOn ? 'On' : 'Off'}
+                      </span>
                     </button>
 
                     <div className="border-t border-[#30363d] my-1" />
@@ -559,7 +563,13 @@ export function Composer(props: ComposerProps) {
                       </svg>
                       <span className="flex-1">Compaction</span>
                       <span className="text-xs text-[#8b949e]">
-                        {compactState === 'busy' ? 'Busy' : 'Ready'}
+                        {compactState === 'busy'
+                          ? 'Busy'
+                          : compactState === 'done'
+                            ? 'Done'
+                            : compactState === 'failed'
+                              ? 'Failed'
+                              : 'Ready'}
                       </span>
                     </button>
                   </div>
@@ -569,7 +579,7 @@ export function Composer(props: ComposerProps) {
 
           </div>
 
-          {/* Right actions: paperclip (new-client enhancement) + Stop (legacy parity — only visible while streaming) */}
+          {/* Right actions: paperclip (new-client enhancement) + Stop (legacy parity — always visible, disabled when idle) */}
           <div className="order-3 flex items-center gap-0.5 pr-1 pb-1">
             {/* Paperclip */}
             <button
@@ -588,15 +598,19 @@ export function Composer(props: ComposerProps) {
                 accept="image/*,.pdf,.txt,.json,.xml,.yaml,.yml,.md,.csv"
               />
             </button>
-            {isBusy && (
-              <button
-                type="button"
-                className="flex items-center gap-1 rounded-md bg-[#da3633]/90 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#da3633]"
-                onClick={() => props.onStop?.()}
-              >
-                <Square size={10} /> Stop
-              </button>
-            )}
+            <button
+              type="button"
+              className={cn(
+                'flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                isBusy
+                  ? 'bg-[#da3633]/90 text-white hover:bg-[#da3633]'
+                  : 'cursor-not-allowed bg-[#30363d] text-[#8b949e] opacity-60',
+              )}
+              disabled={!isBusy}
+              onClick={() => props.onStop?.()}
+            >
+              <Square size={10} /> Stop
+            </button>
           </div>
         </div>
 

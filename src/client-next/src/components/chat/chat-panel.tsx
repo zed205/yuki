@@ -74,6 +74,7 @@ export function ChatPanel(props: ChatPanelProps) {
     sendMessage,
     stopResponse,
     isStreaming,
+    isWaiting,
     plan,
     subagents,
     currentSessionId,
@@ -84,7 +85,8 @@ export function ChatPanel(props: ChatPanelProps) {
     forkSession,
     revertMessage,
   } = useSession();
-  const { voiceMode } = useAudio();
+  const { voiceMode, speak } = useAudio();
+  const busy = isWaiting || isStreaming;
   const { containerRef } = useScrollToBottom();
 
   const handleSend = (content: string, attachments: FileAttachment[]) => {
@@ -126,26 +128,23 @@ export function ChatPanel(props: ChatPanelProps) {
 
       {/* Messages area */}
       <div ref={containerRef} className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !busy ? (
           <EmptyChatState />
         ) : (
           <div className="py-4">
             {messages.map((msg) => {
-              // Fork-note marker: render the inline "⟿ Fork → original" indicator
-              // at the fork point (matches the legacy per-message indicator).
+              // Forked-from marker: render the centered "⟿ Forked from session" pill
+              // (legacy parity) when this session was forked from another.
               if (msg.forkNote && forkedParentId) {
                 return (
-                  <div
-                    key={msg.id}
-                    className="mt-1.5 flex items-center gap-1.5 px-1 text-xs"
-                  >
-                    <span className="text-[#58a6ff]/60">⟿</span>
+                  <div key={msg.id} className="my-2 flex justify-center">
                     <button
                       type="button"
-                      className="text-[#58a6ff] underline-offset-2 hover:text-[#c9d1d9] hover:underline"
+                      className="inline-flex cursor-pointer select-none items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22]/30 px-3 py-1.5 text-xs text-[#58a6ff]/80 transition-colors hover:text-[#58a6ff]"
+                      title="Click to view original session"
                       onClick={() => switchSession(forkedParentId)}
                     >
-                      Fork
+                      ⟿ Forked from session
                     </button>
                   </div>
                 );
@@ -181,11 +180,22 @@ export function ChatPanel(props: ChatPanelProps) {
                     }
                   }}
                   onRead={() => {
-                    // Read full message (voice) — handled in Phase 6
+                    if (typeof msg.content === 'string' && msg.content.trim()) {
+                      void speak(msg.content);
+                    }
                   }}
                 />
               );
             })}
+            {/* Typing indicator (legacy "Yuki is processing...") while a turn is in flight */}
+            {busy && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl rounded-bl-md border border-[#30363d] bg-[#161b22] px-4 py-2 text-xs text-[#8b949e]">
+                  Yuki is processing
+                  <span className="animate-pulse">...</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -2,6 +2,16 @@
 
 import type { ObserverFeedback } from '@/lib/types';
 
+// Per-status colors (legacy parity):
+// on_track/complete=green, drifting=yellow, stuck=orange, off_track=red.
+const OBSERVER_STATUS_COLOR: Record<string, string> = {
+  on_track: 'text-green-400',
+  drifting: 'text-yellow-400',
+  stuck: 'text-orange-400',
+  off_track: 'text-red-400',
+  complete: 'text-green-400',
+};
+
 /**
  * Observer feedback block (legacy amber block):
  * Renders status, concern, and suggestion from observer:feedback event.
@@ -20,7 +30,14 @@ export function ObserverFeedbackBlock({ feedback }: { feedback: ObserverFeedback
       {feedback.status && (
         <div className="mb-1">
           <span className="font-medium text-yellow-300">Status:</span>{' '}
-          <span className="text-yellow-100">{feedback.status}</span>
+          <span
+            className={
+              (OBSERVER_STATUS_COLOR[feedback.status] ?? 'text-yellow-100') +
+              ' font-medium capitalize'
+            }
+          >
+            {feedback.status.replace(/_/g, ' ')}
+          </span>
         </div>
       )}
       {feedback.concern && (

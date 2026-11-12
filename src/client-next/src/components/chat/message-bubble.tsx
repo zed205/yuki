@@ -362,12 +362,12 @@ export function MessageBubble(props: MessageBubbleProps) {
     ? 'border-dashed border-[#58a6ff]/30 bg-[#161b22]/40'
     : undefined;
 
-  // Stopped notice (centered pill)
+  // Stopped notice (centered pill, legacy "[Action stopped]")
   if (stoppedNotice) {
     return (
       <div className="my-2 flex justify-center">
-        <div className="rounded-full border border-yellow-600/30 bg-yellow-600/10 px-4 py-1.5 text-xs font-medium text-yellow-400">
-          ▶ Action stopped
+        <div className="rounded-xl border border-[#30363d]/50 bg-[#161b22]/60 px-4 py-2 text-sm italic text-[#f85149]/70">
+          [Action stopped]
         </div>
       </div>
     );

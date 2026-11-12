@@ -7,6 +7,7 @@ import { useSession } from '@/context/session-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { SessionTree } from './session-tree';
 import { SubAgentPanel } from './sub-agent-panel';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   buildModelLabel,
   endpointHostPort,
@@ -67,6 +68,9 @@ function SidebarInner({
     config,
     promptTokens,
     maxTokens,
+    sessions,
+    activeSessionId,
+    switchSession,
   } = useSession();
 
   const label = buildModelLabel(structuredModels, activeModel);
@@ -81,7 +85,7 @@ function SidebarInner({
         ? 'Connecting...'
         : 'Disconnected';
 
-  // --- Collapsed rail: avatar + expand button only (legacy verified) ---
+  // --- Collapsed rail: Y avatar + expand + session initial-avatars (hover tooltips) ---
   if (collapsed) {
     return (
       <div className="flex h-full flex-col items-center gap-1 py-2">
@@ -99,6 +103,35 @@ function SidebarInner({
         >
           ›
         </button>
+        {/* Session initial-avatars with hover tooltips (collapsed rail). */}
+        <div className="mt-1 flex w-full flex-1 flex-col items-center gap-1.5 overflow-y-auto px-1 pb-2">
+          {sessions.map((s) => {
+            const initial = (((s.title || '').trim() || '?').charAt(0) || '?').toUpperCase();
+            const isActive = s.id === activeSessionId;
+            return (
+              <Tooltip key={s.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className={cn(
+                      'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-[0.6rem] font-bold transition-colors',
+                      isActive
+                        ? 'border-[#58a6ff] bg-[#1f6feb]/20 text-[#58a6ff]'
+                        : 'border-[#30363d] bg-[#30363d]/40 text-[#8b949e] hover:bg-[#30363d]',
+                    )}
+                    onClick={() => {
+                      switchSession(s.id);
+                      props.onExpand();
+                    }}
+                  >
+                    {initial}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">{s.title || s.id}</TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
       </div>
     );
   }

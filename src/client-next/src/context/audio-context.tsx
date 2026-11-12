@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -37,6 +38,10 @@ export interface AudioContextValue {
 
   // Voice status
   voiceStatus: VoiceStatus;
+
+  // On-demand text-to-speech (legacy "Read" / playSynthesized).
+  speak: (text: string) => Promise<void>;
+  stopSpeaking: () => void;
 
   // Actions
   setVoiceMode: (v: boolean) => void;
@@ -70,6 +75,12 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle');
+
+  // Sequence guard so a stale utterance can't clear the speaking flag after a
+  // newer one has started. On-demand TTS (legacy "Read") uses the browser's
+  // speechSynthesis API so it works with zero backend dependency and emits no
+  // network errors.
+  const speakSeq = useRef(0);
 
   // When voice mode is off, reset runtime state
   useEffect(() => {
@@ -105,6 +116,60 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     setSpeaking(next);
   }, [tts]);
 
+  // Strip markdown so the synthesized speech is natural prose (mirrors legacy
+  // AudioPlayer.stripMarkdown before /api/audio/synthesize).
+  const stripMarkdown = (text: string): string =>
+    text
+      .replace(/```[\s\S]*?```/g, ' Code block. ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/[*_~>#|]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const stopSpeaking = useCallback(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    speakSeq.current += 1;
+    setSpeaking(false);
+  }, []);
+
+  const speak = useCallback(async (text: string) => {
+    const clean = stripMarkdown(text);
+    if (!clean) return;
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    // Stop any in-flight speech before starting a new one.
+    window.speechSynthesis.cancel();
+    const seq = ++speakSeq.current;
+    setSpeaking(true);
+    try {
+      const utterance = new SpeechSynthesisUtterance(clean);
+      utterance.rate = speed;
+      utterance.pitch = 1;
+      utterance.onend = () => {
+        if (speakSeq.current === seq) setSpeaking(false);
+      };
+      utterance.onerror = () => {
+        if (speakSeq.current === seq) setSpeaking(false);
+      };
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      if (speakSeq.current === seq) setSpeaking(false);
+    }
+  }, [speed]);
+
+  // Stop TTS playback if the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
   const value = useMemo<AudioContextValue>(
     () => ({
       voiceMode,
@@ -133,11 +198,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       setSpeaking,
       setError,
       setVoiceStatus,
+      speak,
+      stopSpeaking,
     }),
     [
       voiceMode, mic, tts, volume, speed, selectedVoice, pushToTalk,
       listening, speaking, error, voiceStatus, toggleVoiceMode, toggleMic,
-      toggleTts,
+      toggleTts, speak, stopSpeaking,
     ],
   );
 
