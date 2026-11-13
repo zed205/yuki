@@ -93,9 +93,6 @@ export function ChatPanel(props: ChatPanelProps) {
 
   return (
     <main className={cn('flex h-full flex-col bg-background', className)}>
-      {/* Plan bar */}
-      <PlanBar plan={plan} />
-
       {/* Messages area (legacy parity — max-w-5xl centered column, space-y-4) */}
       <div ref={containerRef} className="flex-1 overflow-y-auto">
         {messages.length === 0 && !busy ? (
@@ -201,6 +198,9 @@ export function ChatPanel(props: ChatPanelProps) {
           </div>
         )}
       </div>
+
+      {/* Plan bar (legacy parity — between messages and composer, at the bottom) */}
+      <PlanBar plan={plan} />
 
       {/* Composer area */}
       <Composer
