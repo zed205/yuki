@@ -43,6 +43,10 @@ namespace YukiWebTray
         private const string LlamaHost = "127.0.0.1";
         private const string LlamaPort = "8082";
 
+        // Dev workspace (source checkout; used by the dev server + deploy).
+        private const string DevDir = @"D:\Development\YukiWeb";
+        private const string DevPort = "3000";
+
         // ---------------- State ----------------
         private static readonly object ProcLock = new object();
         private static readonly object LogLock = new object();
@@ -50,7 +54,9 @@ namespace YukiWebTray
         private static ContextMenuStrip mainMenu;
         private static ToolStripMenuItem serverStatusItem;
         private static Process serverProc;
+        private static Process devProc;
         private static Process llamaProc;
+        private static ToolStripMenuItem devStatusItem;
         private static Form logsForm;
         private static bool shuttingDown;
 
@@ -183,6 +189,24 @@ namespace YukiWebTray
             }
             menu.Items.Add(llamaMenu);
 
+            // ---- Dev Server submenu ----
+            var devMenu = new ToolStripMenuItem("Dev Server");
+            devStatusItem = new ToolStripMenuItem("Dev: Stopped")
+            {
+                Enabled = false
+            };
+            var devStart = new ToolStripMenuItem("Start");
+            devStart.Click += delegate { StartDevServer(); };
+            var devStop = new ToolStripMenuItem("Stop");
+            devStop.Click += delegate { StopDevServer(); };
+            devMenu.DropDownItems.AddRange(new ToolStripItem[] { devStatusItem, devStart, devStop });
+            menu.Items.Add(devMenu);
+
+            // ---- Deploy ----
+            var deploy = new ToolStripMenuItem("Deploy (master)");
+            deploy.Click += delegate { RunDeploy(); };
+            menu.Items.Add(deploy);
+
             // ---- Log submenu ----
             var logMenu = new ToolStripMenuItem("Logs");
             var showLogs = new ToolStripMenuItem("Show Logs");
@@ -288,6 +312,136 @@ namespace YukiWebTray
             catch (Exception ex)
             {
                 Log("Failed to clear log: " + ex.Message);
+            }
+        }
+
+        // ---------------- Dev server process management ----------------
+        private static void StartDevServer()
+        {
+            lock (ProcLock)
+            {
+                if (devProc != null && !devProc.HasExited)
+                    return;
+                // Stop the production server to free port 3210.
+                StopServer();
+                if (!Directory.Exists(DevDir))
+                {
+                    Log("Dev directory not found: " + DevDir);
+                    UpdateDevStatus();
+                    return;
+                }
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "npm",
+                        Arguments = "run dev",
+                        WorkingDirectory = DevDir,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    };
+                    devProc = new Process { StartInfo = psi };
+                    devProc.OutputDataReceived += DevOutputHandler;
+                    devProc.ErrorDataReceived += DevOutputHandler;
+                    devProc.Start();
+                    devProc.BeginOutputReadLine();
+                    devProc.BeginErrorReadLine();
+                    Log("Dev server started (PID " + devProc.Id + ")");
+                }
+                catch (Exception ex)
+                {
+                    Log("Failed to start dev server: " + ex.Message);
+                    try { devProc.Dispose(); } catch { }
+                    devProc = null;
+                }
+                UpdateDevStatus();
+            }
+        }
+
+        private static void DevOutputHandler(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null)
+                AppendLog("[dev] " + e.Data);
+        }
+
+        private static void StopDevServer()
+        {
+            lock (ProcLock)
+            {
+                if (devProc == null)
+                {
+                    UpdateDevStatus();
+                    return;
+                }
+                try
+                {
+                    if (!devProc.HasExited)
+                    {
+                        KillProcessTree(devProc);
+                        if (!devProc.WaitForExit(5000))
+                            devProc.Kill();
+                    }
+                    Log("Dev server stopped");
+                }
+                catch { }
+                try { devProc.Dispose(); } catch { }
+                devProc = null;
+                UpdateDevStatus();
+            }
+        }
+
+        private static void UpdateDevStatus()
+        {
+            if (devStatusItem == null) return;
+            bool running = false;
+            int pid = -1;
+            lock (ProcLock)
+            {
+                running = devProc != null && !devProc.HasExited;
+                if (running) pid = devProc.Id;
+            }
+            devStatusItem.Text = running
+                ? "Dev: Running (port " + DevPort + ", PID " + pid + ")"
+                : "Dev: Stopped";
+        }
+
+        // ---------------- Deploy ----------------
+        private static void RunDeploy()
+        {
+            if (!Directory.Exists(DevDir))
+            {
+                MessageBox.Show(
+                    "Dev directory not found: " + DevDir,
+                    "YukiWeb Tray", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            var result = MessageBox.Show(
+                "Deploy the current branch (master) to production?\n\n"
+                + "This will stop the production server, build, and restart.",
+                "YukiWeb Tray", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+            if (result != DialogResult.OK)
+                return;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "pwsh",
+                    Arguments = "-NoProfile -ExecutionPolicy Bypass -File "
+                        + "\"" + Path.Combine(DevDir, "scripts", "deploy.ps1")
+                        + "\" -Ref master",
+                    WorkingDirectory = DevDir,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                var proc = Process.Start(psi);
+                Log("Deploy started (PID " + proc.Id + ")");
+                // The deploy script will stop this tray and restart it.
+            }
+            catch (Exception ex)
+            {
+                Log("Failed to start deploy: " + ex.Message);
             }
         }
 
@@ -713,6 +867,7 @@ namespace YukiWebTray
             shuttingDown = true;
             Log("Exit requested from tray");
             StopServer();
+            StopDevServer();
             if (llamaProc != null && !llamaProc.HasExited)
             {
                 try { KillProcessTree(llamaProc); } catch { }
