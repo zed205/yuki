@@ -123,14 +123,15 @@ export function ChatPanel(props: ChatPanelProps) {
               // SEPARATE elements (each its own row), not combined into one bubble.
               if (msg.role === 'assistant') {
                 const sub = msg.agentId ? subagents.find((a) => a.agentId === msg.agentId) : undefined;
-                const hasThinking = !!msg.reasoningContent;
+                const reasoning = msg.reasoningContent;
+                const hasThinking = !!reasoning;
                 const hasTools = !!(msg.toolCalls && msg.toolCalls.length > 0);
                 const hasText = typeof msg.content === 'string' && msg.content.trim().length > 0;
                 return (
                   <div key={msg.id} className="space-y-4">
-                    {hasThinking && (
+                    {reasoning && (
                       <ThinkingPill
-                        content={msg.reasoningContent}
+                        content={reasoning}
                         streaming={msg.isStreaming}
                         compacted={msg.compacted}
                       />
