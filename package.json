@@ -4,7 +4,7 @@
   "description": "Personal AI agent with speech-to-speech, browser automation, and desktop control",
   "main": "dist/server/index.js",
   "scripts": {
-    "build:client": "npm --prefix src/client run clean && npm --prefix src/client run build",
+    "build:client": "npm --prefix src/client ci --no-audit --no-fund && npm --prefix src/client run clean && npm --prefix src/client run build",
     "build:server": "tsc",
     "build:tray": "pwsh -NoProfile -ExecutionPolicy Bypass -File tray/build-tray.ps1",
     "build": "npm run build:client && npm run build:server && npm run build:tray && node scripts/copy-client.js && node scripts/write-version.js",
