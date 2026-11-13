@@ -23,14 +23,32 @@ $port  = 3210
 $baseUrl = "http://127.0.0.1:$port"
 
 function Stop-LiveServer {
+  # Stop the old PowerShell tray (if running).
+  $oldTrays = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -like '*tray.ps1*' }
+  if ($oldTrays) {
+    $oldTrays | ForEach-Object {
+      Write-Host "Stopping old tray PID $($_.ProcessId)"
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+  # Stop the new C# tray (if running).
+  $newTrays = Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue
+  if ($newTrays) {
+    $newTrays | ForEach-Object {
+      Write-Host "Stopping tray PID $($_.ProcessId)"
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+  # Stop the node server and its children (taskkill /T kills the whole tree).
   $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     Where-Object { $_.CommandLine -like "*$live*" -and $_.CommandLine -like '*index.js*' }
   if ($procs) {
     $procs | ForEach-Object {
       Write-Host "Stopping live server PID $($_.ProcessId)"
-      Stop-Process -Id $_.ProcessId -Force
+      taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
     }
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
   }
 }
 
