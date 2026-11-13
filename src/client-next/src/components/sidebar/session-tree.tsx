@@ -317,15 +317,10 @@ export function SessionTree(props: SessionTreeProps) {
                               'block truncate text-sm',
                               isActive ? 'text-primary' : 'text-foreground',
                             )}
-                            title={title}
+                            title={s.summary || title}
                           >
                             {title}
                           </span>
-                          {s.summary && (
-                            <span className="mt-px block truncate text-[11px] leading-tight text-muted-foreground/70">
-                              {s.summary}
-                            </span>
-                          )}
                         </span>
                         <span className="shrink-0 text-sm text-muted-foreground">
                           {s.messageCount ?? 0}

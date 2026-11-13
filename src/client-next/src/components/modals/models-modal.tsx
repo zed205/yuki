@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
+
 import { useSession } from '@/context/session-context';
 import { ConfirmModal } from '@/components/modals/confirm-modal';
 import type { StructuredModel, StructuredVariant } from '@/lib/types';
@@ -311,7 +311,7 @@ export function ModelsModal({ open, onOpenChange }: ModelsModalProps) {
         {/* Legacy width: w-[760px] max-w-[95vw]. sm:max-w-[95vw] overrides the shadcn default
             sm:max-w-sm (384px) which otherwise caps the dialog far too narrow. */}
         <DialogContent className="flex max-h-[85vh] w-[760px] max-w-[95vw] sm:max-w-[95vw] flex-col gap-0 p-0">
-          <DialogHeader className="flex-row items-center justify-between border-b border-border px-4 py-3">
+          <DialogHeader className="flex-row items-center justify-between border-b border-border pl-4 pr-12 py-3">
             <DialogTitle className="text-sm font-semibold">Models</DialogTitle>
             {!formMode && (
               <div className="flex items-center gap-3">
@@ -326,7 +326,7 @@ export function ModelsModal({ open, onOpenChange }: ModelsModalProps) {
             )}
           </DialogHeader>
 
-          <ScrollArea className="max-h-[calc(85vh-49px)]">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="p-4">
               {/* ─── List view ─── */}
               {!formMode && (
@@ -536,8 +536,7 @@ export function ModelsModal({ open, onOpenChange }: ModelsModalProps) {
                 </div>
               )}
             </div>
-            <ScrollBar orientation="vertical" />
-          </ScrollArea>
+          </div>
         </DialogContent>
       </Dialog>
 
