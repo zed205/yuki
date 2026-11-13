@@ -46,7 +46,7 @@ Write-Host "Using csc: $csc"
 # --- Compile (embed the icon as a resource) ---
 $argList = @(
     '/nologo',
-    '/target:exe',
+    '/target:winexe',
     "/out:$out",
     '/reference:System.dll',
     '/reference:System.Drawing.dll',

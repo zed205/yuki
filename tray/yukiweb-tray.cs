@@ -49,7 +49,6 @@ namespace YukiWebTray
         private static NotifyIcon trayIcon;
         private static ContextMenuStrip mainMenu;
         private static ToolStripMenuItem serverStatusItem;
-        private static ToolStripMenuItem llamaToggleItem;
         private static Process serverProc;
         private static Process llamaProc;
         private static Form logsForm;
@@ -131,35 +130,73 @@ namespace YukiWebTray
         }
 
         // ---------------- Main menu ----------------
+        private static ToolStripMenuItem llamaStartItem;
+        private static ToolStripMenuItem llamaStopItem;
+
         private static ContextMenuStrip BuildMainMenu()
         {
             var menu = new ContextMenuStrip();
 
+            // Server status (disabled, informational).
             serverStatusItem = new ToolStripMenuItem("Server: Starting\u2026")
             {
                 Enabled = false
             };
             menu.Items.Add(serverStatusItem);
 
-            var showLogs = new ToolStripMenuItem("Show Logs");
-            showLogs.Click += delegate { ShowLogsWindow(); };
-            menu.Items.Add(showLogs);
+            // Open the web UI.
+            var openWeb = new ToolStripMenuItem("Open YukiWeb");
+            openWeb.Click += delegate { OpenBrowser(); };
+            menu.Items.Add(openWeb);
 
             menu.Items.Add(new ToolStripSeparator());
 
-            var restart = new ToolStripMenuItem("Restart Server");
-            restart.Click += delegate { RestartServer(); };
-            menu.Items.Add(restart);
+            // ---- Server submenu ----
+            var serverMenu = new ToolStripMenuItem("Server");
+            var srvStart = new ToolStripMenuItem("Start");
+            srvStart.Click += delegate { StartServer(); };
+            var srvStop = new ToolStripMenuItem("Stop");
+            srvStop.Click += delegate { StopServer(); };
+            var srvRestart = new ToolStripMenuItem("Restart");
+            srvRestart.Click += delegate { RestartServer(); };
+            serverMenu.DropDownItems.AddRange(new ToolStripItem[] { srvStart, srvStop, srvRestart });
+            menu.Items.Add(serverMenu);
+
+            // ---- Llama submenu ----
+            var llamaMenu = new ToolStripMenuItem("Llama Server");
+            if (!File.Exists(LlamaServerExe))
+            {
+                var notInstalled = new ToolStripMenuItem("Not Installed")
+                {
+                    Enabled = false
+                };
+                llamaMenu.DropDownItems.Add(notInstalled);
+            }
+            else
+            {
+                llamaStartItem = new ToolStripMenuItem("Start");
+                llamaStartItem.Click += delegate { StartLlamaServer(); };
+                llamaStopItem = new ToolStripMenuItem("Stop");
+                llamaStopItem.Click += delegate { StopLlamaServer(); };
+                llamaMenu.DropDownItems.AddRange(new ToolStripItem[] { llamaStartItem, llamaStopItem });
+                UpdateLlamaMenuState();
+            }
+            menu.Items.Add(llamaMenu);
+
+            // ---- Log submenu ----
+            var logMenu = new ToolStripMenuItem("Logs");
+            var showLogs = new ToolStripMenuItem("Show Logs");
+            showLogs.Click += delegate { ShowLogsWindow(); };
+            var clearLog = new ToolStripMenuItem("Clear Log");
+            clearLog.Click += delegate { ClearLogFile(); };
+            logMenu.DropDownItems.AddRange(new ToolStripItem[] { showLogs, clearLog });
+            menu.Items.Add(logMenu);
+
+            menu.Items.Add(new ToolStripSeparator());
 
             var openFolder = new ToolStripMenuItem("Open App Folder");
             openFolder.Click += delegate { OpenInExplorer(AppDir); };
             menu.Items.Add(openFolder);
-
-            menu.Items.Add(new ToolStripSeparator());
-
-            // Llama-server submenu / item (built dynamically).
-            llamaToggleItem = BuildLlamaItem();
-            menu.Items.Add(llamaToggleItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -176,18 +213,82 @@ namespace YukiWebTray
             return menu;
         }
 
-        private static ToolStripMenuItem BuildLlamaItem()
+        private static void OpenBrowser()
         {
-            if (!File.Exists(LlamaServerExe))
+            try
             {
-                return new ToolStripMenuItem("Llama Server: Not Installed")
-                {
-                    Enabled = false
-                };
+                Process.Start(new ProcessStartInfo("http://localhost:" + Port) { UseShellExecute = true });
             }
-            var item = new ToolStripMenuItem("Start Llama Server");
-            item.Click += delegate { ToggleLlamaServer(); };
-            return item;
+            catch { }
+        }
+
+        private static void StartLlamaServer()
+        {
+            if (llamaProc != null && !llamaProc.HasExited) return;
+            try
+            {
+                string args = "--model \"" + LlamaModel + "\""
+                    + " --port " + LlamaPort
+                    + " --host " + LlamaHost
+                    + " --ctx-size 4096 --threads 8 --parallel 1"
+                    + " --n-gpu-layers 99 --no-mmap";
+                var psi = new ProcessStartInfo
+                {
+                    FileName = LlamaServerExe,
+                    Arguments = args,
+                    WorkingDirectory = @"C:\Windows\System32",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                llamaProc = Process.Start(psi);
+                UpdateLlamaMenuState();
+                Log("Llama server started (PID " + llamaProc.Id + ")");
+            }
+            catch (Exception ex)
+            {
+                Log("Failed to start llama-server: " + ex.Message);
+            }
+        }
+
+        private static void StopLlamaServer()
+        {
+            if (llamaProc == null || llamaProc.HasExited)
+            {
+                llamaProc = null;
+                UpdateLlamaMenuState();
+                return;
+            }
+            try
+            {
+                KillProcessTree(llamaProc);
+                llamaProc.Dispose();
+            }
+            catch { }
+            llamaProc = null;
+            UpdateLlamaMenuState();
+            Log("Llama server stopped");
+        }
+
+        private static void UpdateLlamaMenuState()
+        {
+            if (llamaStartItem == null || llamaStopItem == null) return;
+            bool running = llamaProc != null && !llamaProc.HasExited;
+            llamaStartItem.Enabled = !running;
+            llamaStopItem.Enabled = running;
+        }
+
+        private static void ClearLogFile()
+        {
+            try
+            {
+                if (File.Exists(LogPath))
+                    File.WriteAllText(LogPath, string.Empty);
+                Log("Log file cleared");
+            }
+            catch (Exception ex)
+            {
+                Log("Failed to clear log: " + ex.Message);
+            }
         }
 
         // ---------------- Server process management ----------------
@@ -308,55 +409,6 @@ namespace YukiWebTray
             trayIcon.Text = running
                 ? "YukiWeb (port " + Port + ")"
                 : "YukiWeb (server stopped)";
-        }
-
-        // ---------------- Llama server ----------------
-        private static void ToggleLlamaServer()
-        {
-            if (llamaProc != null && !llamaProc.HasExited)
-            {
-                try
-                {
-                    KillProcessTree(llamaProc);
-                    llamaProc.Dispose();
-                }
-                catch { }
-                llamaProc = null;
-                SetLlamaItemText("Start Llama Server");
-                Log("Llama server stopped");
-            }
-            else
-            {
-                try
-                {
-                    string args = "--model \"" + LlamaModel + "\""
-                        + " --port " + LlamaPort
-                        + " --host " + LlamaHost
-                        + " --ctx-size 4096 --threads 8 --parallel 1"
-                        + " --n-gpu-layers 99 --no-mmap";
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = LlamaServerExe,
-                        Arguments = args,
-                        WorkingDirectory = @"C:\Windows\System32",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    llamaProc = Process.Start(psi);
-                    SetLlamaItemText("Stop Llama Server");
-                    Log("Llama server started (PID " + llamaProc.Id + ")");
-                }
-                catch (Exception ex)
-                {
-                    Log("Failed to start llama-server: " + ex.Message);
-                }
-            }
-        }
-
-        private static void SetLlamaItemText(string text)
-        {
-            if (llamaToggleItem == null) return;
-            llamaToggleItem.Text = text;
         }
 
         // ---------------- Logging ----------------
