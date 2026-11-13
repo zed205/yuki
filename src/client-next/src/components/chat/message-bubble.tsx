@@ -82,7 +82,110 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
   );
 }
 
-function ToolCallList({ toolCalls }: { toolCalls: NonNullable<Message['toolCalls']> }) {
+/**
+ * Standalone thinking pill (legacy `thinking-wrapper`): a separate row that
+ * shows a collapsed "▶ Thought" pill. Click to expand the reasoning content.
+ * Rendered as a SEPARATE element (not inside the assistant bubble) to match
+ * the legacy client's per-message rendering.
+ */
+export function ThinkingPill({
+  content,
+  streaming,
+  compacted,
+}: {
+  content: string;
+  streaming?: boolean;
+  compacted?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={cn('flex justify-start', compacted && 'opacity-40')}>
+      <div className="min-w-0 max-w-[90%]">
+        <button
+          type="button"
+          className="flex cursor-pointer select-none items-center gap-2 rounded-lg border border-[#d29922]/20 bg-[#161b22]/50 px-3 py-1.5 text-xs text-[#8b949e] transition-colors hover:text-[#c9d1d9]"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? 'Collapse reasoning' : 'Expand reasoning'}
+        >
+          <span className="shrink-0 text-[10px] text-[#8b949e]">{open ? '▼' : '▶'}</span>
+          <span className="font-medium text-[#d29922]">
+            {streaming ? 'Thinking…' : 'Thought'}
+          </span>
+        </button>
+        {open && (
+          <div className="mt-1.5 rounded-lg border border-[#d29922]/10 bg-[#161b22]/60 px-3 py-2 font-mono text-xs leading-relaxed text-[#8b949e] whitespace-pre-wrap break-words">
+            {content}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Standalone tool-call pill (legacy `tool-call-wrapper`): a separate row
+ * showing a "▶ tool_name {params}" pill. Click to expand the tool result.
+ * Rendered as a SEPARATE element (one per tool call) to match the legacy
+ * client's per-message rendering.
+ */
+export function ToolCallPill({
+  tool,
+  compacted,
+}: {
+  tool: NonNullable<Message['toolCalls']>[number];
+  compacted?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const status = tool.status || 'pending';
+  const statusColor =
+    status === 'error'
+      ? 'text-red-400'
+      : status === 'completed'
+        ? 'text-green-400'
+        : status === 'running'
+          ? 'text-yellow-400'
+          : 'text-[#8b949e]';
+  const statusText =
+    status === 'error'
+      ? '✗'
+      : status === 'completed'
+        ? '✓'
+        : status === 'running'
+          ? '…'
+          : '…';
+  return (
+    <div className={cn('flex justify-start tool-call-wrapper', compacted && 'opacity-40')}>
+      <div className="min-w-0 max-w-[90%] w-full">
+        <button
+          type="button"
+          className="flex w-full cursor-pointer select-none items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? 'Collapse tool output' : 'Expand tool output'}
+        >
+          <span className="shrink-0 text-[10px] text-[#8b949e]">{open ? '▼' : '▶'}</span>
+          <span className="shrink-0 font-mono font-medium text-primary">{tool.name}</span>
+          <span className="min-w-0 truncate font-mono text-[#8b949e]">
+            {Object.keys(tool.parameters ?? {}).length > 0
+              ? JSON.stringify(tool.parameters)
+              : ''}
+          </span>
+          <span className={cn('ml-auto shrink-0 font-medium', statusColor)}>{statusText}</span>
+        </button>
+        {open && (
+          <div className="mt-1 rounded-lg bg-[#0d1117] px-3 py-2 font-mono text-xs text-[#8b949e]">
+            <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
+              {`Input: ${JSON.stringify(tool.parameters ?? {}, null, 2)}`}
+              {'\n\n'}
+              {`Output: ${tool.result || 'No output'}`}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function ToolCallList({ toolCalls }: { toolCalls: NonNullable<Message['toolCalls']> }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   if (!toolCalls?.length) return null;
 
@@ -246,7 +349,7 @@ function SummaryCard({ content, compacted }: { content: string; compacted?: bool
       <details
         open={open}
         onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-        className="group w-full rounded-xl border border-[#4d5b5e] bg-[#394548] text-sm"
+        className="group max-w-[85%] rounded-xl border border-[#4d5b5e] bg-[#394548] text-sm"
       >
         <summary className="flex cursor-pointer select-none items-center gap-2 rounded-xl px-4 py-2.5 text-[#c9d1d9] list-none">
           <ChevronRight
@@ -282,7 +385,7 @@ function TTGroup({
   const label = lastTool ? `${lastTool.name} ${lastTool.status}` : 'Thought';
   return (
     <div className="my-1 flex justify-start">
-      <div className="w-full">
+      <div className="min-w-0 max-w-[90%]">
         <button
           type="button"
           className="flex cursor-pointer items-center gap-1.5 rounded-full border border-dashed border-[#30363d] px-3 py-1.5 text-left text-xs text-[#8b949e] transition-colors hover:border-[#58a6ff]/40 hover:bg-[#21262d]/50 hover:text-[#c9d1d9]"
@@ -377,7 +480,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   if (isAgent) {
     return (
       <div className={cn('mb-2 flex justify-start', compacted && 'opacity-40')}>
-        <div className="w-full">
+        <div className="min-w-0 max-w-[90%]">
           <SubAgentBubble subAgent={subAgent} />
         </div>
       </div>
@@ -405,11 +508,9 @@ export function MessageBubble(props: MessageBubbleProps) {
         compacted && 'opacity-40',
       )}
     >
-      <div
-        className={cn(
-          'relative group w-full',
-        )}
-      >
+      {/* Legacy parity: wrapper is content-sized (no w-full) so the bubble
+          shrink-wraps to its content, capped at the container width. */}
+      <div className="relative group min-w-0">
         <div
           className={cn(
             'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
@@ -426,9 +527,6 @@ export function MessageBubble(props: MessageBubbleProps) {
           <div className="break-words">
             {isAssistant ? (
               <div className="flex flex-col gap-1">
-                {reasoningContent && (
-                  <ThinkingBlock content={reasoningContent} streaming={isStreaming} />
-                )}
                 {(() => {
                   const parts = splitThinkBlocks(content);
                   if (parts.length === 0) return <MarkdownContent content={content} />;
@@ -446,11 +544,6 @@ export function MessageBubble(props: MessageBubbleProps) {
               <p className="whitespace-pre-wrap break-words">{content}</p>
             ) : (
               <p className="italic">{content}</p>
-            )}
-
-            {/* Tool calls (assistant turns) */}
-            {toolCalls && toolCalls.length > 0 && (
-              <ToolCallList toolCalls={toolCalls} />
             )}
 
             {/* Observer feedback (amber block) */}

@@ -4,25 +4,12 @@ import { cn } from '@/lib/utils';
 import { useSession, isSummaryMessage } from '@/context/session-context';
 import { useAudio } from '@/context/audio-context';
 import { useWebSocket } from '@/context/websocket-context';
-import { MessageBubble } from './message-bubble';
+import { MessageBubble, ThinkingPill, ToolCallPill } from './message-bubble';
 import { Composer } from './composer';
 import { useScrollToBottom } from './scroll-manager';
 import { Text } from '@/components/ui/box';
 import { PlanBar } from './plan-bar';
 import type { Message } from '@/lib/types';
-
-/**
- * A "working" assistant turn (thinking and/or tool calls, no final text yet)
- * collapses into a single dashed TT-group pill (legacy collapseThinkingTools).
- */
-function isTTMessage(m: Message): boolean {
-  if (m.role !== 'assistant') return false;
-  if (m.stoppedNotice || m.observerFeedback || m.agentId) return false;
-  if (isSummaryMessage(m)) return false;
-  const hasOps = (m.toolCalls && m.toolCalls.length > 0) || !!m.reasoningContent;
-  const hasText = typeof m.content === 'string' && m.content.trim().length > 0;
-  return hasOps && !hasText;
-}
 
 interface ChatPanelProps {
   className?: string;
@@ -109,12 +96,12 @@ export function ChatPanel(props: ChatPanelProps) {
       {/* Plan bar */}
       <PlanBar plan={plan} />
 
-      {/* Messages area (full-width, fills the main area) */}
-      <div ref={containerRef} className="flex w-full flex-1 flex-col overflow-y-auto px-4">
+      {/* Messages area (legacy parity — max-w-5xl centered column, space-y-4) */}
+      <div ref={containerRef} className="flex-1 overflow-y-auto">
         {messages.length === 0 && !busy ? (
           <EmptyChatState />
         ) : (
-          <div className="py-4">
+          <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-4">
             {messages.map((msg) => {
               // Forked-from marker: render the centered "⟿ Forked from session" pill
               // (legacy parity) when this session was forked from another.
@@ -132,21 +119,62 @@ export function ChatPanel(props: ChatPanelProps) {
                   </div>
                 );
               }
+              // Legacy parity: assistant turns render thinking, tools, and text as
+              // SEPARATE elements (each its own row), not combined into one bubble.
+              if (msg.role === 'assistant') {
+                const sub = msg.agentId ? subagents.find((a) => a.agentId === msg.agentId) : undefined;
+                const hasThinking = !!msg.reasoningContent;
+                const hasTools = !!(msg.toolCalls && msg.toolCalls.length > 0);
+                const hasText = typeof msg.content === 'string' && msg.content.trim().length > 0;
+                return (
+                  <div key={msg.id} className="space-y-4">
+                    {hasThinking && (
+                      <ThinkingPill
+                        content={msg.reasoningContent}
+                        streaming={msg.isStreaming}
+                        compacted={msg.compacted}
+                      />
+                    )}
+                    {hasTools &&
+                      msg.toolCalls!.map((tool) => (
+                        <ToolCallPill key={tool.id} tool={tool} compacted={msg.compacted} />
+                      ))}
+                    {(hasText || !hasThinking && !hasTools) && (
+                      <MessageBubble
+                        role={msg.role}
+                        content={msg.content}
+                        isStreaming={msg.isStreaming}
+                        compacted={msg.compacted}
+                        timestamp={msg.timestamp}
+                        agentId={msg.agentId}
+                        subAgent={sub}
+                        observerFeedback={msg.observerFeedback}
+                        stoppedNotice={msg.stoppedNotice}
+                        forks={msg.id ? messageForks[msg.id] : undefined}
+                        onForkNavigate={(sessionId) => switchSession(sessionId)}
+                        onFork={() => {
+                          if (currentSessionId && msg.serverIndex != null) {
+                            forkSession(currentSessionId, msg.serverIndex);
+                          }
+                        }}
+                        onRead={() => {
+                          if (typeof msg.content === 'string' && msg.content.trim()) {
+                            void speak(msg.content);
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+                );
+              }
               return (
                 <MessageBubble
                   key={msg.id}
                   role={msg.role}
                   content={msg.content}
-                  toolCalls={msg.toolCalls}
-                  reasoningContent={msg.reasoningContent}
                   isStreaming={msg.isStreaming}
                   compacted={msg.compacted}
                   timestamp={msg.timestamp}
-                  agentId={msg.agentId}
-                  subAgent={msg.agentId ? subagents.find((a) => a.agentId === msg.agentId) : undefined}
-                  observerFeedback={msg.observerFeedback}
-                  stoppedNotice={msg.stoppedNotice}
-                  isTTGroup={isTTMessage(msg)}
                   forks={msg.id ? messageForks[msg.id] : undefined}
                   onForkNavigate={(sessionId) => switchSession(sessionId)}
                   onRevert={() => {
@@ -156,16 +184,6 @@ export function ChatPanel(props: ChatPanelProps) {
                   }}
                   onCompact={() => {
                     compactContext();
-                  }}
-                  onFork={() => {
-                    if (currentSessionId && msg.serverIndex != null && msg.role === 'assistant') {
-                      forkSession(currentSessionId, msg.serverIndex);
-                    }
-                  }}
-                  onRead={() => {
-                    if (typeof msg.content === 'string' && msg.content.trim()) {
-                      void speak(msg.content);
-                    }
                   }}
                 />
               );

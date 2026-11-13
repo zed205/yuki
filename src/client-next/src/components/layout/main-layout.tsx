@@ -130,7 +130,7 @@ export function MainLayout({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        'flex h-screen w-screen overflow-hidden bg-background text-foreground',
+        'flex h-full w-full overflow-hidden bg-background text-foreground',
         className,
       )}
     >

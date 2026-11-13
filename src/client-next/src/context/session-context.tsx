@@ -526,7 +526,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       on('models:updated', (data) => {
         const md = data as {
           models?: Array<{ name: string; displayName?: string }>;
+          activeModel?: string;
         };
+        // The active variant checkbox is controlled by activeModel; the server
+        // re-broadcasts models:updated (with activeModel) after a switch, so
+        // update the state here or the checkbox appears to do nothing.
+        if (md.activeModel) setActiveModel(md.activeModel);
         if (md.models?.length) setModels(md.models);
         // Keep structured models fresh (server re-broadcasts after CRUD).
         const sm = (data as Record<string, unknown>).models as unknown;

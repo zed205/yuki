@@ -33,7 +33,8 @@ export function PlanBar({ plan }: { plan: Plan | null }) {
 
   return (
     <div className="px-4 py-2 border-t border-border bg-muted/30">
-      <div className="w-full">
+      {/* Legacy parity: plan content is constrained to max-w-5xl and centered, matching the transcript. */}
+      <div className="mx-auto w-full max-w-5xl">
         <button
           type="button"
           className="flex w-full cursor-pointer items-center gap-2 text-left"

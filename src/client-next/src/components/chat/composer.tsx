@@ -49,7 +49,6 @@ export function Composer(props: ComposerProps) {
   const [showTools, setShowTools] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [value, setValue] = useState('');
-  const [isFocused, setIsFocused] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const optionsMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -120,7 +119,7 @@ export function Composer(props: ComposerProps) {
 
   return (
     <div className="border-t border-[#30363d] bg-[#0d1117] px-3 py-3">
-      <div className="relative w-full">
+      <div className="relative mx-auto w-full max-w-5xl">
         {/* Voice status pill (legacy parity — above the input, hidden when voice is off) */}
         {voicePill && (
           <div className="mb-2 flex items-center justify-center">
@@ -131,49 +130,41 @@ export function Composer(props: ComposerProps) {
           </div>
         )}
 
-        {/* Composer container */}
-        <div
-          className={cn(
-            'flex items-end gap-2 rounded-xl border transition-colors',
-            'border-[#30363d] bg-[#161b22]',
-            isFocused && 'border-[#58a6ff]/50',
-          )}
-        >
-          <div className="order-2 flex flex-1 flex-col">
+        {/* Composer container (legacy parity — textarea has its own border; ⋮ and Stop are separate
+            buttons, all bottom-aligned via items-end). Width = max-w-5xl to match the transcript. */}
+        <div className="flex items-end gap-2">
+          <div className="order-2 flex min-w-0 flex-1 flex-col">
             <textarea
               ref={textareaRef}
               rows={1}
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              onFocus={() => setIsFocused(true)}
-              onBlur={() => setIsFocused(false)}
               disabled={props.disabled}
               placeholder={isBusy ? 'Steer the running task… (Enter to send)' : placeholder}
-              className="composer-textarea w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-relaxed text-[#c9d1d9] outline-none placeholder:text-[#8b949e]"
+              className="composer-textarea min-h-[40px] w-full resize-none rounded-lg border border-[#30363d] bg-[#21262d] px-4 py-2 text-sm leading-relaxed text-[#c9d1d9] outline-none transition-colors placeholder:text-[#8b949e] focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff]/40"
             />
           </div>
 
-          {/* ⋮ Options menu (legacy parity — options live on the left of the input) */}
-          <div className="order-1 flex items-center gap-0.5 pl-1 pb-1">
-            <div ref={optionsMenuRef} className="relative">
-              <button
-                type="button"
-                className={cn(
-                  'rounded-md p-1.5 transition-colors',
-                  showOptions
-                    ? 'bg-[#21262d] text-[#c9d1d9]'
-                    : 'text-[#8b949e] hover:bg-[#21262d] hover:text-[#c9d1d9]',
-                )}
-                title="Options"
-                onClick={() => setShowOptions((v) => !v)}
-              >
-                <MoreVertical size={16} />
-              </button>
+          {/* ⋮ Options menu (legacy parity — p-2 button on the left, bottom-aligned with textarea) */}
+          <div className="relative inline-block shrink-0 order-1" ref={optionsMenuRef}>
+            <button
+              type="button"
+              className={cn(
+                'rounded-lg p-2 transition-colors',
+                showOptions
+                  ? 'bg-[#21262d] text-[#c9d1d9]'
+                  : 'text-[#8b949e] hover:bg-[#21262d] hover:text-[#c9d1d9]',
+              )}
+              title="Options"
+              onClick={() => setShowOptions((v) => !v)}
+            >
+              <MoreVertical size={20} />
+            </button>
 
               {/* Dropdown menu (opens upward, left-aligned) */}
               {showOptions && (
-                <div className="absolute bottom-full left-0 mb-2 w-[260px] rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl z-50">
+                <div className="absolute bottom-full left-0 mb-2 w-[240px] rounded-xl border border-[#30363d] bg-[#161b22] p-1.5 shadow-2xl z-50">
                   <div className="space-y-0.5">
                     {/* Theme toggle (light / dark) */}
                     <button
@@ -425,24 +416,23 @@ export function Composer(props: ComposerProps) {
                   </div>
                 </div>
               )}
-            </div>
-
           </div>
 
-          {/* Right actions: Stop (legacy parity — always visible, disabled when idle) */}
-          <div className="order-3 flex items-center gap-0.5 pr-1 pb-1">
+          {/* Stop (legacy parity — p-2 button on the right, always visible, disabled when idle) */}
+          <div className="order-3 shrink-0">
             <button
               type="button"
               className={cn(
-                'flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                'flex items-center gap-1.5 rounded-lg p-2 text-xs font-medium transition-colors',
                 isBusy
                   ? 'bg-[#da3633]/90 text-white hover:bg-[#da3633]'
-                  : 'cursor-not-allowed bg-[#30363d] text-[#8b949e] opacity-60',
+                  : 'cursor-not-allowed text-[#8b949e] opacity-50 hover:opacity-70',
               )}
+              title="Stop current action"
               disabled={!isBusy}
               onClick={() => props.onStop?.()}
             >
-              <Square size={10} /> Stop
+              <Square size={14} fill="currentColor" strokeWidth={0} /> Stop
             </button>
           </div>
         </div>

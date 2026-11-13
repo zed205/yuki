@@ -128,6 +128,17 @@
        (ui-sans-serif, …) exactly like the legacy — only code is monospace. */
     font-size: 17px;
   }
+  /* Full-viewport app: html/body track the viewport exactly (no dead bands, no
+     100vw scrollbar dead-zone, reflows on resize). The app root uses h-full w-full
+     instead of h-screen w-screen so it follows the body's real (post-scrollbar)
+     size on every resize. */
+  html,
+  body {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
 }
 /* =============================================================================
    Yuki Brand Overrides (ported from client-v2 theme/yuki-brand.css)

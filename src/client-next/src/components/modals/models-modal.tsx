@@ -308,7 +308,9 @@ export function ModelsModal({ open, onOpenChange }: ModelsModalProps) {
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex max-h-[85vh] w-[760px] max-w-[95vw] flex-col gap-0 p-0">
+        {/* Legacy width: w-[760px] max-w-[95vw]. sm:max-w-[95vw] overrides the shadcn default
+            sm:max-w-sm (384px) which otherwise caps the dialog far too narrow. */}
+        <DialogContent className="flex max-h-[85vh] w-[760px] max-w-[95vw] sm:max-w-[95vw] flex-col gap-0 p-0">
           <DialogHeader className="flex-row items-center justify-between border-b border-border px-4 py-3">
             <DialogTitle className="text-sm font-semibold">Models</DialogTitle>
             {!formMode && (
