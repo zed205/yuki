@@ -61,7 +61,10 @@ function getDbInstance(): Database.Database {
         voice_mode         INTEGER DEFAULT 0,
         disabled_tools     TEXT,
         chars_per_token    REAL,
-        last_prompt_tokens INTEGER
+        last_prompt_tokens INTEGER,
+        forked_from        TEXT,
+        parent_message_id  TEXT,
+        FOREIGN KEY (forked_from) REFERENCES sessions(id)
       );
 
       CREATE TABLE IF NOT EXISTS messages (
@@ -76,6 +79,7 @@ function getDbInstance(): Database.Database {
         attachments         TEXT,
         pruned              INTEGER DEFAULT 0,
         compacted           INTEGER DEFAULT 0,
+        parent_session_id   TEXT,
         synthetic_prefix    TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
@@ -156,6 +160,11 @@ function getDbInstance(): Database.Database {
       );
     `);
 
+    // Migration: add fork tracking columns to existing schemas (ignore errors if columns exist)
+    try { _db.exec(`ALTER TABLE sessions ADD COLUMN forked_from TEXT`); } catch {}
+    try { _db.exec(`ALTER TABLE sessions ADD COLUMN parent_message_id TEXT`); } catch {}
+    try { _db.exec(`ALTER TABLE messages ADD COLUMN parent_session_id TEXT`); } catch {}
+
     // Additive migrations for databases created by older versions. CREATE TABLE
     // IF NOT EXISTS does not add columns to an existing table.
     const messageColumns = _db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
@@ -234,6 +243,8 @@ export interface SessionRow {
   disabled_tools?: string;
   chars_per_token?: number;
   last_prompt_tokens?: number;
+  forked_from?: string;
+  parent_message_id?: string;
 }
 
 export interface MessageRow {
@@ -248,6 +259,7 @@ export interface MessageRow {
   attachments?: string;
   pruned: number;
   compacted: number;
+  parent_session_id?: string;
   synthetic_prefix?: string | null;
 }
 
@@ -282,14 +294,17 @@ export function upsertSession(
   disabledTools: string[] | null,
   charsPerToken: number | null,
   lastPromptTokens: number | null,
+  forkedFrom: string | null,
+  parentMessageId: string | null,
 ): void {
   getDb().prepare(`
     INSERT INTO sessions (
       id, title, summary, project_id,
       created_at, updated_at,
       thinking_enabled, voice_mode,
-      disabled_tools, chars_per_token, last_prompt_tokens
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      disabled_tools, chars_per_token, last_prompt_tokens,
+      forked_from, parent_message_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       summary = excluded.summary,
@@ -299,7 +314,9 @@ export function upsertSession(
       voice_mode = excluded.voice_mode,
       disabled_tools = excluded.disabled_tools,
       chars_per_token = excluded.chars_per_token,
-      last_prompt_tokens = excluded.last_prompt_tokens
+      last_prompt_tokens = excluded.last_prompt_tokens,
+      forked_from = excluded.forked_from,
+      parent_message_id = excluded.parent_message_id
   `).run(
     id, title, summary, projectId,
     createdAt, updatedAt,
@@ -307,6 +324,7 @@ export function upsertSession(
     voiceMode ? 1 : 0,
     disabledTools ? JSON.stringify(disabledTools) : null,
     charsPerToken, lastPromptTokens,
+    forkedFrom, parentMessageId,
   );
 }
 
@@ -370,14 +388,15 @@ export function upsertMessage(
   attachments: string | null,
   pruned: boolean,
   compacted: boolean,
+  parentSessionId: string | null = null,
   syntheticPrefix: string | null = null,
 ): void {
   getDb().prepare(`
     INSERT INTO messages (
       id, session_id, role, content, timestamp,
       tool_calls, reasoning_content, images, attachments,
-      pruned, compacted, synthetic_prefix
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      pruned, compacted, parent_session_id, synthetic_prefix
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       role = excluded.role,
       content = excluded.content,
@@ -388,11 +407,13 @@ export function upsertMessage(
       attachments = excluded.attachments,
       pruned = excluded.pruned,
       compacted = excluded.compacted,
+      parent_session_id = excluded.parent_session_id,
       synthetic_prefix = excluded.synthetic_prefix
   `).run(
     id, sessionId, role, content, timestamp,
     toolCalls, reasoningContent, images, attachments,
-    pruned ? 1 : 0, compacted ? 1 : 0, syntheticPrefix,
+    pruned ? 1 : 0, compacted ? 1 : 0,
+    parentSessionId, syntheticPrefix,
   );
 }
 
@@ -422,6 +443,7 @@ export function persistMessage(msg: Message): void {
     msg.attachments ? JSON.stringify(msg.attachments) : null,
     !!msg.pruned,
     !!msg.compacted,
+    msg.parentSessionId || null,
     msg.syntheticPrefix || null,
   );
 }
@@ -449,6 +471,7 @@ export function replaceSessionMessages(sessionId: string, msgs: Message[]): void
         m.attachments ? JSON.stringify(m.attachments) : null,
         !!m.pruned,
         !!m.compacted,
+        m.parentSessionId || null,
         m.syntheticPrefix || null,
       );
     }
@@ -497,6 +520,8 @@ export function saveSession(session: Session): void {
       session.disabledTools && session.disabledTools.length > 0 ? session.disabledTools : null,
       session.charsPerToken || null,
       session.lastPromptTokens || null,
+      session.forkedFrom || null,
+      session.parentMessageId || null,
     );
 
     // Replace all messages
@@ -514,6 +539,7 @@ export function saveSession(session: Session): void {
         msg.attachments ? JSON.stringify(msg.attachments) : null,
         !!msg.pruned,
         !!msg.compacted,
+        msg.parentSessionId || null,
         msg.syntheticPrefix || null,
       );
     }
@@ -543,6 +569,8 @@ export function getSession(sessionId: string): Session | undefined {
     disabledTools: disabledTools.length > 0 ? disabledTools : undefined,
     charsPerToken: row.chars_per_token,
     lastPromptTokens: row.last_prompt_tokens,
+    forkedFrom: row.forked_from,
+    parentMessageId: row.parent_message_id,
     messages: msgRows.map(r => ({
       id: r.id,
       role: r.role as Message['role'],
@@ -555,6 +583,7 @@ export function getSession(sessionId: string): Session | undefined {
       attachments: r.attachments ? JSON.parse(r.attachments) : undefined,
       pruned: !!r.pruned,
       compacted: !!r.compacted,
+      parentSessionId: r.parent_session_id,
       syntheticPrefix: r.synthetic_prefix || undefined,
     })),
   };
@@ -621,6 +650,8 @@ export function createSession(
     disabledTools.length > 0 ? disabledTools : null,
     null,
     null,
+    null,       // forkedFrom
+    null,       // parentMessageId
   );
 
   const systemMsgId = `${id}-system`;
@@ -636,6 +667,7 @@ export function createSession(
     null,
     false,
     false,
+    null,
   );
 
   return {
@@ -656,6 +688,106 @@ export function createSession(
       sessionId: id,
     }],
   };
+}
+
+/**
+ * Create a fork of an existing session at a specific message point.
+ * Copies all messages up to (and including) the fork point message,
+ * then attaches a note about the fork in the forked session's messages.
+ */
+export function createForkSession(
+  parentSession: Session,
+  forkMessageId: string,
+  projectId: string,
+): Session {
+  const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const now = new Date();
+  const nowTs = Math.floor(now.getTime() / 1000);
+
+  // Find the index of the fork point message
+  const forkIdx = parentSession.messages.findIndex(m => m.id === forkMessageId);
+  if (forkIdx === -1) {
+    throw new Error(`Fork point message ${forkMessageId} not found in session`);
+  }
+
+  // Copy messages up to and including the fork point
+  const forkedMessages: Array<Message & { forkedFrom: string }> = parentSession.messages.slice(0, forkIdx + 1).map(m => ({
+    ...m,
+    id: `${id}-${m.id.split('-').slice(1).join('-')}`,
+    sessionId: id,
+    forkedFrom: parentSession.id,
+  }));
+
+  // Add a fork note message
+  const forkNoteMsg: Message & { forkedFrom: string } = {
+    id: `${id}-fork-note`,
+    role: 'system',
+    content: `Session forked from [${parentSession.title || 'session'}](session:${parentSession.id}) at message ${forkMessageId}`,
+    timestamp: now,
+    sessionId: id,
+    forkedFrom: parentSession.id,
+  };
+  forkedMessages.push(forkNoteMsg);
+
+  // Create session row with fork tracking
+  upsertSession(
+    id,
+    `Fork: ${parentSession.title || 'session'}`,
+    parentSession.summary || null,
+    projectId,
+    nowTs,
+    nowTs,
+    parentSession.thinkingEnabled ?? false,
+    parentSession.voiceMode ?? false,
+    parentSession.disabledTools && parentSession.disabledTools.length > 0 ? parentSession.disabledTools : null,
+    parentSession.charsPerToken || null,
+    parentSession.lastPromptTokens || null,
+    parentSession.id,       // forked_from
+    forkMessageId,          // parent_message_id
+  );
+
+  // Save each message
+  for (const msg of forkedMessages) {
+    upsertMessage(
+      msg.id,
+      msg.sessionId,
+      msg.role,
+      msg.content,
+      Math.floor(msg.timestamp.getTime() / 1000),
+      msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+      msg.reasoningContent || null,
+      msg.images ? JSON.stringify(msg.images) : null,
+      msg.attachments ? JSON.stringify(msg.attachments) : null,
+      !!msg.pruned,
+      !!msg.compacted,
+      msg.parentSessionId || null,
+      msg.syntheticPrefix || null,
+    );
+  }
+
+  return {
+    id,
+    title: `Fork: ${parentSession.title || 'session'}`,
+    summary: parentSession.summary,
+    projectId,
+    createdAt: now,
+    updatedAt: now,
+    thinkingEnabled: parentSession.thinkingEnabled,
+    voiceMode: parentSession.voiceMode,
+    disabledTools: parentSession.disabledTools,
+    forkedFrom: parentSession.id,
+    parentMessageId: forkMessageId,
+    messages: forkedMessages,
+  };
+}
+
+/**
+ * Get all sessions that are forks of the given session.
+ */
+export function getForksForSession(sessionId: string): Array<{ id: string; title?: string; updatedAt: number; createdAt: number }> {
+  return getDb().prepare(
+    'SELECT id, title, created_at, updated_at FROM sessions WHERE forked_from = ? ORDER BY created_at ASC'
+  ).all(sessionId) as Array<{ id: string; title?: string; updatedAt: number; createdAt: number }>;
 }
 
 /**
@@ -709,6 +841,8 @@ export function loadSessions(sessionDataDir: string): string | null {
         data.disabledTools || null,
         typeof data.charsPerToken === 'number' ? data.charsPerToken : null,
         typeof data.lastPromptTokens === 'number' ? data.lastPromptTokens : null,
+        null,       // forked_from
+        null,       // parent_message_id
       );
 
       if (data.messages && Array.isArray(data.messages)) {
@@ -726,6 +860,7 @@ export function loadSessions(sessionDataDir: string): string | null {
             msg.attachments ? JSON.stringify(msg.attachments) : null,
             msg.pruned ? true : false,
             msg.compacted ? true : false,
+            null,
           );
         }
       }

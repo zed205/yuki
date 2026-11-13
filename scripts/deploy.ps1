@@ -23,14 +23,32 @@ $port  = 3210
 $baseUrl = "http://127.0.0.1:$port"
 
 function Stop-LiveServer {
+  # Stop the old PowerShell tray (if running).
+  $oldTrays = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -like '*tray.ps1*' }
+  if ($oldTrays) {
+    $oldTrays | ForEach-Object {
+      Write-Host "Stopping old tray PID $($_.ProcessId)"
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+  # Stop the new C# tray (if running).
+  $newTrays = Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue
+  if ($newTrays) {
+    $newTrays | ForEach-Object {
+      Write-Host "Stopping tray PID $($_.ProcessId)"
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+  # Stop the node server and its children (taskkill /T kills the whole tree).
   $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     Where-Object { $_.CommandLine -like "*$live*" -and $_.CommandLine -like '*index.js*' }
   if ($procs) {
     $procs | ForEach-Object {
       Write-Host "Stopping live server PID $($_.ProcessId)"
-      Stop-Process -Id $_.ProcessId -Force
+      taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
     }
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
   }
 }
 
@@ -46,17 +64,28 @@ function Rollback {
   return $true
 }
 
-# The tray app owns the server process (it supervises, logs, and can restart
-# it). Restoring/stopping the server is done by restarting the tray.
+# The tray app (tray\yukiweb-tray.exe) owns the server process: it launches,
+# supervises, logs, and can restart it. Restoring/stopping the server is done
+# by restarting the tray.
 function Restart-Tray {
-  $trays = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-    Where-Object { $_.CommandLine -like '*tray.ps1*' }
+  # Stop any running tray instance (by process name).
+  $trays = Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue
   if ($trays) {
     $trays | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
   }
-  $vbs = Join-Path $repo 'scripts\yukiweb-tray.vbs'
-  Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbs`""
+  # The tray may have been force-killed before it could stop its server; stop
+  # the server too so the new tray starts cleanly.
+  Stop-LiveServer
+  # Start the new tray from the live install (it starts the server).
+  $exe = Join-Path $live 'tray\yukiweb-tray.exe'
+  if (Test-Path $exe) {
+    Start-Process -FilePath $exe
+    Write-Host "Started tray: $exe"
+  }
+  else {
+    Write-Warning "Tray exe not found at $exe — server will not auto-start."
+  }
 }
 
 if ($Rollback) { Rollback; return }

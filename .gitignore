@@ -5,13 +5,15 @@
 !/docs/
 !/tests/
 !/scripts/
+!/tray/
 scripts/*
 !/scripts/copy-client.js
-!/scripts/tray.ps1
-!/scripts/yukiweb-tray.bat
-!/scripts/yukiweb-tray.vbs
 !/scripts/deploy.ps1
 !/scripts/write-version.js
+tray/*
+!/tray/yukiweb-tray.cs
+!/tray/yukiweb-tray.ico
+!/tray/build-tray.ps1
 !/paths.json.example
 !/package.json
 !/package-lock.json
@@ -23,5 +25,6 @@ node_modules/
 dist/
 .env
 *.log
+*.exe
 paths.json
 .yukiweb-dev/

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, getNamedModels, getActiveModelName, setActiveModelName, getModelDefaultThinking, getEffectiveThinking, setThinkingOverride, loadEnvFile, getSubAgentConfig, getStructuredModels, addModel, updateModel, deleteModel, addVariant, updateVariant, deleteVariant } from './config';
@@ -28,6 +28,8 @@ import {
   createSession as dbCreateSession,
   loadSessions as dbLoadSessions,
   updateSessionField,
+  createForkSession,
+  getForksForSession,
 } from '../db';
 import * as fs from 'fs';
 import { normalizeLineEndings } from './utils/line-endings';
@@ -41,7 +43,31 @@ const PORT = configuredPort;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(express.static(path.join(__dirname, '..', 'client')));
+
+// Security headers for the SPA (applied to all responses)
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    // 'unsafe-inline' is required by the Next.js App Router (inline flight scripts)
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; " +
+    "media-src 'self' blob: data:; " +
+    "font-src 'self' data:; " +
+    "connect-src 'self' ws://localhost:* wss://localhost:* ws://127.0.0.1:* wss://127.0.0.1:*; " +
+    "frame-ancestors 'none'; " +
+    "base-uri 'self'; " +
+    "form-action 'self'"
+  );
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+
+// The client is served by the Next.js handler (see below); when Next serves
+// the UI it owns all asset paths.
 
 const sessionDataDir = sessionsDir;
 const attachmentsDir = pathsAttachmentsDir;
@@ -291,8 +317,7 @@ app.get('/api/sessions/search', (req, res) => {
             (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role != 'system') as msg_count
      FROM sessions s WHERE s.title IS NOT NULL AND lower(s.title) LIKE ?
      ORDER BY s.updated_at DESC`,
-    [`%${lowerQ}%`]
-  ).all() as Array<{
+  ).all(`%${lowerQ}%`) as Array<{
     id: string; title?: string; summary?: string; project_id?: string;
     created_at: number; updated_at: number; msg_count: number;
   }>;
@@ -304,8 +329,7 @@ app.get('/api/sessions/search', (req, res) => {
      JOIN sessions s ON m.session_id = s.id
      WHERE lower(m.content) LIKE ?
      ORDER BY s.updated_at DESC`,
-    [`%${lowerQ}%`]
-  ).all() as Array<{
+  ).all(`%${lowerQ}%`) as Array<{
     id: string; title?: string; summary?: string; project_id?: string;
     created_at: number; updated_at: number;
   }>;
@@ -332,7 +356,7 @@ app.get('/api/sessions/search', (req, res) => {
   for (const row of titleResults) addResult(row);
   for (const row of contentResults) addResult(row);
 
-  results.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  results.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   res.json(results);
 });
 
@@ -403,6 +427,66 @@ app.post('/api/sessions/:id/rename', (req, res) => {
   }
   updateSessionField(id, { title: { value: req.body.title } });
   res.json({ success: true });
+});
+
+// --- Fork API ---
+
+app.get('/api/sessions/:id/forks', (req, res) => {
+  const id = req.params.id;
+  if (!getSessionRow(id)) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const forks = getForksForSession(id);
+  res.json(forks);
+});
+
+app.post('/api/sessions/:id/fork', async (req, res) => {
+  const id = req.params.id;
+  const sessionId = id;
+  const messageIndex = parseInt(req.body.messageIndex, 10);
+
+  const parentSession = dbGetSession(sessionId);
+  if (!parentSession) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (isNaN(messageIndex) || messageIndex < 0 || messageIndex >= parentSession.messages.length) {
+    return res.status(400).json({ error: 'Invalid message index' });
+  }
+
+  const forkMessage = parentSession.messages[messageIndex];
+  if (forkMessage.role !== 'assistant') {
+    return res.status(400).json({ error: 'Can only fork from assistant messages' });
+  }
+
+  const projectId = parentSession.projectId || 'default';
+  try {
+    const forkSession = createForkSession(parentSession, forkMessage.id, projectId);
+
+    // Notify all connected clients about the new fork session
+    const forkPayload = {
+      sessionId: forkSession.id,
+      parentSessionId: parentSession.id,
+      parentMessageId: forkMessage.id,
+    };
+
+    for (const client of wss.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: 'session:forked', data: forkPayload }));
+      }
+    }
+
+    res.json({
+      id: forkSession.id,
+      sessionId: forkSession.id,
+      parentSessionId: parentSession.id,
+      parentMessageId: forkMessage.id,
+    });
+  } catch (err: any) {
+    console.error('[fork] failed to create fork:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Config API ---
@@ -694,8 +778,56 @@ app.get('/api/browser/screenshot', async (_req, res) => {
   }
 });
 
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client', 'index.html'));
+// --- Next.js client (primary) ---
+// Production layout: dist/client contains the compiled Next build
+// (.next/) copied by scripts/copy-client.js. All non-API routes are served
+// through the Next request handler (single port).
+const nextClientDir = path.join(__dirname, '..', 'client');
+let nextHandler: ((req: Request, res: Response) => Promise<void>) | null = null;
+let nextReady: Promise<void> | null = null;
+const hasNextBuild = fs.existsSync(path.join(nextClientDir, '.next', 'BUILD_ID'));
+if (hasNextBuild) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Next = require('next') as new (opts: { dev: boolean; dir: string }) => {
+      prepare(): Promise<void>;
+      getRequestHandler(): (req: Request, res: Response) => Promise<void>;
+    };
+    const nextApp = new Next({ dev: false, dir: nextClientDir });
+    nextReady = nextApp
+      .prepare()
+      .then(() => {
+        nextHandler = nextApp.getRequestHandler();
+        console.log(`Serving Next.js client from ${nextClientDir}`);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to initialize Next.js handler; falling back to static client:', err);
+      });
+  } catch (err) {
+    console.error('Failed to load Next.js (is `next` installed at the root?); falling back to static client:', err);
+  }
+} else {
+  console.log('No Next.js build found at dist/client; client UI will be unavailable until built.');
+}
+
+// Serve the Next.js app once ready (waits out the async prepare() so
+// early requests don't 404 while the handler initializes).
+const serveClient = async (req: Request, res: Response) => {
+  if (nextReady) await nextReady;
+  if (nextHandler) {
+    await nextHandler(req, res);
+    return;
+  }
+  res.status(503).send('Client not built. Run: npm run build (builds src/client) and restart.');
+};
+
+app.get('/', (req, res) => {
+  serveClient(req, res);
+});
+
+// SPA fallback: Next.js handler, else legacy index.html
+app.get('*', (req, res) => {
+  serveClient(req, res);
 });
 
 // Version stamp (written by scripts/write-version.js at build time) so the
@@ -1231,6 +1363,38 @@ wss.on('connection', (ws) => {
         }
       }
 
+      if (message.type === 'session:delete') {
+        const id = message.data.sessionId;
+        if (id && getSessionRow(id)) {
+          deleteSessionById(id);
+          ws.send(JSON.stringify({
+            type: 'session:deleted',
+            data: { sessionId: id },
+          }));
+          // If this was the active session, switch to recent
+          if (activeSessionId === id) {
+            const recent = getDb().prepare(
+              'SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1'
+            ).get() as { id: string } | undefined;
+            activeSessionId = recent?.id || null;
+          }
+        }
+      }
+
+      if (message.type === 'session:create') {
+        const projectId = message.data.projectId || 'default';
+        const newSession = createSession(projectId);
+        activeSessionId = newSession.id;
+        ws.send(JSON.stringify({
+          type: 'session:created',
+          data: { sessionId: newSession.id, projectId: newSession.projectId },
+        }));
+        ws.send(JSON.stringify({
+          type: 'session:switched',
+          data: { sessionId: newSession.id, projectId: newSession.projectId, thinkingEnabled: getEffectiveThinking(), voiceMode: false },
+        }));
+      }
+
       if (message.type === 'context:compact') {
         console.log('[server] context:compact received, session has', session.messages.length, 'messages');
         await agent.triggerCompaction(session, getConfig(), ws);
@@ -1246,6 +1410,72 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({
             type: 'session:moved',
             data: { sessionId, projectId },
+          }));
+        }
+      }
+
+      if (message.type === 'session:fork') {
+        const targetSessionId = message.data.sessionId;
+        const messageIndex = parseInt(message.data.messageIndex, 10);
+        const target = dbGetSession(targetSessionId);
+
+        if (!target) {
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: 'Session not found' },
+          }));
+          return;
+        }
+
+        if (isNaN(messageIndex) || messageIndex < 0 || messageIndex >= target.messages.length) {
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: 'Invalid message index' },
+          }));
+          return;
+        }
+
+        const forkMsg = target.messages[messageIndex];
+        if (forkMsg.role !== 'assistant') {
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: 'Can only fork from assistant messages' },
+          }));
+          return;
+        }
+
+        const projectId = target.projectId || 'default';
+        try {
+          const forkSession = createForkSession(target, forkMsg.id, projectId);
+
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: {
+              ok: true,
+              sessionId: forkSession.id,
+              parentSessionId: target.id,
+              parentMessageId: forkMsg.id,
+            },
+          }));
+
+          // Notify all clients about the fork
+          for (const client of wss.clients) {
+            if (client.readyState === 1) {
+              client.send(JSON.stringify({
+                type: 'session:forked',
+                data: {
+                  sessionId: forkSession.id,
+                  parentSessionId: target.id,
+                  parentMessageId: forkMsg.id,
+                },
+              }));
+            }
+          }
+        } catch (err: any) {
+          console.error('[fork] failed to create fork:', err);
+          ws.send(JSON.stringify({
+            type: 'session:fork-result',
+            data: { ok: false, error: err.message },
           }));
         }
       }

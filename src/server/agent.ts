@@ -535,12 +535,21 @@ export class Agent {
           agentIds: finished.map(j => j.id),
           sessionId: session.id,
         });
-        const block = formatSubAgentResults(finished);
+        const allAgents = listSubAgents(session.id);
+        const block = formatSubAgentResults(finished, allAgents.length);
         reportBlock = reportBlock ? `${reportBlock}\n\n${block}` : block;
         reportBlockPending = true;
       }
       if (reportBlock && reportBlockPending) {
-        messages.push({ role: 'user', content: reportBlock });
+        const reportMsg: Message = {
+          id: this.generateId(),
+          role: 'user',
+          content: reportBlock,
+          timestamp: new Date(),
+          sessionId: session.id,
+        };
+        messages.push(reportMsg);
+        session.messages.push(reportMsg);
         reportBlockPending = false;
       }
 
@@ -1722,8 +1731,8 @@ export class Agent {
 
     const configuredIterations = config.maxToolIterations;
     const maxIterations = configuredIterations === -1
-      ? 40
-      : Math.max(1, configuredIterations || 10);
+      ? Infinity
+      : Math.max(1, configuredIterations);
     const ctxWindow = budget.declared;
     const compactionThreshold = cm?.compactionThreshold ?? 0.85;
     const hardStopThreshold = cm?.hardStopThreshold ?? 0.95;

@@ -359,7 +359,9 @@ export function describeSubAgent(job: SubAgentJob): Record<string, any> {
 }
 
 /** The context block injected into the parent when background results land. */
-export function formatSubAgentResults(jobs: SubAgentJob[]): string {
+export function formatSubAgentResults(jobs: SubAgentJob[], totalSpawned: number): string {
+  const finishedCount = jobs.length;
+  const pendingCount = totalSpawned - finishedCount;
   const sections = jobs.map(job => {
     const head = `### ${job.description} (${job.id}) — ${job.status} in ${Math.round(elapsedMs(job) / 1000)}s`;
     const body = job.status === 'completed'
@@ -369,7 +371,7 @@ export function formatSubAgentResults(jobs: SubAgentJob[]): string {
   });
   return [
     '## Background Sub-Agent Results',
-    'These sub-agents finished while you were working. Their reports follow.',
+    `${finishedCount} of ${totalSpawned} sub-agent(s) have finished so far. ${pendingCount > 0 ? pendingCount + ' agent(s) still running.' : 'All agents complete.'}`,
     'Treat each report as a claim, not as fact: before relying on it or telling the user it is done, validate the parts that matter — read the files it changed, inspect the diff, re-run the command or test it cites. State clearly what you verified and what you did not. Use agent_result with an id if you need the report again.',
     '',
     sections.join('\n\n'),
