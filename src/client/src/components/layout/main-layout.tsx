@@ -9,7 +9,6 @@ import { useWebSocket } from '@/context/websocket-context';
 import { Sidebar } from '@/components/sidebar/sidebar';
 import { ChatPanel } from '@/components/chat/chat-panel';
 import { SettingsModal } from '@/components/settings/settings-modal';
-import { VoicePanel } from '@/components/voice/voice-panel';
 import { BrowserView } from '@/components/browser/browser-view';
 import { SessionSync } from '@/components/session-sync';
 import { RenameModal } from '@/components/modals/rename-modal';
@@ -158,7 +157,6 @@ export function MainLayout({ className }: { className?: string }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileTopBar onMenu={() => setMobileOpen(true)} />
         <ChatPanel className="pt-14 md:pt-0" />
-        <VoicePanel />
       </div>
 
       {/* Overlays & sync */}
