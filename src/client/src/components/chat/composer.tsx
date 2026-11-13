@@ -39,6 +39,7 @@ export function Composer(props: ComposerProps) {
     notificationsEnabled,
     setNotificationsEnabled,
     tools,
+    revertFill,
   } = useSession();
   const toolsOn = tools.some((t) => t.enabled);
   const { send } = useWebSocket();
@@ -52,6 +53,17 @@ export function Composer(props: ComposerProps) {
   const [showOptions, setShowOptions] = useState(false);
   const optionsMenuRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Refill the composer when a message is reverted (nonce-bumped so repeats
+  // re-trigger). Focus the textarea so the user can immediately edit/resend.
+  useEffect(() => {
+    if (!revertFill) return;
+    setValue(revertFill.text);
+    // Focus after the state update renders.
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }, [revertFill?.nonce]);
 
   // Auto-resize the textarea
   useEffect(() => {

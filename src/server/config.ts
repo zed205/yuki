@@ -63,6 +63,7 @@ const defaultConfig: Config = {
   maxToolIterations: 10,
   imageTokensPerImage: 1024,
   llmTimeoutMs: 180000,
+  llmStaleTimeoutMs: 120000,
   thinkingEnabled: false,
   maxToolOutputChars: 20000,
   maxReadLines: 200,

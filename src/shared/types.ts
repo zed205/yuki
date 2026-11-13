@@ -55,6 +55,9 @@ export interface Config {
   maxToolIterations: number;
   imageTokensPerImage: number;
   llmTimeoutMs: number;
+  // Max ms to wait for a chunk on an open LLM stream before aborting (detects
+  // a dead/hung connection that the total llmTimeoutMs would not catch fast enough).
+  llmStaleTimeoutMs?: number;
   thinkingEnabled: boolean;
   disabledTools: string[];
   mcpServers?: MCPServerConfig[];

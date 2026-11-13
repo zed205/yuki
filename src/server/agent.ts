@@ -997,7 +997,25 @@ export class Agent {
     delete requestBody.stream;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.llmTimeoutMs ?? 180000);
+    const totalTimeoutMs = config.llmTimeoutMs ?? 180000;
+    const timeoutId = setTimeout(() => controller.abort(), totalTimeoutMs);
+
+    // Stale-stream watchdog: a hung/dead LLM connection (server crash, dropped
+    // socket that never receives a FIN/RST) leaves the `for await` loop blocked
+    // with no chunks arriving, so the total timeout above is the only thing that
+    // would ever fire. Reset this short watchdog on every chunk received; if no
+    // chunk arrives within the window we abort immediately instead of hanging.
+    const staleTimeoutMs = config.llmStaleTimeoutMs ?? 120000;
+    let staleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let staleFired = false;
+    const resetStaleTimeout = () => {
+      if (staleTimeoutId) clearTimeout(staleTimeoutId);
+      staleTimeoutId = setTimeout(() => {
+        staleFired = true;
+        console.error(`[agent] LLM stream stale (no chunks for ${staleTimeoutMs}ms), aborting`);
+        controller.abort();
+      }, staleTimeoutMs);
+    };
 
     let fullContent = '';
     let fullReasoning = '';
@@ -1014,8 +1032,10 @@ export class Agent {
       const stream = await openai.chat.completions.create(createParams as any, {
         signal: controller.signal,
       }) as any;
+      resetStaleTimeout();
 
       for await (const chunk of stream) {
+        resetStaleTimeout();
         const delta = chunk.choices?.[0]?.delta;
         if (!delta) continue;
 
@@ -1077,15 +1097,19 @@ export class Agent {
     return result;
     } catch (err: any) {
       clearTimeout(timeoutId);
+      if (staleTimeoutId) clearTimeout(staleTimeoutId);
       if (signal && onAbort) {
         signal.removeEventListener('abort', onAbort);
       }
-      const errMsg = `${err.name || err.message}${err.name === 'AbortError' ? ` (timeout=${config.llmTimeoutMs}ms)` : ''}`;
+      const errMsg = staleFired
+        ? `AbortError (stale stream: no chunks for ${staleTimeoutMs}ms)`
+        : `${err.name || err.message}${err.name === 'AbortError' ? ` (timeout=${config.llmTimeoutMs}ms)` : ''}`;
       console.error(`callLLM error: ${errMsg}`);
-      logLLMRequestResponse(requestBody, { content: '' }, Date.now() - startTime, err.message, logMeta);
+      logLLMRequestResponse(requestBody, { content: '' }, Date.now() - startTime, errMsg, logMeta);
       throw err;
     } finally {
       clearTimeout(timeoutId);
+      if (staleTimeoutId) clearTimeout(staleTimeoutId);
       if (signal && onAbort) {
         signal.removeEventListener('abort', onAbort);
       }
