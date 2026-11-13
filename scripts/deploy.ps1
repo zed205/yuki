@@ -46,17 +46,28 @@ function Rollback {
   return $true
 }
 
-# The tray app owns the server process (it supervises, logs, and can restart
-# it). Restoring/stopping the server is done by restarting the tray.
+# The tray app (tray\yukiweb-tray.exe) owns the server process: it launches,
+# supervises, logs, and can restart it. Restoring/stopping the server is done
+# by restarting the tray.
 function Restart-Tray {
-  $trays = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-    Where-Object { $_.CommandLine -like '*tray.ps1*' }
+  # Stop any running tray instance (by process name).
+  $trays = Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue
   if ($trays) {
     $trays | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
   }
-  $vbs = Join-Path $repo 'scripts\yukiweb-tray.vbs'
-  Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbs`""
+  # The tray may have been force-killed before it could stop its server; stop
+  # the server too so the new tray starts cleanly.
+  Stop-LiveServer
+  # Start the new tray from the live install (it starts the server).
+  $exe = Join-Path $live 'tray\yukiweb-tray.exe'
+  if (Test-Path $exe) {
+    Start-Process -FilePath $exe
+    Write-Host "Started tray: $exe"
+  }
+  else {
+    Write-Warning "Tray exe not found at $exe — server will not auto-start."
+  }
 }
 
 if ($Rollback) { Rollback; return }

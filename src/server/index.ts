@@ -66,8 +66,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// The static client middleware is only registered when the Next.js build is
-// absent (see below); when Next serves the UI it owns all asset paths.
+// The client is served by the Next.js handler (see below); when Next serves
+// the UI it owns all asset paths.
 
 const sessionDataDir = sessionsDir;
 const attachmentsDir = pathsAttachmentsDir;
@@ -778,18 +778,14 @@ app.get('/api/browser/screenshot', async (_req, res) => {
   }
 });
 
-// --- Next.js client (primary) with legacy static fallback ---
-// Production layout: dist/client-next contains the compiled Next build
-// (.next/) copied by scripts/copy-client.js. When present, all non-API
-// routes are served through the Next request handler (single port).
-const nextClientDir = path.join(__dirname, '..', 'client-next');
+// --- Next.js client (primary) ---
+// Production layout: dist/client contains the compiled Next build
+// (.next/) copied by scripts/copy-client.js. All non-API routes are served
+// through the Next request handler (single port).
+const nextClientDir = path.join(__dirname, '..', 'client');
 let nextHandler: ((req: Request, res: Response) => Promise<void>) | null = null;
 let nextReady: Promise<void> | null = null;
 const hasNextBuild = fs.existsSync(path.join(nextClientDir, '.next', 'BUILD_ID'));
-if (!hasNextBuild) {
-  // No Next.js build: serve legacy client assets only
-  app.use(express.static(path.join(__dirname, '..', 'client')));
-}
 if (hasNextBuild) {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -811,7 +807,7 @@ if (hasNextBuild) {
     console.error('Failed to load Next.js (is `next` installed at the root?); falling back to static client:', err);
   }
 } else {
-  console.log('No Next.js build found at dist/client-next; client UI will be unavailable until built.');
+  console.log('No Next.js build found at dist/client; client UI will be unavailable until built.');
 }
 
 // Serve the Next.js app once ready (waits out the async prepare() so
@@ -822,7 +818,7 @@ const serveClient = async (req: Request, res: Response) => {
     await nextHandler(req, res);
     return;
   }
-  res.status(503).send('Client not built. Run: npm run build (builds src/client-next) and restart.');
+  res.status(503).send('Client not built. Run: npm run build (builds src/client) and restart.');
 };
 
 app.get('/', (req, res) => {

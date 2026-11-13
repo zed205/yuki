@@ -8,7 +8,7 @@
  * This mirrors the old Vite dev setup (vite proxy: /ws, /api -> 3210),
  * so the browser always talks to a single origin.
  *
- * Usage: npm run dev:client   (runs `node src/client-next/dev-server.js`)
+ * Usage: npm run dev:client   (runs `node src/client/dev-server.js`)
  * Make sure the Express backend is running on BACKEND_PORT (default 3210).
  */
 const { createServer } = require('http');

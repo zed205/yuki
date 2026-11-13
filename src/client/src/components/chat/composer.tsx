@@ -432,7 +432,7 @@ export function Composer(props: ComposerProps) {
               disabled={!isBusy}
               onClick={() => props.onStop?.()}
             >
-              <Square size={14} fill="currentColor" strokeWidth={0} /> Stop
+              <Square size={14} fill="currentColor" strokeWidth={0} />
             </button>
           </div>
         </div>

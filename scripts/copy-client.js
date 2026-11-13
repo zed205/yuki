@@ -20,16 +20,11 @@ function copyDir(src, dest) {
   }
 }
 
-// Copy legacy client (kept for fallback static assets)
-removeDir('dist/client');
-copyDir('src/client', 'dist/client');
-console.log('Legacy client files copied to dist/client');
-
 // Stage the Next.js production build so the Express server can serve it
-// via the next() handler (dist/client-next = .next build + config).
-const nextSrc = path.join('src', 'client-next');
+// via the next() handler (dist/client = .next build + config).
+const nextSrc = path.join('src', 'client');
 const nextBuild = path.join(nextSrc, '.next');
-const nextDest = path.join('dist', 'client-next');
+const nextDest = path.join('dist', 'client');
 if (fs.existsSync(path.join(nextBuild, 'BUILD_ID'))) {
   removeDir(nextDest);
   fs.mkdirSync(nextDest, { recursive: true });
@@ -40,7 +35,7 @@ if (fs.existsSync(path.join(nextBuild, 'BUILD_ID'))) {
     path.join(nextDest, 'next.config.js'),
     "module.exports = {};\n",
   );
-  console.log('Next.js build staged to dist/client-next');
+  console.log('Next.js build staged to dist/client');
 } else {
-  console.warn('WARNING: src/client-next/.next/BUILD_ID not found — skip staging Next.js build');
+  console.warn('WARNING: src/client/.next/BUILD_ID not found — skip staging Next.js build');
 }
