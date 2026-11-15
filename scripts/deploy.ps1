@@ -32,13 +32,13 @@ function Stop-LiveServer {
       Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
   }
-  # Stop the new C# tray (if running).
-  $newTrays = Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue
-  if ($newTrays) {
-    $newTrays | ForEach-Object {
-      Write-Host "Stopping tray PID $($_.ProcessId)"
-      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-    }
+  # Stop the new C# tray (if running). Snapshot PIDs up front and null-guard:
+  # a tray that's mid-shutdown can report a null ProcessId between the query
+  # and the kill, which would otherwise abort the whole deploy on a bind error.
+  $trayPids = @(Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessId } | Where-Object { $null -ne $_ })
+  foreach ($tpid in $trayPids) {
+    Write-Host "Stopping tray PID $tpid"
+    Stop-Process -Id $tpid -Force -ErrorAction SilentlyContinue
   }
   # Stop the node server and its children (taskkill /T kills the whole tree).
   $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
@@ -68,10 +68,11 @@ function Rollback {
 # supervises, logs, and can restart it. Restoring/stopping the server is done
 # by restarting the tray.
 function Restart-Tray {
-  # Stop any running tray instance (by process name).
-  $trays = Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue
-  if ($trays) {
-    $trays | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  # Stop any running tray instance (by process name). Null-guard PIDs to
+  # survive a tray that's mid-shutdown (ProcessId can go null mid-kill).
+  $trayPids = @(Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessId } | Where-Object { $null -ne $_ })
+  if ($trayPids.Count -gt 0) {
+    foreach ($tpid in $trayPids) { Stop-Process -Id $tpid -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
   }
   # The tray may have been force-killed before it could stop its server; stop
