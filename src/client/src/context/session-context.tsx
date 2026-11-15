@@ -769,8 +769,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           toolCalls?: Message['toolCalls'];
           messageId?: string;
         };
+        // A response carrying toolCalls is NOT the end of the turn: the agent
+        // will run the tools and call the model again. Keep the "busy" state
+        // (isWaiting) alive so the Stop button / Escape stay armed through the
+        // whole multi-tool turn. Only a final answer (no tool calls) or an
+        // explicit chat:stopped ends the turn.
+        const continuing = !!rd.toolCalls?.length;
         setIsStreaming(false);
-        setIsWaiting(false);
+        setIsWaiting(continuing);
         pendingChunkRef.current = '';
         if (!rd.message && !rd.toolCalls?.length) {
           streamingIdRef.current = null;

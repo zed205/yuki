@@ -73,6 +73,8 @@ export function Composer(props: ComposerProps) {
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, [value]);
 
+  const isBusy = isWaiting || isStreaming;
+
   const handleSubmit = useCallback(() => {
     const content = value.trim();
     if (!content) return;
@@ -91,7 +93,7 @@ export function Composer(props: ComposerProps) {
         setShowOptions(false);
         return;
       }
-      if (isStreaming) {
+      if (isBusy) {
         e.preventDefault();
         props.onStop?.();
       }
@@ -112,8 +114,6 @@ export function Composer(props: ComposerProps) {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showOptions]);
-
-  const isBusy = isWaiting || isStreaming;
 
   // Voice status pill (legacy parity — shown above the input only while voice is active).
   const voicePill = (() => {
