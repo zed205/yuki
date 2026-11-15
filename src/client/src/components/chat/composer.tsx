@@ -163,7 +163,7 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               className={cn(
-                'rounded-lg p-2 transition-colors',
+                'flex min-h-[40px] items-center justify-center rounded-lg p-2 transition-colors',
                 showOptions
                   ? 'bg-[#21262d] text-[#c9d1d9]'
                   : 'text-[#8b949e] hover:bg-[#21262d] hover:text-[#c9d1d9]',
@@ -435,7 +435,7 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               className={cn(
-                'flex items-center gap-1.5 rounded-lg p-2 text-xs font-medium transition-colors',
+                'flex min-h-[40px] items-center gap-1.5 rounded-lg p-2 text-xs font-medium transition-colors',
                 isBusy
                   ? 'bg-[#da3633]/90 text-white hover:bg-[#da3633]'
                   : 'cursor-not-allowed text-[#8b949e] opacity-50 hover:opacity-70',
