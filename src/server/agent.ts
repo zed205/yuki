@@ -395,9 +395,11 @@ export class Agent {
         sessionId: session.id,
       });
 
-      // Inject feedback into the messages array (as a system message)
+      // Inject feedback into the messages array as a `user` message (not `system`):
+      // the head prompt is the single system message and Qwen's chat template rejects
+      // any additional system message placed mid-conversation.
       const feedbackMsg: Record<string, any> = {
-        role: 'system',
+        role: 'user',
         content: feedbackText,
       };
       messages.push(feedbackMsg);
@@ -2135,7 +2137,11 @@ export class Agent {
     // would drop it. Without this it is written and never actually sent back.
     const anchored = session.messages.find(m => this.isSummaryMessage(m) && !m.pruned);
     if (anchored) {
-      messages.push({ role: 'system', content: anchored.content });
+      // Send the recap as a `user` message, NOT `system`: the prompt above is the
+      // single system message and Qwen's chat template raises "System message must
+      // be at the beginning" for any additional system message placed after it.
+      // A user-role recap is valid anywhere (same as the sub-agent compaction summary).
+      messages.push({ role: 'user', content: anchored.content });
     }
 
     // Only go back to the start, or to the last compaction summary. Anything
