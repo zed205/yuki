@@ -710,10 +710,14 @@ export class Agent {
           }
           messages.push(assistEntry);
 
-          if (toolCall.status === 'completed' && (toolCall.name === 'desktop_screenshot' || toolCall.name === 'desktop_snapshot_region' || (toolCall.name === 'ext_browser' && toolCall.parameters && toolCall.parameters.action === 'screenshot'))) {
+          const isExtBrowserShot = toolCall.name === 'ext_browser' && !!toolCall.parameters && toolCall.parameters.action === 'screenshot';
+          if (toolCall.status === 'completed' && (toolCall.name === 'desktop_screenshot' || toolCall.name === 'desktop_snapshot_region' || isExtBrowserShot)) {
+            const shotCaption = isExtBrowserShot
+              ? "Here is the screenshot of the page in the user's browser:"
+              : 'Here is the desktop screenshot I captured:';
             messages.push({
               role: 'user',
-              content: buildMultimodalContent('Here is the desktop screenshot I captured:', [`data:image/png;base64,${toolCall.result}`]),
+              content: buildMultimodalContent(shotCaption, [`data:image/png;base64,${toolCall.result}`]),
             });
           } else {
             messages.push({
