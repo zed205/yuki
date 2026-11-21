@@ -68,12 +68,14 @@ function Rollback {
 # supervises, logs, and can restart it. Restoring/stopping the server is done
 # by restarting the tray.
 function Restart-Tray {
-  # Stop any running tray instance (by process name). Null-guard PIDs to
-  # survive a tray that's mid-shutdown (ProcessId can go null mid-kill).
-  $trayPids = @(Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessId } | Where-Object { $null -ne $_ })
-  if ($trayPids.Count -gt 0) {
-    foreach ($tpid in $trayPids) { Stop-Process -Id $tpid -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 1
+  # Stop running tray instances. Loop until none remain: a single pass can miss
+  # a tray that's mid-shutdown (its ProcessId goes null) or still tearing down,
+  # which otherwise leaves a duplicate behind when the new tray starts.
+  for ($i = 0; $i -lt 20; $i++) {
+    $trays = @(Get-Process -Name 'yukiweb-tray' -ErrorAction SilentlyContinue)
+    if ($trays.Count -eq 0) { break }
+    foreach ($t in $trays) { if ($null -ne $t.Id) { Stop-Process -Id $t.Id -Force -ErrorAction SilentlyContinue } }
+    Start-Sleep -Milliseconds 400
   }
   # The tray may have been force-killed before it could stop its server; stop
   # the server too so the new tray starts cleanly.
