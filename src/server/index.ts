@@ -5,6 +5,7 @@ import { loadConfig, loadSystemPrompt, saveConfig, getConfig, getAgentModel, get
 import { Agent } from './agent';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
+import { BrowserExtension } from './browser-ext';
 import { DesktopAutomation } from './automation';
 import { MCPManager } from './mcp';
 import { toolNames, subAgentToolNames } from './tools';
@@ -185,9 +186,10 @@ const audioPipeline = new AudioPipeline();
 const browserAutomation = new BrowserAutomation();
 const desktopAutomation = new DesktopAutomation();
 const mcpManager = new MCPManager(loadConfig().mcpServers || []);
+const browserExt = new BrowserExtension();
 const agent = new Agent();
 
-agent.setServices(audioPipeline, browserAutomation, desktopAutomation, mcpManager);
+agent.setServices(audioPipeline, browserAutomation, desktopAutomation, mcpManager, browserExt);
 agent.initToolDefaults();
 
 /** Latest session per socket, used to route background agent events + wakes. */
@@ -769,6 +771,27 @@ app.get('/api/desktop/screenshot', async (_req, res) => {
 });
 
 // --- Browser screenshot ---
+// Yuki Browser Control extension — connection status (which Chromium browser(s) are linked).
+app.get('/api/browser-ext/status', (_req, res) => {
+  res.json(browserExt.status());
+});
+
+// Yuki Browser Control extension — send a raw command to a connected browser (same
+// path the `ext_browser` agent tool uses, but without the LLM in the loop).
+// Body: { method, params?, browserId? }. Returns the structured CDP result.
+app.post('/api/browser-ext/cmd', async (req, res) => {
+  const { method, params, browserId } = req.body || {};
+  if (!method || typeof method !== 'string') {
+    return res.status(400).json({ ok: false, error: 'method is required' });
+  }
+  try {
+    const result = await browserExt.rawCommand(method, params || {}, browserId);
+    res.json({ ok: true, result });
+  } catch (e: any) {
+    res.status(502).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 app.get('/api/browser/screenshot', async (_req, res) => {
   try {
     const base64 = await browserAutomation.screenshot();
@@ -868,6 +891,7 @@ setInterval(() => {
 }, 15 * 60 * 1000);
 
 const wss = new WebSocketServer({ noServer: true });
+const extWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url || '/', `http://${request.headers.host}`);
@@ -875,6 +899,11 @@ server.on('upgrade', (request, socket, head) => {
   if (url.pathname === '/ws') {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
+    });
+  } else if (url.pathname === '/ws/browser-ext') {
+    // Yuki Browser Control extension bridge (see src/server/browser-ext.ts).
+    extWss.handleUpgrade(request, socket, head, (ws) => {
+      browserExt.handleSocket(ws);
     });
   } else {
     socket.destroy();
@@ -1496,10 +1525,12 @@ wss.on('connection', (ws) => {
 
 process.on('SIGINT', async () => {
   await mcpManager.shutdown();
+  browserExt.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   await mcpManager.shutdown();
+  browserExt.close();
   process.exit(0);
 });

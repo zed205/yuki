@@ -6,6 +6,7 @@
 !/tests/
 !/scripts/
 !/tray/
+!/extension/
 scripts/*
 !/scripts/copy-client.js
 !/scripts/deploy.ps1

@@ -1542,6 +1542,35 @@ export const toolDefinitions = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'ext_browser',
+      description: 'Control the user\'s REAL open Chromium browser (Chrome/Edge/Brave) through the installed "Yuki Browser Control" extension — the browser they are actually using and already signed in to. Unlike the headless browser_* tools, this drives their existing tabs. Pass an "action" and its "params". Use action:"screenshot" to SEE the page (needs a vision model). If more than one browser is connected, pick one with "browserId" (discover ids via action:"status" or "listTabs").',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: [
+              'status','listTabs','createTab','focusTab','closeTab','getActiveTab',
+              'attach','detach','detachAll','navigate','back','forward','reload',
+              'screenshot','eval','click','fill','type','key','hover','scroll','scrollTo',
+              'axTree','visibleElements','links','text','html','pageStructure','network','console',
+            ],
+            description: 'The command to run in the browser.',
+          },
+          params: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Parameters for the action. e.g. navigate:{url}; click:{selector | x,y, button?, clickCount?}; fill:{selector,value}; type:{text}; key:{key,modifiers?}; hover:{selector}; scroll:{deltaX,deltaY} or scrollTo:{x,y}; eval:{script}; screenshot:{fullPage?}; visibleElements/links/text/html/axTree:{tabId?, limit?, selector?}; network:{limit?}; console:{limit?, clear?}; createTab:{url}; focusTab/closeTab/getActiveTab:{tabId?}.',
+          },
+          browserId: { type: 'string', description: 'Optional. Which connected browser to target when more than one is linked (omit when only one is connected).' },
+        },
+        required: ['action'],
+      },
+    },
+  },
 ];
 
 export const toolNames = toolDefinitions.map(t => t.function.name);

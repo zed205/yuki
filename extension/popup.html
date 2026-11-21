@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body { margin: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      width: 290px; padding: 14px; font-size: 13px; color: #1f2430;
+      background: #ffffff;
+    }
+    h1 { font-size: 14px; margin: 0 0 10px; font-weight: 650; letter-spacing: -0.01em; }
+    .status { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 600; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #c0392b; flex: 0 0 auto; }
+    .dot.on { background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,0.18); }
+    .row { color: #5b6472; font-size: 12px; margin-top: 4px; word-break: break-all; }
+    .actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px;
+      border: 1px solid #d7dce3; background: #f6f8fa; cursor: pointer;
+    }
+    button:hover { background: #eef1f5; }
+    .hint { margin-top: 12px; color: #8a94a3; font-size: 11px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>Yuki Browser Control</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="state">Checking&hellip;</span></div>
+  <div class="row" id="info">&nbsp;</div>
+  <div class="actions">
+    <button id="reconnect">Reconnect</button>
+    <button id="detachAll">Detach debugger</button>
+  </div>
+  <div class="hint">
+    When connected, the local Yuki agent can drive this browser
+    (tabs, clicks, typing, JS, screenshots) using the <code>ext_browser</code> tool.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

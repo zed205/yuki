@@ -11,6 +11,7 @@ import { getAgentModel, getActiveModelName, setActiveModelName, getNamedModels, 
 import { getProject } from './project';
 import { AudioPipeline } from './audio';
 import { BrowserAutomation } from './browser';
+import type { BrowserExtension } from './browser-ext';
 import { DesktopAutomation } from './automation';
 import { MCPManager } from './mcp';
 import { logLLMRequestResponse } from './llm-logger';
@@ -271,6 +272,7 @@ function getSystemInfo(projectPath?: string): string {
 export class Agent {
   private audioPipeline: AudioPipeline | null = null;
   private browser: BrowserAutomation | null = null;
+  private browserExt: BrowserExtension | null = null;
   private desktop: DesktopAutomation | null = null;
   private mcp: MCPManager | null = null;
   private cancelled = false;
@@ -444,11 +446,13 @@ export class Agent {
     browser: BrowserAutomation,
     desktop: DesktopAutomation,
     mcp?: MCPManager,
+    browserExt?: BrowserExtension,
   ) {
     this.audioPipeline = audio;
     this.browser = browser;
     this.desktop = desktop;
     this.mcp = mcp || null;
+    this.browserExt = browserExt || null;
   }
 
   private currentAttachments: Attachment[] = [];
@@ -706,7 +710,7 @@ export class Agent {
           }
           messages.push(assistEntry);
 
-          if ((toolCall.name === 'desktop_screenshot' || toolCall.name === 'desktop_snapshot_region') && toolCall.status === 'completed') {
+          if (toolCall.status === 'completed' && (toolCall.name === 'desktop_screenshot' || toolCall.name === 'desktop_snapshot_region' || (toolCall.name === 'ext_browser' && toolCall.parameters && toolCall.parameters.action === 'screenshot'))) {
             messages.push({
               role: 'user',
               content: buildMultimodalContent('Here is the desktop screenshot I captured:', [`data:image/png;base64,${toolCall.result}`]),
@@ -1201,7 +1205,7 @@ export class Agent {
    */
   private async executeTool(toolCall: ToolCall, sessionId?: string, projectPath?: string, cwdScope?: string): Promise<string> {
     const name = toolCall.name.toLowerCase();
-    if (name.startsWith('browser_')) {
+    if (name.startsWith('browser_') || name === 'ext_browser') {
       return this.browserMutex.run(() => this.executeToolInner(toolCall, sessionId, projectPath, cwdScope));
     }
     if (name.startsWith('desktop_')) {
@@ -1332,6 +1336,10 @@ export class Agent {
       case 'desktop_screenshot':
         if (!this.desktop) return 'Desktop automation not initialized';
         return await this.desktop.getScreenshotBase64();
+      case 'ext_browser':
+        if (!this.browserExt) return 'Error: the browser extension service is not available on this server.';
+        return await this.browserExt.dispatch(params.action, params.params || {}, params.browserId);
+
       case 'desktop_click':
         if (!this.desktop) return 'Desktop automation not initialized';
         return await this.desktop.mouseClick(params.x, params.y);
