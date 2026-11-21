@@ -1563,7 +1563,7 @@ export const toolDefinitions = [
           params: {
             type: 'object',
             additionalProperties: true,
-            description: 'Parameters for the action. e.g. navigate:{url}; click:{selector | x,y, button?, clickCount?}; fill:{selector,value}; type:{text}; key:{key,modifiers?}; hover:{selector}; scroll:{deltaX,deltaY} or scrollTo:{x,y}; eval:{script}; screenshot:{fullPage?}; visibleElements/links/text/html/axTree:{tabId?, limit?, selector?}; network:{limit?}; console:{limit?, clear?}; createTab:{url}; focusTab/closeTab/getActiveTab:{tabId?}.',
+            description: 'Parameters for the action. e.g. navigate:{url}; click:{selector | x,y, button?, clickCount?}; fill:{selector,value}; type:{text, selector?}; key:{key,modifiers?}; hover:{selector | x,y}; scroll:{direction: up|down|left|right|top|bottom, dx?, dy?} or scrollTo:{selector} (scroll an element into view); eval:{script}; screenshot:{fullPage?}; visibleElements/links/text/html/axTree:{tabId?, limit?, selector?}; network:{limit?, clear?}; console:{limit?}; createTab:{url}; focusTab/closeTab/getActiveTab:{tabId?}.',
           },
           browserId: { type: 'string', description: 'Optional. Which connected browser to target when more than one is linked (omit when only one is connected).' },
         },
