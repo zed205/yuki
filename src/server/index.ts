@@ -195,6 +195,17 @@ agent.initToolDefaults();
 /** Latest session per socket, used to route background agent events + wakes. */
 const sessionSockets = new Map<WebSocket, string>();
 
+// Broadcast browser-extension connection state to connected chat UI clients so
+// they can reflect which browsers are linked ("connection-state broadcast to
+// UI"). Advisory only; also available on demand via GET /api/browser-ext/status.
+browserExt.setConnectionChangeHandler((status) => {
+  for (const [socket, sessionId] of sessionSockets.entries()) {
+    if (socket.readyState === 1) {
+      try { socket.send(JSON.stringify({ type: 'browser-ext:status', data: status, sessionId })); } catch { /* ignore */ }
+    }
+  }
+});
+
 /**
  * Background agents always alert the main agent.
  *
