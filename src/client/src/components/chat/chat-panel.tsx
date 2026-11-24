@@ -5,6 +5,7 @@ import { useSession, isSummaryMessage } from '@/context/session-context';
 import { useAudio } from '@/context/audio-context';
 import { useWebSocket } from '@/context/websocket-context';
 import { MessageBubble, ThinkingPill, ToolCallPill } from './message-bubble';
+import { TurnGroup } from './turn-group';
 import { Composer } from './composer';
 import { useScrollToBottom } from './scroll-manager';
 import { Text } from '@/components/ui/box';
@@ -116,54 +117,40 @@ export function ChatPanel(props: ChatPanelProps) {
                   </div>
                 );
               }
-              // Legacy parity: assistant turns render thinking, tools, and text as
-              // SEPARATE elements (each its own row), not combined into one bubble.
+              // Legacy parity: assistant turns render thinking, tools, and text.
+              // For agent sub-agents keep the dedicated bubble; for normal turns
+              // wrap everything in a TurnGroup (Codex Desktop-style accordion).
               if (msg.role === 'assistant') {
                 const sub = msg.agentId ? subagents.find((a) => a.agentId === msg.agentId) : undefined;
-                const reasoning = msg.reasoningContent;
-                const hasThinking = !!reasoning;
-                const hasTools = !!(msg.toolCalls && msg.toolCalls.length > 0);
-                const hasText = typeof msg.content === 'string' && msg.content.trim().length > 0;
-                return (
-                  <div key={msg.id} className="space-y-4">
-                    {reasoning && (
-                      <ThinkingPill
-                        content={reasoning}
-                        streaming={msg.isStreaming}
-                        compacted={msg.compacted}
-                      />
-                    )}
-                    {hasTools &&
-                      msg.toolCalls!.map((tool) => (
-                        <ToolCallPill key={tool.id} tool={tool} compacted={msg.compacted} />
-                      ))}
-                    {(hasText || !hasThinking && !hasTools) && (
-                      <MessageBubble
-                        role={msg.role}
-                        content={msg.content}
-                        isStreaming={msg.isStreaming}
-                        compacted={msg.compacted}
-                        timestamp={msg.timestamp}
-                        agentId={msg.agentId}
-                        subAgent={sub}
-                        observerFeedback={msg.observerFeedback}
-                        stoppedNotice={msg.stoppedNotice}
-                        forks={msg.id ? messageForks[msg.id] : undefined}
-                        onForkNavigate={(sessionId) => switchSession(sessionId)}
-                        onFork={() => {
-                          if (currentSessionId && msg.serverIndex != null) {
-                            forkSession(currentSessionId, msg.serverIndex);
-                          }
-                        }}
-                        onRead={() => {
-                          if (typeof msg.content === 'string' && msg.content.trim()) {
-                            void speak(msg.content);
-                          }
-                        }}
-                      />
-                    )}
-                  </div>
-                );
+                if (msg.agentId) {
+                  // Sub-agent bubble (legacy light-blue agent)
+                  return (
+                    <div key={msg.id} className="mb-2 flex justify-start">
+                      <div className="min-w-0 max-w-[90%]">
+                        <MessageBubble
+                          role={msg.role}
+                          content={msg.content}
+                          isStreaming={msg.isStreaming}
+                          compacted={msg.compacted}
+                          timestamp={msg.timestamp}
+                          agentId={msg.agentId}
+                          subAgent={sub}
+                          observerFeedback={msg.observerFeedback}
+                          stoppedNotice={msg.stoppedNotice}
+                          forks={msg.id ? messageForks[msg.id] : undefined}
+                          onForkNavigate={(sessionId) => switchSession(sessionId)}
+                          onFork={() => {
+                            if (currentSessionId && msg.serverIndex != null) {
+                              forkSession(currentSessionId, msg.serverIndex);
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                }
+                // Normal assistant turn → TurnGroup (accordion)
+                return <TurnGroup key={msg.id} message={msg} />;
               }
               return (
                 <MessageBubble
