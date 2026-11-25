@@ -9,7 +9,6 @@ import { useWebSocket } from '@/context/websocket-context';
 import { Sidebar } from '@/components/sidebar/sidebar';
 import { ChatPanel } from '@/components/chat/chat-panel';
 import { SettingsModal } from '@/components/settings/settings-modal';
-import { BrowserView } from '@/components/browser/browser-view';
 import { SessionSync } from '@/components/session-sync';
 import { RenameModal } from '@/components/modals/rename-modal';
 import { ConfirmModal } from '@/components/modals/confirm-modal';
@@ -161,7 +160,6 @@ export function MainLayout({ className }: { className?: string }) {
 
       {/* Overlays & sync */}
       <SessionSync />
-      <BrowserView />
       <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
       <SearchModal open={searchOpen} onOpenChange={setSearchOpen} />
 
