@@ -334,7 +334,8 @@ namespace YukiWebTray
                 {
                     var psi = new ProcessStartInfo
                     {
-                        FileName = "npm",
+                        // Use full path to avoid local node_modules\npm resolving.
+                        FileName = @"C:\Program Files\nodejs\npm.cmd",
                         Arguments = "run dev",
                         WorkingDirectory = DevDir,
                         UseShellExecute = false,
@@ -342,6 +343,9 @@ namespace YukiWebTray
                         RedirectStandardError = true,
                         CreateNoWindow = true
                     };
+                    // Force npm to use the global npm-cli.js, not the local one.
+                    psi.EnvironmentVariables["npm_execpath"] =
+                        @"C:\Program Files\nodejs\npm-cli.js";
                     devProc = new Process { StartInfo = psi };
                     devProc.OutputDataReceived += DevOutputHandler;
                     devProc.ErrorDataReceived += DevOutputHandler;
@@ -463,7 +467,7 @@ namespace YukiWebTray
                     }
                     var psi = new ProcessStartInfo
                     {
-                        FileName = "node",
+                        FileName = "node.exe",
                         Arguments = "\"" + js + "\"",
                         WorkingDirectory = AppDir,
                         UseShellExecute = false,
@@ -471,6 +475,9 @@ namespace YukiWebTray
                         RedirectStandardError = true,
                         CreateNoWindow = true
                     };
+                    // Ensure PATH includes Node.js so 'node' is findable.
+                    psi.EnvironmentVariables["PATH"] =
+                        @"C:\Program Files\nodejs;" + Environment.GetEnvironmentVariable("PATH");
                     serverProc = new Process { StartInfo = psi };
                     serverProc.OutputDataReceived += ServerOutputHandler;
                     serverProc.ErrorDataReceived += ServerOutputHandler;

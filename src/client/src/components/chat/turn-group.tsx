@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { ThinkingPill, ToolCallPill, ToolCallList } from './message-bubble';
+import { ThinkingPill, ToolCallList } from './message-bubble';
 import { MessageBubble } from './message-bubble';
 import type { Message } from '@/lib/types';
 
@@ -22,7 +22,12 @@ function formatDuration(seconds: number): string {
 // ---------------------------------------------------------------------------
 
 export interface TurnGroupProps {
-  message: Message;
+  /** Messages containing thinking/tool calls (no text content). */
+  processMessages?: Message[];
+  /** Message with the final text content. */
+  finalMessage?: Message;
+  /** Backwards compatibility: single message (used when no group is provided). */
+  message?: Message;
 }
 
 /**
@@ -30,49 +35,126 @@ export interface TurnGroupProps {
  *
  * - While streaming: all parts expand live (thinking, tools, text).
  * - After streaming: collapses into a single-line header
- *   "Thinking · 3 tools · lasted 1m 12s", with the final reply always
- *   visible below. Clicking the header re-expands the full trace.
+ *   "thought 3 · 5 tools", with the final reply always visible below.
+ * - Clicking the header re-expands the full trace.
  *
- * This mirrors Codex Desktop's "Worked for X" accordion pattern.
+ * Accepts either:
+ *  - `processMessages` + `finalMessage` for grouped turns (multiple messages)
+ *  - `message` (legacy) for single-message turns
  */
-export function TurnGroup({ message }: TurnGroupProps) {
-  const [expanded, setExpanded] = useState(false);
-  const hasThinking = !!message.reasoningContent;
-  const hasTools = !!message.toolCalls?.length;
+export function TurnGroup({
+  message,
+  processMessages: incomingProcessMessages,
+  finalMessage: incomingFinalMessage,
+}: TurnGroupProps) {
+  // Support backwards compatibility with single message prop
+  const processMessages = incomingProcessMessages ?? (message ? [message] : []);
+  const finalMessage = incomingFinalMessage ?? message;
+
+  // ── Aggregate thinking across all process messages ────────────────────────
+  const messagesWithThinking = processMessages.filter(
+    m => m.reasoningContent && m.reasoningContent.trim().length > 0,
+  );
+  const thinkingBlockCount = messagesWithThinking.length;
+  const allReasoning = messagesWithThinking
+    .map(m => m.reasoningContent ?? '')
+    .join('\n\n');
+  const hasThinking = thinkingBlockCount > 0;
+
+  // ── Aggregate tool calls across all process messages ─────────────────────
+  const allToolCalls = processMessages.flatMap(m => m.toolCalls || []);
+  const toolCount = allToolCalls.length;
+  const hasTools = toolCount > 0;
+
+  // ── Streaming state: true if ANY message in the group is still streaming ─
+  const isAnyStreaming =
+    processMessages.some(m => m.isStreaming) || finalMessage?.isStreaming;
+
+  // ── Text content check ───────────────────────────────────────────────────
   const hasText =
-    typeof message.content === 'string' && message.content.trim().length > 0;
+    finalMessage &&
+    typeof finalMessage.content === 'string' &&
+    finalMessage.content.trim().length > 0;
+
   const hasProcess = hasThinking || hasTools;
-  const isStreaming = message.isStreaming;
 
-  // Auto-expand while streaming, collapse when done.
+  // ── Expand / collapse state ──────────────────────────────────────────────
+  const [expanded, setExpanded] = useState(isAnyStreaming);
+
   useEffect(() => {
-    if (isStreaming) {
+    if (isAnyStreaming) {
       setExpanded(true);
+    } else {
+      setExpanded(false);
     }
-  }, [isStreaming]);
+  }, [isAnyStreaming]);
 
-  // Calculate duration from message timestamp to now (or to the last tool call).
-  const durationRef = useRef<HTMLSpanElement>(null);
-  const [, setTick] = useState(0);
+  // Duration: from the most recent message in the group to when streaming ended.
+  // Uses the persisted streamingEndedAt so old turn groups (loaded from history)
+  // also show correct durations — the endedRef approach was unreliable for those.
+  // endedRef is a fallback for live streaming where streamingEndedAt hasn't been
+  // set yet (the chat:response handler sets it when isStreaming transitions to false).
+  const endedRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!isStreaming) return;
-    // Update every second while streaming for live duration
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [isStreaming]);
+    if (!isAnyStreaming && endedRef.current === null) {
+      endedRef.current = Date.now();
+    }
+  }, [isAnyStreaming]);
 
-  const durationMs = Date.now() - new Date(message.timestamp).getTime();
-  const durationSec = Math.max(0, Math.floor(durationMs / 1000));
+  const allMessages = [
+    ...processMessages,
+    ...(finalMessage ? [finalMessage] : []),
+  ];
+  const latestTimestamp = allMessages.length > 0
+    ? Math.max(...allMessages.map(m => new Date(m.timestamp).getTime()))
+    : Date.now();
+
+  // If any message in the group has streamingEndedAt, use the latest one.
+  // Otherwise for old/history messages, use the latest message timestamp as a
+  // reasonable approximation (streaming ended shortly after the last message).
+  // For live streaming, fall back to endedRef which captures the current time.
+  const streamingEndTimes = allMessages
+    .map(m => m.streamingEndedAt)
+    .filter((t): t is number => t != null);
+  const endTime = streamingEndTimes.length > 0
+    ? Math.max(...streamingEndTimes)
+    : endedRef.current ?? latestTimestamp;
+
+  const durationSec = Math.max(0, Math.floor((endTime - latestTimestamp) / 1000));
   const durationLabel = formatDuration(durationSec);
-  const toolCount = hasTools ? message.toolCalls!.length : 0;
 
-  // Build the accordion label
+  // ── Build the accordion label ────────────────────────────────────────────
+  // Format: "thought N · M tools" (completed) or "thinking · M tools" (streaming)
   const labelParts: string[] = [];
-  if (hasThinking) labelParts.push('Thinking');
+  if (hasThinking) {
+    labelParts.push(isAnyStreaming ? 'thinking' : `thought ${thinkingBlockCount}`);
+  }
   if (toolCount > 0) {
     labelParts.push(`${toolCount} tool${toolCount > 1 ? 's' : ''}`);
   }
+  const label = labelParts.join(' · ');
 
+  // No process content and no text → render nothing
+  if (!hasProcess && !hasText) return null;
+
+  // Only text content (no process) → render as a regular message bubble
+  if (!hasProcess && hasText && finalMessage) {
+    return (
+      <div className="flex justify-start">
+        <div className="min-w-0 max-w-[90%]">
+          <MessageBubble
+            role={finalMessage.role}
+            content={finalMessage.content}
+            isStreaming={finalMessage.isStreaming}
+            compacted={finalMessage.compacted}
+            timestamp={finalMessage.timestamp}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main render: accordion + optional text below ─────────────────────────
   return (
     <div className="mb-2 flex flex-col gap-2">
       {/* Accordion wrapper for process content (thinking + tools) */}
@@ -80,23 +162,21 @@ export function TurnGroup({ message }: TurnGroupProps) {
         <div className="flex justify-start">
           <div className="min-w-0 max-w-[90%]">
             {/* Collapsed header — always visible */}
-            {!expanded && (
+            {!expanded && label && (
               <button
                 type="button"
-                className="flex w-full cursor-pointer select-none items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/50"
+                className="flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/50"
                 onClick={() => setExpanded(true)}
                 title="Expand turn details"
               >
+                <span className="flex-1 truncate font-medium">{label}</span>
+                <span className="shrink-0 text-[#8b949e]">
+                  {durationLabel}
+                </span>
                 <ChevronRight
                   size={12}
                   className="shrink-0 text-[#8b949e]"
                 />
-                <span className="truncate font-medium">
-                  {labelParts.join(' · ')}
-                </span>
-                <span className="ml-auto shrink-0 text-[#8b949e]">
-                  {durationLabel}
-                </span>
               </button>
             )}
 
@@ -106,41 +186,37 @@ export function TurnGroup({ message }: TurnGroupProps) {
                 {/* Expanded header (retractable) */}
                 <button
                   type="button"
-                  className="flex w-full cursor-pointer select-none items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  className="flex w-full cursor-pointer select-none items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
                   onClick={() => setExpanded(false)}
                   title="Collapse turn details"
                 >
+                  <span className="flex-1 truncate font-medium">
+                    {label}
+                  </span>
+                  <span className="shrink-0 text-[#8b949e]">
+                    {isAnyStreaming ? durationLabel : ''}
+                  </span>
+                  <span className="shrink-0 text-[#8b949e]">
+                    {isAnyStreaming ? ' · active' : ''}
+                  </span>
                   <ChevronDown
                     size={12}
                     className="shrink-0 text-[#8b949e]"
                   />
-                  <span className="truncate font-medium">
-                    {labelParts.join(' · ')}
-                  </span>
-                  {/* Live duration */}
-                  <span
-                    ref={durationRef}
-                    className="ml-auto shrink-0 text-[#8b949e]"
-                  >
-                    {isStreaming ? durationLabel : ''}
-                  </span>
-                  <span className="ml-1 shrink-0 text-[#8b949e]">
-                    {isStreaming ? ' · active' : ''}
-                  </span>
                 </button>
 
-                {/* Thinking block */}
+                {/* Thinking block — aggregated from all process messages */}
                 {hasThinking && (
                   <ThinkingPill
-                    content={message.reasoningContent!}
-                    streaming={isStreaming}
-                    compacted={message.compacted}
+                    content={allReasoning}
+                    streaming={isAnyStreaming}
+                    compacted={processMessages[0]?.compacted}
                   />
                 )}
 
-                {/* Tool calls */}
+                {/* Tool calls — aggregated from all process messages */}
                 {hasTools && (
-                  <ToolCallList toolCalls={message.toolCalls!} />
+                  <ToolCallList toolCalls={allToolCalls} />
                 )}
               </div>
             )}
@@ -149,15 +225,15 @@ export function TurnGroup({ message }: TurnGroupProps) {
       )}
 
       {/* Final reply — always visible below the accordion */}
-      {hasText && (
+      {hasText && finalMessage && (
         <div className="flex justify-start">
           <div className="min-w-0 max-w-[90%]">
             <MessageBubble
-              role={message.role}
-              content={message.content}
-              isStreaming={isStreaming}
-              compacted={message.compacted}
-              timestamp={message.timestamp}
+              role={finalMessage.role}
+              content={finalMessage.content}
+              isStreaming={finalMessage.isStreaming}
+              compacted={finalMessage.compacted}
+              timestamp={finalMessage.timestamp}
             />
           </div>
         </div>

@@ -793,6 +793,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             timestamp: new Date(),
             toolCalls: rd.toolCalls as Message['toolCalls'],
             isStreaming: false,
+            streamingEndedAt: Date.now(),
           };
           if (idx === -1) return [...prev, doneMsg];
           const next = [...prev];
@@ -818,7 +819,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         streamingIdRef.current = null;
         setMessages((prev) => {
           const next = prev.map((m) =>
-            m.isStreaming ? { ...m, isStreaming: false } : m,
+            m.isStreaming
+              ? { ...m, isStreaming: false, streamingEndedAt: Date.now() }
+              : m,
           );
           return [
             ...next,
@@ -1472,7 +1475,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       killSubAgent,
     }),
     [
-      messages, isWaiting, isStreaming, thinkingEnabled, compactMode,
+      isWaiting, isStreaming, thinkingEnabled, compactMode,
       notificationsEnabled, activeModel, models, config, currentSessionId,
       forkedParentId, messageForks, currentProjectId, activeSessionId, sessions, voiceMode, promptTokens,
       maxTokens, tools, mcpServers, plan, subagents, structuredModels,

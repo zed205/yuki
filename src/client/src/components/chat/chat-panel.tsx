@@ -100,30 +100,131 @@ export function ChatPanel(props: ChatPanelProps) {
           <EmptyChatState />
         ) : (
           <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-4">
-            {messages.map((msg) => {
-              // Forked-from marker: render the centered "⟿ Forked from session" pill
-              // (legacy parity) when this session was forked from another.
-              if (msg.forkNote && forkedParentId) {
-                return (
-                  <div key={msg.id} className="my-2 flex justify-center">
-                    <button
-                      type="button"
-                      className="inline-flex cursor-pointer select-none items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22]/30 px-3 py-1.5 text-xs text-[#58a6ff]/80 transition-colors hover:text-[#58a6ff]"
-                      title="Click to view original session"
-                      onClick={() => switchSession(forkedParentId)}
-                    >
-                      ⟿ Forked from session
-                    </button>
-                  </div>
-                );
+            {(() => {
+              // ── Group consecutive assistant messages without text content ─────
+              // Messages streamed during multi-tool turns may have only
+              // reasoningContent / toolCalls. These get merged into a single
+              // TurnGroup accordion; the final message with text renders below it.
+              const hasText = (m: Message) =>
+                m.role === 'assistant' &&
+                typeof m.content === 'string' &&
+                m.content.trim().length > 0;
+
+              const groups: Array<
+                | { type: 'forkNote'; msg: Message }
+                | { type: 'grouped'; processMessages: Message[]; finalMessage: Message }
+                | { type: 'single'; msg: Message }
+              > = [];
+
+              let i = 0;
+              while (i < messages.length) {
+                const msg = messages[i];
+
+                // Fork note — always rendered individually
+                if (msg.forkNote && forkedParentId) {
+                  groups.push({ type: 'forkNote', msg });
+                  i++;
+                  continue;
+                }
+
+                // Sub-agent messages — always rendered individually
+                if (msg.role === 'assistant' && msg.agentId) {
+                  groups.push({ type: 'single', msg });
+                  i++;
+                  continue;
+                }
+
+                // Non-assistant → render individually
+                if (msg.role !== 'assistant') {
+                  groups.push({ type: 'single', msg });
+                  i++;
+                  continue;
+                }
+
+                // ── Normal assistant turn: collect consecutive messages ─────
+                // Gather all consecutive assistant messages until we hit one
+                // with text content (the "final" message) or a non-assistant.
+                const processMessages: Message[] = [];
+                let hasFinal = false;
+                let j = i;
+
+                while (j < messages.length && messages[j].role === 'assistant') {
+                  const m = messages[j];
+                  // Skip sub-agent messages in the middle (treat as boundary)
+                  if (m.agentId) break;
+
+                  if (hasText(m)) {
+                    // This is the final message with text content
+                    // Any accumulated process messages become the accordion
+                    if (processMessages.length > 0) {
+                      groups.push({ type: 'grouped', processMessages, finalMessage: m });
+                    } else {
+                      groups.push({ type: 'single', msg: m });
+                    }
+                    hasFinal = true;
+                    j++;
+                    break;
+                  } else {
+                    // Accumulate as process (thinking / tool-calls only)
+                    processMessages.push(m);
+                    j++;
+                  }
+                }
+
+                if (!hasFinal) {
+                  // All remaining consecutive messages lack text content.
+                  // If we have process messages, group them with undefined final.
+                  // Otherwise render each individually.
+                  if (processMessages.length > 1) {
+                    groups.push({
+                      type: 'grouped',
+                      processMessages,
+                      finalMessage: processMessages[processMessages.length - 1],
+                    });
+                  } else if (processMessages.length === 1) {
+                    groups.push({ type: 'single', msg: processMessages[0] });
+                  }
+                  i = j;
+                  continue;
+                }
+
+                i = j;
               }
-              // Legacy parity: assistant turns render thinking, tools, and text.
-              // For agent sub-agents keep the dedicated bubble; for normal turns
-              // wrap everything in a TurnGroup (Codex Desktop-style accordion).
-              if (msg.role === 'assistant') {
-                const sub = msg.agentId ? subagents.find((a) => a.agentId === msg.agentId) : undefined;
-                if (msg.agentId) {
-                  // Sub-agent bubble (legacy light-blue agent)
+
+              // ── Render the groups ───────────────────────────────────────
+              return groups.map((group, idx) => {
+                if (group.type === 'forkNote') {
+                  const msg = group.msg;
+                  return (
+                    <div key={msg.id} className="my-2 flex justify-center">
+                      <button
+                        type="button"
+                        className="inline-flex cursor-pointer select-none items-center gap-2 rounded-lg border border-[#30363d] bg-[#161b22]/30 px-3 py-1.5 text-xs text-[#58a6ff]/80 transition-colors hover:text-[#58a6ff]"
+                        title="Click to view original session"
+                        onClick={() => forkedParentId && switchSession(forkedParentId)}
+                      >
+                        ⟿ Forked from session
+                      </button>
+                    </div>
+                  );
+                }
+
+                if (group.type === 'grouped') {
+                  const { processMessages, finalMessage } = group;
+                  const key = finalMessage.id || `group-${idx}`;
+                  return (
+                    <TurnGroup
+                      key={key}
+                      processMessages={processMessages}
+                      finalMessage={finalMessage}
+                    />
+                  );
+                }
+
+                // Single message
+                const msg = group.msg;
+                if (msg.role === 'assistant' && msg.agentId) {
+                  const sub = subagents.find((a) => a.agentId === msg.agentId);
                   return (
                     <div key={msg.id} className="mb-2 flex justify-start">
                       <div className="min-w-0 max-w-[90%]">
@@ -149,30 +250,29 @@ export function ChatPanel(props: ChatPanelProps) {
                     </div>
                   );
                 }
-                // Normal assistant turn → TurnGroup (accordion)
-                return <TurnGroup key={msg.id} message={msg} />;
-              }
-              return (
-                <MessageBubble
-                  key={msg.id}
-                  role={msg.role}
-                  content={msg.content}
-                  isStreaming={msg.isStreaming}
-                  compacted={msg.compacted}
-                  timestamp={msg.timestamp}
-                  forks={msg.id ? messageForks[msg.id] : undefined}
-                  onForkNavigate={(sessionId) => switchSession(sessionId)}
-                  onRevert={() => {
-                    if (msg.role === 'user' && msg.id) {
-                      revertMessage(msg.id);
-                    }
-                  }}
-                  onCompact={() => {
-                    compactContext();
-                  }}
-                />
-              );
-            })}
+
+                return (
+                  <MessageBubble
+                    key={msg.id}
+                    role={msg.role}
+                    content={msg.content}
+                    isStreaming={msg.isStreaming}
+                    compacted={msg.compacted}
+                    timestamp={msg.timestamp}
+                    forks={msg.id ? messageForks[msg.id] : undefined}
+                    onForkNavigate={(sessionId) => switchSession(sessionId)}
+                    onRevert={() => {
+                      if (msg.role === 'user' && msg.id) {
+                        revertMessage(msg.id);
+                      }
+                    }}
+                    onCompact={() => {
+                      compactContext();
+                    }}
+                  />
+                );
+              });
+            })()}
             {/* Typing indicator (legacy "Yuki is processing...") while a turn is in flight */}
             {busy && (
               <div className="flex justify-start">

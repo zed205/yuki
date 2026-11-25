@@ -4,10 +4,8 @@
 #   pwsh scripts/deploy.ps1 -Ref v0.2.0
 #   pwsh scripts/deploy.ps1 -Ref main
 #
-# Build strategy: snapshot the tree at $Ref into a clean staging dir (git
-# archive), npm ci + build there, then stop the live server, swap the folders,
-# and start + verify. The previous install is kept at D:\Apps\YukiWeb-previous
-# for one-command rollback (deploy.ps1 -Rollback).
+# Build strategy: build in-place in the repo, then copy only runtime files
+# to D:\Apps\YukiWeb. No staging dir, no folder swap.
 param(
   [string]$Ref = '',
   [switch]$Rollback
@@ -17,8 +15,6 @@ $ErrorActionPreference = 'Stop'
 
 $repo  = 'D:\Development\YukiWeb'
 $live  = 'D:\Apps\YukiWeb'
-$prev  = 'D:\Apps\YukiWeb-previous'
-$stage = Join-Path $env:TEMP 'yukiweb-deploy'
 $port  = 3210
 $baseUrl = "http://127.0.0.1:$port"
 
@@ -41,19 +37,44 @@ function Stop-LiveServer {
     Stop-Process -Id $tpid -Force -ErrorAction SilentlyContinue
   }
   # Stop the node server and its children (taskkill /T kills the whole tree).
-  $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
-    Where-Object { $_.CommandLine -like "*$live*" -and $_.CommandLine -like '*index.js*' }
-  if ($procs) {
-    $procs | ForEach-Object {
-      Write-Host "Stopping live server PID $($_.ProcessId)"
-      taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null
+  # taskkill is async — it returns immediately after sending SIGKILL. We
+  # must verify the process actually exited before proceeding, because Windows
+  # may not release .node native DLL file handles until the process is fully
+  # gone. Stop-Process -Force blocks until the process terminates.
+  $maxWait = 60   # seconds
+  $elapsed = 0
+  while ($elapsed -lt $maxWait) {
+    $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+      Where-Object { $_.CommandLine -like "*$live*" -and $_.CommandLine -like '*index.js*' }
+    if (-not $procs) { break }
+    $pids = @($procs.ProcessId)
+    $pids | ForEach-Object {
+      Write-Host "Stopping live server PID $_"
+      taskkill /PID $_ /T /F 2>$null | Out-Null
     }
-    Start-Sleep -Seconds 2
+    # Wait for each killed PID to actually exit (Stop-Process blocks).
+    foreach ($procId in $pids) {
+      try {
+        $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if ($p) {
+          Write-Host "  PID $_ still alive — forcing exit (may take a few seconds)"
+          Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        }
+      } catch { }
+    }
+    # Give Windows time to release file handles before next iteration.
+    Start-Sleep -Seconds 3
+    $elapsed += 3
+  }
+  if ($elapsed -ge $maxWait) {
+    Write-Warning "Node servers under $live did not exit within ${maxWait}s — forcing proceed"
   }
 }
 
 function Rollback {
   Stop-LiveServer
+  # Simple rollback: copy the previous live dir back (if it exists).
+  $prev  = 'D:\Apps\YukiWeb-previous'
   if (-not (Test-Path $prev)) {
     Write-Warning "No previous install at ${prev} — nothing to roll back to."
     return $false
@@ -80,8 +101,8 @@ function Restart-Tray {
   # The tray may have been force-killed before it could stop its server; stop
   # the server too so the new tray starts cleanly.
   Stop-LiveServer
-  # Start the new tray from the live install (it starts the server).
-  $exe = Join-Path $live 'tray\yukiweb-tray.exe'
+  # Start the tray from the repo (it reads AppDir from source as D:\Apps\YukiWeb).
+  $exe = Join-Path $repo 'tray\yukiweb-tray.exe'
   if (Test-Path $exe) {
     Start-Process -FilePath $exe
     Write-Host "Started tray: $exe"
@@ -104,52 +125,46 @@ if (-not $Ref) {
   Write-Host "No -Ref given; using '$Ref'"
 }
 
-# --- 1. Snapshot ---
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory -Path $stage | Out-Null
-git -C $repo archive --format=tar $Ref | tar -x -C $stage
-if ($LASTEXITCODE -ne 0) { Write-Error "git archive failed for ref '$Ref'" }
-
-# --- 2. Build in staging ---
-Push-Location $stage
-try {
-  Write-Host 'npm ci ...'
-  npm ci --no-audit --no-fund
-  if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
-  Write-Host 'npm run build ...'
-  $env:VERSION_REF = $Ref   # stamped into dist/version.json
-  npm run build
-  if ($LASTEXITCODE -ne 0) { throw 'build failed' }
-} finally {
-  Pop-Location
-}
-
-# --- 2b. Prune repo-only files so the install is lean ---
-# Runtime only needs dist/ + node_modules/ + package files + scripts/.
-foreach ($p in @('src', 'docs', 'tests', '.gitignore', 'SPEC.md', 'tsconfig.json', 'paths.json.example')) {
-  $full = Join-Path $stage $p
-  if (Test-Path $full) { Remove-Item $full -Recurse -Force }
-}
-Write-Host 'Pruned repo-only files from staging.'
-
-# --- 3. Stop live ---
+# --- 0. Stop any running server (must run before Remove-Item) ---
+Write-Host 'Stopping live server (if any)...'
 Stop-LiveServer
 
-# --- 4. Swap (keep one previous for rollback) ---
-if (Test-Path $live) {
-  if (Test-Path $prev) { Remove-Item $prev -Recurse -Force }
-  Rename-Item $live $prev
-}
-Copy-Item $stage $live -Recurse
-Remove-Item $stage -Recurse -Force
+# --- 1. Build in-place ---
+Write-Host 'npm ci ...'
+npm ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+Write-Host 'npm run build ...'
+$env:VERSION_REF = $Ref   # stamped into dist/version.json
+npm run build
+if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+
+# --- 1b. Copy runtime files to live dir ---
+# Live install only needs: dist/, node_modules/, package files, scripts/, tray/.
+if (Test-Path $live) { Remove-Item $live -Recurse -Force }
+New-Item -ItemType Directory -Path $live | Out-Null
+
+# Copy dist (built output)
+Copy-Item (Join-Path $repo 'dist') (Join-Path $live 'dist') -Recurse
+
+# Copy node_modules (already installed in repo)
+Copy-Item (Join-Path $repo 'node_modules') (Join-Path $live 'node_modules') -Recurse
+
+# Copy runtime-only files
+Copy-Item (Join-Path $repo 'package.json') (Join-Path $live 'package.json')
+Copy-Item (Join-Path $repo 'package-lock.json') (Join-Path $live 'package-lock.json')
+Copy-Item (Join-Path $repo 'scripts') (Join-Path $live 'scripts') -Recurse
+Copy-Item (Join-Path $repo 'tray') (Join-Path $live 'tray') -Recurse
+Copy-Item (Join-Path $repo 'extension') (Join-Path $live 'extension') -Recurse -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $repo 'UIMigration') (Join-Path $live 'UIMigration') -Recurse -ErrorAction SilentlyContinue
+Write-Host "Copied runtime files to ${live}."
 
 # .env with API keys (loadEnvFile reads .env from the working directory).
 $srcEnv = Join-Path $repo '.env'
-if ((Test-Path $srcEnv) -and -not (Test-Path (Join-Path $live '.env'))) {
+if (Test-Path $srcEnv) {
   Copy-Item $srcEnv (Join-Path $live '.env')
 }
 
-# --- 5. Restart the tray (which starts the server) + verify ---
+# --- 2. Restart the tray (which starts the server) + verify ---
 Restart-Tray
 
 $ok = $false

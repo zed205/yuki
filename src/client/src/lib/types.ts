@@ -52,6 +52,8 @@ export interface Message {
   source?: 'timer' | 'job';
   /** Client-side render flag: this message is actively streaming. */
   isStreaming?: boolean;
+  /** Client-only: timestamp (ms) when this message finished streaming. Used for accurate duration calculation on old messages. */
+  streamingEndedAt?: number;
   /**
    * Client-only: index of this message in the server's full transcript array.
    * Preserved on load so session:fork can pass the server-expected index.

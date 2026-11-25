@@ -61,21 +61,21 @@ export interface MessageBubbleProps {
 function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-md border border-[#d29922]/20 bg-[#161b22]/60 text-xs">
+    <div className="text-xs">
       <button
-        className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[#8b949e] hover:text-[#c9d1d9]"
+        className="flex w-full cursor-pointer select-none items-center gap-2 px-3 py-1.5 text-[#8b949e] hover:text-[#c9d1d9]"
         onClick={() => setOpen((v) => !v)}
       >
-        {open ? (
-          <ChevronRight size={10} className="rotate-90 text-[#8b949e]" />
-        ) : (
-          <ChevronRight size={10} className="text-[#8b949e]" />
-        )}
-        <span className="font-medium text-[#d29922]">
-          {streaming ? 'Thinking…' : open ? 'Thought' : 'Thought'}
+        <span className="flex-1 text-[#8b949e]">
+          {streaming ? 'Thinking…' : 'Thought'}
         </span>
+        {open ? (
+          <ChevronDown size={10} className="shrink-0 text-[#8b949e]" />
+        ) : (
+          <ChevronRight size={10} className="shrink-0 text-[#8b949e]" />
+        )}
       </button>
-      <div className="mt-1 border-t border-[#d29922]/10 px-3 pb-2 pt-2 font-mono text-xs leading-relaxed text-[#8b949e] whitespace-pre-wrap break-words">
+      <div className="mt-1 px-3 pb-2 pt-2 font-mono text-xs leading-relaxed text-[#8b949e] whitespace-pre-wrap break-words">
         {content}
       </div>
     </div>
@@ -103,17 +103,21 @@ export function ThinkingPill({
       <div className="min-w-0 max-w-[90%]">
         <button
           type="button"
-          className="flex cursor-pointer select-none items-center gap-2 rounded-lg border border-[#d29922]/20 bg-[#161b22]/50 px-3 py-1.5 text-xs text-[#8b949e] transition-colors hover:text-[#c9d1d9]"
+          className="flex cursor-pointer select-none items-center gap-2 px-3 py-1.5 text-xs text-[#8b949e] transition-colors hover:text-[#c9d1d9]"
           onClick={() => setOpen((v) => !v)}
           title={open ? 'Collapse reasoning' : 'Expand reasoning'}
         >
-          <span className="shrink-0 text-[10px] text-[#8b949e]">{open ? '▼' : '▶'}</span>
-          <span className="font-medium text-[#d29922]">
+          <span className="flex-1 text-[#8b949e]">
             {streaming ? 'Thinking…' : 'Thought'}
           </span>
+          {open ? (
+            <ChevronDown size={10} className="shrink-0 text-[#8b949e]" />
+          ) : (
+            <ChevronRight size={10} className="shrink-0 text-[#8b949e]" />
+          )}
         </button>
         {open && (
-          <div className="mt-1.5 rounded-lg border border-[#d29922]/10 bg-[#161b22]/60 px-3 py-2 font-mono text-xs leading-relaxed text-[#8b949e] whitespace-pre-wrap break-words">
+          <div className="mt-1.5 px-3 py-2 font-mono text-xs leading-relaxed text-[#8b949e] whitespace-pre-wrap break-words">
             {content}
           </div>
         )}
@@ -136,43 +140,29 @@ export function ToolCallPill({
   compacted?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const status = tool.status || 'pending';
-  const statusColor =
-    status === 'error'
-      ? 'text-red-400'
-      : status === 'completed'
-        ? 'text-green-400'
-        : status === 'running'
-          ? 'text-yellow-400'
-          : 'text-[#8b949e]';
-  const statusText =
-    status === 'error'
-      ? '✗'
-      : status === 'completed'
-        ? '✓'
-        : status === 'running'
-          ? '…'
-          : '…';
   return (
     <div className={cn('flex justify-start tool-call-wrapper', compacted && 'opacity-40')}>
       <div className="min-w-0 max-w-[90%] w-full">
         <button
           type="button"
-          className="flex w-full cursor-pointer select-none items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          className="flex w-full cursor-pointer select-none items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setOpen((v) => !v)}
           title={open ? 'Collapse tool output' : 'Expand tool output'}
         >
-          <span className="shrink-0 text-[10px] text-[#8b949e]">{open ? '▼' : '▶'}</span>
           <span className="shrink-0 font-mono font-medium text-primary">{tool.name}</span>
           <span className="min-w-0 truncate font-mono text-[#8b949e]">
             {Object.keys(tool.parameters ?? {}).length > 0
               ? JSON.stringify(tool.parameters)
               : ''}
           </span>
-          <span className={cn('ml-auto shrink-0 font-medium', statusColor)}>{statusText}</span>
+          {open ? (
+            <ChevronDown size={10} className="shrink-0 text-[#8b949e]" />
+          ) : (
+            <ChevronRight size={10} className="shrink-0 text-[#8b949e]" />
+          )}
         </button>
         {open && (
-          <div className="mt-1 rounded-lg bg-[#0d1117] px-3 py-2 font-mono text-xs text-[#8b949e]">
+          <div className="mt-1 bg-[#0d1117] px-3 py-2 font-mono text-xs text-[#8b949e]">
             <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
               {`Input: ${JSON.stringify(tool.parameters ?? {}, null, 2)}`}
               {'\n\n'}
@@ -206,24 +196,16 @@ export function ToolCallList({ toolCalls }: { toolCalls: NonNullable<Message['to
         return (
           <div key={tool.id}>
             <button
-              className={cn(
-                'flex items-center gap-2 rounded-md border border-border/50 px-3 py-1.5 text-xs font-medium transition-colors hover:border-border',
-                status === 'error'
-                  ? 'border-red-500/30 bg-red-500/10 text-red-400'
-                  : status === 'completed'
-                    ? 'border-green-500/30 bg-green-500/10 text-green-400'
-                    : 'bg-muted/50 text-muted-foreground hover:text-foreground',
-              )}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium transition-colors hover:text-foreground text-[#8b949e]"
               onClick={() => toggle(tool.id)}
             >
-              {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <span className="font-mono">{tool.name}</span>
+              <span className="flex-1 text-left font-mono">{tool.name}</span>
               {status === 'running' && <span className="animate-pulse">…</span>}
-              {status === 'error' && <span>✗</span>}
+              {isExpanded ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
             </button>
             {isExpanded && (
               <div className="ml-2 mt-1">
-                <pre className="overflow-x-auto rounded-lg bg-[#0d1117] p-3 font-mono text-xs text-[#8b949e]">
+                <pre className="overflow-x-auto bg-[#0d1117] p-3 font-mono text-xs text-[#8b949e]">
                   <code>
                     {`Input: ${JSON.stringify(tool.parameters ?? {}, null, 2)}`}
                     {'\n\n'}
@@ -272,7 +254,7 @@ function SubAgentBubble({ subAgent }: { subAgent?: SubAgentInfo }) {
   const [open, setOpen] = useState(false);
   if (!subAgent) {
     return (
-      <div className="rounded-lg border border-[#355975] bg-[#1e3446] px-3 py-2 text-xs text-[#9ed3f5]">
+      <div className="text-xs text-[#8b949e]">
         Agent
       </div>
     );
@@ -280,37 +262,37 @@ function SubAgentBubble({ subAgent }: { subAgent?: SubAgentInfo }) {
   const badge = agentStatusBadge(subAgent.status);
   const isLive = subAgent.status === 'running' || subAgent.status === 'queued';
   return (
-    <div className="w-full min-w-0 rounded-lg border border-[#355975] bg-[#1e3446] text-sm">
+    <div className="w-full min-w-0 text-sm">
       <button
         type="button"
-        className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-xs hover:bg-[#2a4a6b]/40"
+        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-xs text-[#8b949e] hover:text-[#c9d1d9]"
         onClick={() => setOpen((v) => !v)}
       >
-        <ChevronRight
-          size={10}
-          className={cn('shrink-0 text-[#9ed3f5]/70 transition-transform', open && 'rotate-90')}
-        />
-        <span className="shrink-0 font-medium text-[#9ed3f5]">Agent</span>
-        <span className="min-w-0 truncate text-[#c9d1d9]/90" title={subAgent.task || subAgent.description || ''}>
+        <span className="shrink-0 font-medium text-[#8b949e]">Agent</span>
+        <span className="min-w-0 truncate text-[#8b949e]" title={subAgent.task || subAgent.description || ''}>
           {subAgent.description || subAgent.task || 'Sub-agent'}
         </span>
         {subAgent.model && (
-          <span className="hidden shrink-0 text-[10px] text-[#9ed3f5]/60 sm:inline">{subAgent.model}</span>
+          <span className="hidden shrink-0 text-[10px] text-[#8b949e]/60 sm:inline">{subAgent.model}</span>
         )}
         <span
           className={cn(
-            'ml-auto shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium',
-            badge.cls,
+            'ml-auto shrink-0 text-[10px] font-medium',
             isLive && 'animate-pulse',
           )}
         >
           {badge.text}
         </span>
+        {open ? (
+          <ChevronDown size={10} className="shrink-0 text-[#8b949e]" />
+        ) : (
+          <ChevronRight size={10} className="shrink-0 text-[#8b949e]" />
+        )}
       </button>
       {open && (
-        <div className="border-t border-[#355975]/60 px-3 pb-2 pt-1">
+        <div className="px-3 pb-2 pt-1">
           {subAgent.task && (
-            <div className="mb-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11px] text-[#9ed3f5]/80">
+            <div className="mb-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11px] text-[#8b949e]">
               Task: {subAgent.task}
             </div>
           )}
@@ -349,16 +331,17 @@ function SummaryCard({ content, compacted }: { content: string; compacted?: bool
       <details
         open={open}
         onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-        className="group max-w-[85%] rounded-xl border border-[#4d5b5e] bg-[#394548] text-sm"
+        className="group max-w-[85%]"
       >
-        <summary className="flex cursor-pointer select-none items-center gap-2 rounded-xl px-4 py-2.5 text-[#c9d1d9] list-none">
-          <ChevronRight
-            size={10}
-            className={cn('text-[#8b949e] transition-transform', open && 'rotate-90')}
-          />
-          <span className="text-sm leading-relaxed">Compaction</span>
+        <summary className="flex cursor-pointer select-none items-center gap-2 px-4 py-2.5 text-[#8b949e] list-none">
+          <span className="flex-1 text-sm leading-relaxed">Compaction</span>
+          {open ? (
+            <ChevronDown size={10} className="shrink-0 text-[#8b949e]" />
+          ) : (
+            <ChevronRight size={10} className="shrink-0 text-[#8b949e]" />
+          )}
         </summary>
-        <div className="border-t border-[#4d5b5e]/50 px-4 pt-1 pb-2.5 text-[#c9d1d9]/70 whitespace-pre-wrap break-words leading-relaxed">
+        <div className="px-4 pt-1 pb-2.5 text-[#8b949e]/70 whitespace-pre-wrap break-words leading-relaxed">
           {body}
         </div>
       </details>
@@ -388,12 +371,16 @@ function TTGroup({
       <div className="min-w-0 max-w-[90%]">
         <button
           type="button"
-          className="flex cursor-pointer items-center gap-1.5 rounded-full border border-dashed border-[#30363d] px-3 py-1.5 text-left text-xs text-[#8b949e] transition-colors hover:border-[#58a6ff]/40 hover:bg-[#21262d]/50 hover:text-[#c9d1d9]"
+          className="flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-left text-xs text-[#8b949e] transition-colors hover:text-[#c9d1d9]"
           onClick={() => setOpen((v) => !v)}
           title={open ? 'Collapse thinking/tool history' : 'Expand thinking/tool history'}
         >
-          <span className="shrink-0 text-[10px]">{open ? '▼' : '▶'}</span>
-          <span className="min-w-0 truncate">{label}</span>
+          <span className="flex-1 min-w-0 truncate text-[#8b949e]">{label}</span>
+          {open ? (
+            <ChevronDown size={10} className="shrink-0 text-[#8b949e]" />
+          ) : (
+            <ChevronRight size={10} className="shrink-0 text-[#8b949e]" />
+          )}
         </button>
         {open && (
           <div className="mt-2 flex flex-col gap-2">
