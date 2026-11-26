@@ -710,7 +710,7 @@ export class Agent {
           }
           messages.push(assistEntry);
 
-          const isExtBrowserShot = toolCall.name === 'ext_browser' && !!toolCall.parameters && toolCall.parameters.action === 'screenshot';
+          const isExtBrowserShot = toolCall.name === 'ext_browser' && !!toolCall.parameters && (toolCall.parameters.action === 'screenshot' || toolCall.parameters.action === 'axScreenshot');
           if (toolCall.status === 'completed' && (toolCall.name === 'desktop_screenshot' || toolCall.name === 'desktop_snapshot_region' || isExtBrowserShot)) {
             const shotCaption = isExtBrowserShot
               ? "Here is the screenshot of the page in the user's browser:"

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuki E2E — dialogs / waits / viewport / read</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 24px; max-width: 900px; }
+  nav, aside, footer { background: #fee; border: 1px solid #c99; padding: 8px; margin: 8px 0; }
+  .spacer { height: 1400px; }
+  #deepBtn { width: 240px; height: 60px; display: block; margin: 24px auto; }
+  pre { background: #f4f4f4; padding: 8px; }
+  table { border-collapse: collapse; }
+  td, th { border: 1px solid #999; padding: 4px 8px; }
+  .status { font-family: monospace; margin-top: 16px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<!-- Fixed chrome: must appear once at the top of a stitched full-page shot,
+     not repeat in every slice. -->
+<div id="fixedBanner" style="position:fixed;top:0;left:0;right:0;height:30px;background:#ff00ff;z-index:9999"></div>
+
+<nav>NAVIGATION BOILERPLATE SHOULD BE STRIPPED</nav>
+
+<main>
+  <article id="article">
+    <h1>Reading Test</h1>
+    <p>This is the <strong>first</strong> paragraph with a <a href="https://example.com/docs">useful link</a> and some <em>emphasis</em>.</p>
+    <h2>Steps</h2>
+    <ul>
+      <li>bullet one</li>
+      <li>bullet two</li>
+      <li>bullet three
+        <ul><li>nested bullet</li></ul>
+      </li>
+    </ul>
+    <ol>
+      <li>first numbered</li>
+      <li>second numbered</li>
+    </ol>
+    <h2>Data</h2>
+    <table>
+      <tr><th>col a</th><th>col b</th></tr>
+      <tr><td>1</td><td>2</td></tr>
+    </table>
+    <h2>Code</h2>
+    <pre><code>const x = 42;
+console.log(x);</code></pre>
+    <blockquote>Quoted wisdom.</blockquote>
+    <div id="bare">Bare text inside a plain div</div>
+  </article>
+</main>
+
+<aside>ASIDE BOILERPLATE SHOULD BE STRIPPED</aside>
+<footer>FOOTER BOILERPLATE SHOULD BE STRIPPED</footer>
+
+<div class="spacer"></div>
+<button id="deepBtn" type="button">Deep button below the fold</button>
+<div class="spacer"></div>
+
+<!-- Taller than any viewport: green marker on top, red marker at the bottom.
+     Used to prove stitched (full-page) captures cover the whole element. -->
+<div id="tall" style="height:1500px;background:#eef;border:2px solid #66c;position:relative;box-sizing:border-box">
+  <div style="position:absolute;top:0;left:0;right:0;height:40px;background:#00a000"></div>
+  <div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:#a00000"></div>
+</div>
+
+<div class="status" id="status">ready</div>
+
+<script>
+  // --- waitFor targets -----------------------------------------------------
+  setTimeout(function () {
+    var d = document.createElement('div');
+    d.id = 'delayed';
+    d.textContent = 'Delayed element arrived';
+    document.getElementById('status').appendChild(d);
+  }, 1200);
+
+  setTimeout(function () {
+    var t = document.createElement('p');
+    t.id = 'lateText';
+    t.textContent = 'Late text arrived';
+    document.body.appendChild(t);
+  }, 800);
+
+  // --- dialogs (scheduled so the CDP call that starts them returns first) --
+  window.__results = {};
+  window.scheduleAlert = function (msg, delay) {
+    setTimeout(function () { alert(msg); }, delay || 250);
+    return 'scheduled';
+  };
+  window.scheduleConfirm = function (msg, delay) {
+    setTimeout(function () { window.__results.confirm = confirm(msg); }, delay || 250);
+    return 'scheduled';
+  };
+  window.schedulePrompt = function (msg, def, delay) {
+    setTimeout(function () { window.__results.prompt = prompt(msg, def); }, delay || 250);
+    return 'scheduled';
+  };
+</script>
+</body>
+</html>

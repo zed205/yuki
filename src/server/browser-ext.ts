@@ -11,6 +11,7 @@
  * Protocol: see extension/PROTOCOL.md.
  */
 import { WebSocket } from 'ws';
+import { port as serverPort } from './paths';
 
 interface Conn {
   ws: WebSocket;
@@ -135,7 +136,7 @@ export class BrowserExtension {
   private resolveWs(browserId?: string): WebSocket {
     const open = Array.from(this.conns.values()).filter((c) => c.ws.readyState === 1);
     if (!open.length) {
-      throw new Error('No browser extension is connected. Load the "Yuki Browser Control" extension in a Chromium browser (Chrome/Edge/Brave) and make sure the Yuki server is running on port 3210.');
+      throw new Error('No browser extension is connected. Load the "Yuki Browser Control" extension in a Chromium browser (Chrome/Edge/Brave) and make sure the Yuki server is running on port ' + serverPort + '.');
     }
     if (browserId) {
       const conn = open.find((c) => c.browserId === browserId);
@@ -176,7 +177,13 @@ export class BrowserExtension {
   async dispatch(action: string, params: any, browserId?: string): Promise<string> {
     if (!action) return 'Error: ext_browser requires an "action". See the tool description for the list of actions.';
     const method = action;
-    const timeoutMs = action === 'screenshot' ? SCREENSHOT_TIMEOUT_MS : undefined;
+    // Screenshots are big; waitFor can legitimately block for a while.
+    const wanted = Number(params?.timeoutMs);
+    const timeoutMs = action === 'screenshot' || action === 'axScreenshot'
+      ? SCREENSHOT_TIMEOUT_MS
+      : action === 'waitFor'
+        ? (Number.isFinite(wanted) && wanted > 0 ? Math.min(wanted, 60000) : 30000) + 10000
+        : undefined;
     const result = await this.rawCommand(method, params || {}, browserId, timeoutMs);
     return this.formatResult(action, result);
   }
@@ -185,7 +192,7 @@ export class BrowserExtension {
     if (result === null || result === undefined) return '(no result)';
 
     // Screenshot → raw base64 (no data: prefix) so agent.ts wraps it as an image.
-    if (action === 'screenshot') {
+    if (action === 'screenshot' || action === 'axScreenshot') {
       const b64 = typeof result === 'string' ? result : (result && typeof result.data === 'string' ? result.data : null);
       if (b64) return b64;
       return 'Screenshot failed: ' + jstr(result);
@@ -198,7 +205,7 @@ export class BrowserExtension {
         break;
       case 'listTabs':
         text = Array.isArray(result?.tabs) && result.tabs.length
-          ? result.tabs.map((t: any) => `#${t.id} ${t.active ? '[active] ' : ''}"${t.title || ''}" — ${t.url}`).join('\n')
+          ? result.tabs.map((t: any) => `#${t.id} ${t.active ? '[active] ' : ''}"${t.title || ''}" — ${t.url}${t.group ? ` (group: ${t.group})` : ''}`).join('\n')
           : '(no tabs)';
         break;
       case 'getActiveTab':
@@ -221,7 +228,24 @@ export class BrowserExtension {
         text = typeof result?.html === 'string' ? (result.html || '(no html)') : jstr(result);
         break;
       case 'axTree':
-        text = typeof result?.tree === 'string' ? result.tree : jstr(result);
+        text = typeof result?.tree === 'string'
+          ? (typeof result.indexed === 'number' ? `[${result.indexed} actionable elements indexed — use axClick/axSetValue/axType with an element_index]\n\n` : '') + result.tree
+          : jstr(result);
+        break;
+      case 'axClick':
+        text = result?.clicked ? `Clicked AX element #${result.elementIndex} (${result.role || 'node'}) at (${result.x},${result.y})` : jstr(result);
+        break;
+      case 'axSetValue':
+        text = result?.set ? `Set AX element #${result.elementIndex} (${result.role || 'node'}) to: ${result.value}` : jstr(result);
+        break;
+      case 'axType':
+        text = result?.typed ? `Typed into AX element ${result.elementIndex != null ? '#' + result.elementIndex : '(focused)'}: ${result.text}` : jstr(result);
+        break;
+      case 'axPressKey':
+        text = result?.pressed ? `Pressed key "${result.pressed}"${result.elementIndex != null ? ' on AX element #' + result.elementIndex : ''}${result.inserted ? ' (inserted: ' + result.inserted + ')' : ''}` : jstr(result);
+        break;
+      case 'axSelectText':
+        text = result?.selected ? `Selected text in AX element #${result.elementIndex}: "${result.text}"` : jstr(result);
         break;
       case 'visibleElements':
         text = Array.isArray(result?.elements) && result.elements.length
@@ -253,6 +277,61 @@ export class BrowserExtension {
           ? result.messages.map((m: any) => `[${m.level || 'log'}] ${m.text}`).join('\n')
           : '(no console messages yet)';
         break;
+      case 'dialogList': {
+        const open = Array.isArray(result?.open) ? result.open : [];
+        const recent = Array.isArray(result?.recent) ? result.recent : [];
+        if (!open.length && !recent.length) { text = '(no dialogs — none open, none handled recently)'; break; }
+        const lines: string[] = [];
+        if (open.length) {
+          lines.push('OPEN dialogs (the page is blocked until you handle them):');
+          for (const d of open) {
+            lines.push(`  tab #${d.tabId} ${String(d.type).toUpperCase()}: "${d.message}"${d.type === 'prompt' ? ` (default: "${d.defaultPrompt}")` : ''} — open ${Math.round((d.openMs || 0) / 1000)}s`);
+          }
+          lines.push('Handle with handleDialog:{action:"accept"|"dismiss", promptText?}.');
+        } else {
+          lines.push('(no dialog currently open)');
+        }
+        if (recent.length) {
+          lines.push('Recently handled:');
+          for (const d of recent.slice(-5)) lines.push(`  tab #${d.tabId} ${d.type} "${(d.message || '').slice(0, 100)}" → ${d.action}`);
+        }
+        text = lines.join('\n');
+        break;
+      }
+      case 'handleDialog':
+        text = result?.handled
+          ? `${result.action === 'accept' ? 'Accepted' : 'Dismissed'} ${String(result.type).toUpperCase()} dialog: "${result.message}"${result.promptText != null ? ` (entered: "${result.promptText}")` : ''}`
+          : jstr(result);
+        break;
+      case 'waitFor':
+        text = result?.ok
+          ? `Waited ${result.waitedMs}ms — ${result.condition} ready${result.detail ? ` (${result.detail})` : ''}`
+          : jstr(result);
+        break;
+      case 'nameSession':
+        text = result?.session
+          ? `Session "${result.session}" active${result.groupId != null ? ` (tab group #${result.groupId})` : ''} — new tabs join it automatically${result.note ? `\n${result.note}` : ''}`
+          : (result?.note || 'Session cleared — new tabs are no longer grouped.');
+        break;
+      case 'setViewport':
+        text = result?.reset
+          ? `Viewport reset to the real window size${result.restored ? ` (${result.restored.width}x${result.restored.height})` : ''}.`
+          : result?.viewport
+            ? `Viewport set to ${result.viewport.width}x${result.viewport.height} @${result.viewport.deviceScaleFactor}x${result.viewport.mobile ? ' (mobile)' : ''}` +
+              (result.achieved && result.matched === false ? ` — page reports ${result.achieved.width}x${result.achieved.height}` : '') +
+              (result.note ? `\n${result.note}` : '')
+            : jstr(result);
+        break;
+      case 'readPage': {
+        if (typeof result?.markdown !== 'string') { text = jstr(result); break; }
+        const head = [
+          `# ${result.title || '(untitled)'}`,
+          result.url || '',
+          `(${result.chars} chars, ${result.blocks} blocks${result.truncated ? ', truncated' : ''})`,
+        ].filter(Boolean).join('\n');
+        text = head + '\n\n' + (result.markdown || '(no readable content)');
+        break;
+      }
       default:
         text = jstr(result);
     }

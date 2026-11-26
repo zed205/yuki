@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -30,6 +30,12 @@ const TOOL_GROUPS = [
     ],
   },
   {
+    // Drives the user's real, already-signed-in browser through the
+    // "Yuki Browser Control" extension (one tool, ~40 actions).
+    name: 'Browser extension',
+    tools: ['ext_browser'],
+  },
+  {
     name: 'Desktop',
     tools: [
       'desktop_viewport',
@@ -54,12 +60,39 @@ export interface ToolsModalProps {
   onOpenChange?: (open: boolean) => void;
 }
 
+interface ExtStatus {
+  connected: boolean;
+  count: number;
+  connections?: Array<{ browserId: string | null }>;
+}
+
+const EXT_BROWSER_ACTIONS =
+  'tabs, navigate, click/fill/type, AX tree + axClick/axSetValue/axType, dialogs, waits, screenshots, reading mode, viewport, sessions';
+
 export function ToolsModal({ open, onOpenChange }: ToolsModalProps) {
   const { tools, mcpServers, toggleTool, toggleMcp } = useSession();
   const enabledBy = useMemo(
     () => Object.fromEntries(tools.map((t) => [t.name, t.enabled])),
     [tools],
   );
+
+  // Live status of the browser extension (which browsers are linked right now).
+  const [extStatus, setExtStatus] = useState<ExtStatus | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    fetch('/api/browser-ext/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (alive) setExtStatus(s as ExtStatus);
+      })
+      .catch(() => {
+        if (alive) setExtStatus(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
 
   const [groupToggles, setGroupToggles] = useState<Record<string, boolean>>({});
 
@@ -128,6 +161,25 @@ export function ToolsModal({ open, onOpenChange }: ToolsModalProps) {
                       </label>
                     ))}
                   </div>
+                  {group.name === 'Browser extension' && (
+                    <div className="border-t border-border/50 px-3 py-1.5 pl-8 text-[10px] leading-relaxed">
+                      {extStatus === null ? (
+                        <span className="text-muted-foreground">checking connection…</span>
+                      ) : extStatus.connected ? (
+                        <span className="text-[#3fb950]">
+                          ● {extStatus.count} browser{extStatus.count === 1 ? '' : 's'} connected
+                          {extStatus.connections && extStatus.connections.length
+                            ? ' · ' + extStatus.connections.map((c) => c.browserId || 'unknown').join(', ')
+                            : ''}
+                        </span>
+                      ) : (
+                        <span className="text-[#d4760a]">
+                          ○ not connected — load the “Yuki Browser Control” extension in Chrome/Edge/Brave
+                        </span>
+                      )}
+                      <div className="mt-0.5 text-muted-foreground">{EXT_BROWSER_ACTIONS}</div>
+                    </div>
+                  )}
                 </div>
               );
             })}

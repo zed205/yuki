@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AX E2E Test Page</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 40px; }
+  .editor {
+    min-height: 160px; border: 1px solid #888; border-radius: 6px;
+    padding: 12px; margin: 12px 0; background: #fff; font-size: 15px;
+    outline: none; white-space: pre-wrap;
+  }
+  .editor p { margin: 0 0 8px; }
+  label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text], select, textarea { padding: 6px; min-width: 320px; }
+  .status { margin-top: 20px; font-family: monospace; color: #333; }
+  button { margin-right: 8px; padding: 8px 14px; }
+</style>
+</head>
+<body>
+  <h1>AX E2E Test Page</h1>
+
+  <label for="editor">Rich editor (contenteditable)</label>
+  <div id="editor" class="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Rich editor">
+    <p>Hello from the editor.</p>
+  </div>
+
+  <label for="name">Text input</label>
+  <input id="name" type="text" name="name" value="Type here" />
+
+  <label for="color">Select</label>
+  <select id="color" name="color">
+    <option value="red">Red</option>
+    <option value="green">Green</option>
+    <option value="blue">Blue</option>
+  </select>
+
+  <label for="notify">Checkbox</label>
+  <input id="notify" type="checkbox" name="notify" />
+
+  <label for="notes">Textarea</label>
+  <textarea id="notes" name="notes" rows="3"></textarea>
+
+  <div style="margin-top:16px">
+    <button id="submitBtn" type="button">Submit</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <script>
+    const status = document.getElementById('status');
+    function show() {
+      const editor = document.getElementById('editor');
+      status.textContent = 'editorHTML=' + editor.innerHTML
+        + ' | name=' + JSON.stringify(document.getElementById('name').value)
+        + ' | color=' + document.getElementById('color').value
+        + ' | notify=' + document.getElementById('notify').checked
+        + ' | notes=' + JSON.stringify(document.getElementById('notes').value);
+    }
+    document.getElementById('submitBtn').addEventListener('click', show);
+    ['editor','name','color','notify','notes'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input', show);
+      el.addEventListener('change', show);
+    });
+    show();
+  </script>
+</body>
+</html>
