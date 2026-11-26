@@ -71,6 +71,45 @@ function Stop-LiveServer {
   }
 }
 
+# Dev instances started from the repo keep native addons (better-sqlite3's
+# prebuilt .node) mapped, which makes `npm ci` fail with
+#   EPERM: operation not permitted, unlink ...\better-sqlite3\prebuilds\win32-x64.node
+# Stop-LiveServer only matches processes whose command line contains $live, and
+# a dev instance started with a *relative* path ("node dist/server/index.js")
+# does not — so stop repo-side dev servers explicitly before touching node_modules.
+# (It also re-kills a live server that survived Stop-LiveServer, which is what we
+# want before the copy step.)
+function Stop-RepoInstances {
+  $patterns = @(
+    '*dist\server\index.js*', '*dist/server/index.js*',
+    '*src\server\index.ts*', '*src/server/index.ts*',
+    '*src\client\dev-server.js*', '*src/client/dev-server.js*',
+    '*e2e-ax\serve.js*', '*e2e-ax/serve.js*'
+  )
+  $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
+      $cmd = $_.CommandLine
+      if (-not $cmd) { return $false }
+      foreach ($pat in $patterns) { if ($cmd -like $pat) { return $true } }
+      return $false
+    })
+  foreach ($proc in $procs) {
+    Write-Host "Stopping repo dev process PID $($proc.ProcessId)"
+    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  if ($procs.Count -gt 0) { Start-Sleep -Milliseconds 800 }
+}
+
+# True when another process holds an exclusive handle on the file.
+function Test-FileLocked([string]$Path) {
+  if (-not (Test-Path $Path)) { return $false }
+  try {
+    $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+    $fs.Close()
+    return $false
+  }
+  catch { return $true }
+}
+
 function Rollback {
   Stop-LiveServer
   # Simple rollback: copy the previous live dir back (if it exists).
@@ -128,8 +167,15 @@ if (-not $Ref) {
 # --- 0. Stop any running server (must run before Remove-Item) ---
 Write-Host 'Stopping live server (if any)...'
 Stop-LiveServer
+# Repo-side dev instances hold native addons in node_modules; stop them too.
+Stop-RepoInstances
 
 # --- 1. Build in-place ---
+$sqliteAddon = Join-Path $repo 'node_modules\better-sqlite3\prebuilds\win32-x64.node'
+if (Test-FileLocked $sqliteAddon) {
+  Write-Warning "A process still holds $sqliteAddon"
+  Write-Warning 'npm ci will fail with EPERM: unlink. Stop dev servers (node dist/server/index.js, npm run dev) and retry.'
+}
 Write-Host 'npm ci ...'
 npm ci --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
