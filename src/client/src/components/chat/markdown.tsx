@@ -6,17 +6,15 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import type { Components } from 'react-markdown';
+import { memo } from 'react';
 import { CodeBlock } from './code-block';
 
 /**
- * Markdown renderer for assistant messages.
- *
- * Replaces the SolidJS client's hand-rolled markdown parser with a proper
- * react-markdown pipeline (GFM tables/strikethrough included). Code blocks
- * render with the shared CodeBlock (line numbers + copy button).
+ * Stable ReactMarkdown component config — created once at module scope so the
+ * `components` reference doesn't change between renders (avoids unnecessary
+ * react-markdown re-parses).
  */
-
-const components: Components = {
+const COMPONENTS: Components = {
   code({ className, children, ...props }) {
     const text = String(children).replace(/\n$/, '');
     const match = /language-(\w+)/.exec(className || '');
@@ -104,17 +102,23 @@ const components: Components = {
   },
 };
 
-export function MarkdownContent({ content }: { content: string }) {
+/**
+ * Memoized markdown renderer — skips re-parsing when `content` hasn't changed.
+ * Critical during streaming: each token update creates a new string reference,
+ * so we use content === to guard against pointless ReactMarkdown re-renders of
+ * unchanged portions of the transcript tree.
+ */
+export const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   if (!content) return null;
   return (
     <div className="message-content text-sm">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
-        components={components}
+        components={COMPONENTS}
       >
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+}, (prevProps, nextProps) => prevProps.content === nextProps.content);

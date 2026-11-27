@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { ThinkingPill, ToolCallList } from './message-bubble';
 import { MessageBubble } from './message-bubble';
@@ -42,7 +42,39 @@ export interface TurnGroupProps {
  *  - `processMessages` + `finalMessage` for grouped turns (multiple messages)
  *  - `message` (legacy) for single-message turns
  */
-export function TurnGroup({
+
+/** Compare TurnGroup props by message identity rather than reference equality.
+ * processMessages arrays are recreated every parent render, so we compare the
+ * contained message IDs and key content fields to decide if re-render is needed. */
+function turnGroupShouldUpdate(prev: TurnGroupProps, next: TurnGroupProps) {
+  // If either legacy `message` prop changed identity, update
+  if (prev.message !== next.message) return false;
+
+  const prevProc = prev.processMessages || [];
+  const nextProc = next.processMessages || [];
+  
+  // Compare arrays by message ID at each position
+  const maxLen = Math.max(prevProc.length, nextProc.length);
+  for (let i = 0; i < maxLen; i++) {
+    if ((prevProc[i]?.id ?? null) !== (nextProc[i]?.id ?? null)) return false;
+  }
+
+  // Compare finalMessage by identity and key streaming-relevant fields
+  const pf = prev.finalMessage;
+  const nf = next.finalMessage;
+  if (!pf && !nf) return true;
+  if (!pf || !nf) return false;
+  
+  // If content identity hasn't changed, nothing in this turn-group materially changed
+  return (
+    pf.id === nf.id &&
+    pf.content === nf.content &&
+    pf.isStreaming === nf.isStreaming &&
+    pf.compacted === nf.compacted
+  );
+}
+
+export const TurnGroup = memo(function TurnGroup({
   message,
   processMessages: incomingProcessMessages,
   finalMessage: incomingFinalMessage,
@@ -240,4 +272,4 @@ export function TurnGroup({
       )}
     </div>
   );
-}
+}, turnGroupShouldUpdate);

@@ -16,6 +16,7 @@ import { SearchModal } from '@/components/modals/search-modal';
 import { AddProjectModal } from '@/components/modals/add-project-modal';
 import { useGlobalShortcuts } from '@/hooks/use-global-shortcuts';
 import { useBrowser } from '@/context/browser-context';
+import { PerfProfiler } from '@/perf/perf-profiler'; // TEMP perf instrumentation
 
 // ---------------------------------------------------------------------------
 // Mobile top bar (legacy `#top-bar`): hamburger + logo + context ring
@@ -155,7 +156,10 @@ export function MainLayout({ className }: { className?: string }) {
       {/* Main content area */}
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileTopBar onMenu={() => setMobileOpen(true)} />
-        <ChatPanel className="pt-14 md:pt-0" />
+        {/* TEMP perf instrumentation */}
+        <PerfProfiler id="chat-panel">
+          <ChatPanel className="pt-14 md:pt-0" />
+        </PerfProfiler>
       </div>
 
       {/* Overlays & sync */}

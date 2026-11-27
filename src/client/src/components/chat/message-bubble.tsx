@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Message, SubAgentInfo } from '@/lib/types';
@@ -413,7 +413,27 @@ function splitThinkBlocks(content: string): Array<{ type: 'think' | 'text'; cont
   return parts;
 }
 
-export function MessageBubble(props: MessageBubbleProps) {
+/** Stable identity check for MessageBubble props — ignores callback refs (onRevert, onCompact, etc.)
+ * which can change every parent render but don't affect visual output. Only re-renders when content,
+ * streaming state, or structural data changes. This prevents the full message subtree from re-rendering
+ * on every incoming token chunk. */
+function bubbleShouldUpdate(prev: MessageBubbleProps, next: MessageBubbleProps) {
+  // Fast-path: if content is identical (string ===), nothing changed during streaming
+  if (prev.content === next.content && prev.isStreaming === next.isStreaming) return true;
+  
+  // Check structural props excluding callbacks
+  const { onRevert: pRv, onCompact: pCp, onFork: pFk, onRead: pRd, onForkNavigate: pFn, ...prevRest } = prev;
+  const { onRevert: nRv, onCompact: nCp, onFork: nFk, onRead: nRd, onForkNavigate: nFn, ...nextRest } = next;
+  
+  return (
+    prev.role === next.role &&
+    prev.compacted === next.compacted &&
+    prev.isStreaming === next.isStreaming &&
+    JSON.stringify(prevRest) === JSON.stringify(nextRest)
+  );
+}
+
+export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
   const {
     role,
     content,
@@ -641,4 +661,4 @@ export function MessageBubble(props: MessageBubbleProps) {
       </div>
     </div>
   );
-}
+}, bubbleShouldUpdate);
