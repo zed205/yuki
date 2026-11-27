@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useSession } from '@/context/session-context';
+import { useWebSocket } from '@/context/websocket-context';
 import { Text } from '@/components/ui/box';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
@@ -44,8 +45,8 @@ function ToggleRow({
  * behavior toggles.
  */
 export function AgentSettings() {
-  const { models, activeModel, switchModel, thinkingEnabled, setThinkingEnabled, config, setConfig } =
-    useSession();
+  const { models, activeModel, switchModel, thinkingEnabled, setThinkingEnabled, config, setConfig } = useSession();
+  const { send } = useWebSocket();
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
   const [maxTokens, setMaxTokens] = useState(4096);
@@ -211,7 +212,10 @@ export function AgentSettings() {
             min={50}
             max={2000}
             step={50}
-            onValueChange={([v]) => setConfig({ chunkUpdateIntervalMs: v })}
+            onValueChange={([v]) => {
+              setConfig({ chunkUpdateIntervalMs: v });
+              send('config:update', { chunkUpdateIntervalMs: v });
+            }}
           />
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>50ms (smooth, ~20 fps)</span>

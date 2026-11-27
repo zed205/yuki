@@ -167,7 +167,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [config, setConfigState] = useState<SessionConfig>({
     contextWindow: 64000,
     enableImagePaste: false,
-    chunkUpdateIntervalMs: 500, // half-second throttling for streaming (ms)
+    chunkUpdateIntervalMs: 500, // ms between chat token flush during streaming (default synced to server config)
   });
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -496,6 +496,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               (sd.config.collapseThinkingTools as boolean) ?? false,
             desktopNotifications:
               (sd.config.desktopNotifications as boolean) ?? true,
+            chunkUpdateIntervalMs:
+              (sd.config.chunkUpdateIntervalMs as number) ?? 250,
             model: (sd.config.model as string) || undefined,
             endpoint: (sd.config.endpoint as string) || undefined,
             contextWindow:

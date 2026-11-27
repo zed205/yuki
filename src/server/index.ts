@@ -1024,6 +1024,7 @@ wss.on('connection', (ws) => {
         expandToolOutputs: loadConfig().ui.expandToolOutputs,
         collapseThinkingTools: loadConfig().ui.collapseThinkingTools,
         desktopNotifications: loadConfig().ui.desktopNotifications !== false,
+        chunkUpdateIntervalMs: loadConfig().ui.chunkUpdateIntervalMs ?? 500,
         model: agentCfg.model,
         endpoint: agentCfg.endpoint,
         contextWindow: agentCfg.contextWindow,
@@ -1384,6 +1385,18 @@ wss.on('connection', (ws) => {
           }
           sendContextUpdate(ws, session);
         }
+      }
+
+      if (message.type === 'config:update') {
+        const newInterval = message.data?.chunkUpdateIntervalMs;
+        if (typeof newInterval !== 'number' || newInterval < 50 || newInterval > 2000) return;
+        
+        const cfg = loadConfig();
+        saveConfig({ ...cfg, ui: { ...cfg.ui, chunkUpdateIntervalMs: newInterval } });
+        ws.send(JSON.stringify({
+          type: 'config:updated',
+          data: { chunkUpdateIntervalMs: newInterval },
+        }));
       }
 
       // Handle session:summary events (auto-generated topic summaries)

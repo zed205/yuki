@@ -21,7 +21,10 @@ const defaultConfig: AppConfig = {
     enabled: false,
     serviceUrl: 'http://localhost:8001'
   },
-  systemPrompt: 'You are Yuki, a helpful personal AI assistant. You have access to tools to help the user with tasks. Be concise and helpful.'
+  systemPrompt: 'You are Yuki, a helpful personal AI assistant. You have access to tools to help the user with tasks. Be concise and helpful.',
+  ui: {
+    chunkUpdateIntervalMs: 500 // ms between chat token flush during streaming (default synced to client config)
+  }
 };
 
 /** Path to the configuration directory. */
@@ -55,7 +58,8 @@ export function loadConfig(): AppConfig {
       llm: { ...defaultConfig.llm, ...config.llm },
       speech: { ...defaultConfig.speech, ...config.speech },
       desktop: { ...defaultConfig.desktop, ...config.desktop },
-      systemPrompt: config.systemPrompt || defaultConfig.systemPrompt
+      systemPrompt: config.systemPrompt || defaultConfig.systemPrompt,
+      ui: { ...defaultConfig.ui, ...(config.ui ?? {}) }
     };
   } catch (error) {
     console.error(`Error loading configuration: ${error}`);

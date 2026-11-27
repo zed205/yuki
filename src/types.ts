@@ -33,12 +33,20 @@ export interface DesktopConfig {
   serviceUrl: string;
 }
 
+/** Configuration for client-side UI behavior (rendering, streaming, etc.). */
+export interface UiConfig {
+  /** Milliseconds between chat token flush during streaming (default 250). Lower = smoother, higher = less CPU. Range: 50–2000ms. */
+  chunkUpdateIntervalMs?: number;
+}
+
 /** The main application configuration. */
 export interface AppConfig {
   llm: LLMConfig;
   speech: SpeechConfig;
   desktop: DesktopConfig;
   systemPrompt: string;
+  /** Client-side UI settings (persisted alongside server config). */
+  ui?: UiConfig;
 }
 
 /** A tool definition for the LLM. */

@@ -118,6 +118,8 @@ export interface UIConfig {
   // Show a desktop notification when a model turn completes while the tab is
   // not focused. Can also be toggled at runtime from the options menu.
   desktopNotifications?: boolean;
+  // Milliseconds between chat token flush during streaming (50-2000ms, default 250).
+  chunkUpdateIntervalMs?: number;
 }
 
 export interface DesktopConfig {
