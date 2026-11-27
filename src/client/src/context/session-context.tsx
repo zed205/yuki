@@ -55,6 +55,8 @@ export interface SessionConfig {
   model?: string;
   /** Endpoint URL, for the utility summary. */
   endpoint?: string;
+  /** Milliseconds between chunk flushes during streaming (default 500). Lower = smoother, higher = less UI thrash. */
+  chunkUpdateIntervalMs: number;
 }
 
 export interface SessionContextValue {
@@ -165,6 +167,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [config, setConfigState] = useState<SessionConfig>({
     contextWindow: 64000,
     enableImagePaste: false,
+    chunkUpdateIntervalMs: 500, // half-second throttling for streaming (ms)
   });
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -246,11 +249,61 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // Track id of the assistant message being streamed (for chat:chunk)
   const streamingIdRef = useRef<string | null>(null);
-  // Pending chunk buffer for rAF-batched appends
+  // Pending chunk buffer accumulated between timer flushes
   const pendingChunkRef = useRef<string>('');
-  const chunkFlushScheduled = useRef(false);
+  // Ref so interval callback reads latest interval value without recreation
+  const intervalMsRef = useRef(500);
   // Monotonic token so a slow fetch can't overwrite a newer session's history
   const loadSeqRef = useRef(0);
+
+  // Sync interval ref when config changes (avoids recreating the timer)
+  useEffect(() => {
+    intervalMsRef.current = config.chunkUpdateIntervalMs;
+  }, [config.chunkUpdateIntervalMs]);
+
+  // Flush accumulated chat:chunk tokens on a configurable timer.
+  // Replaces rAF (~60 fps) with user-adjustable throttle (default 500ms).
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const flushChunks = () => {
+      const chunk = pendingChunkRef.current;
+      if (!chunk) return;
+      pendingChunkRef.current = '';
+      setIsStreaming(true);
+      setIsWaiting(false);
+      const targetId = streamingIdRef.current;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === targetId);
+        if (idx === -1) {
+          return [
+            ...prev,
+            {
+              id: targetId!,
+              role: 'assistant' as const,
+              content: chunk,
+              timestamp: new Date(),
+              isStreaming: true,
+            },
+          ];
+        }
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          content: (next[idx].content || '') + chunk,
+          isStreaming: true,
+        };
+        return next;
+      });
+    };
+
+    timer = setInterval(flushChunks, intervalMsRef.current);
+
+    return () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+  }, []);
 
   // Load a session's transcript from the REST API (the server only sends
   // session metadata over WS, so the transcript itself comes from here).
@@ -724,41 +777,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         const id = cd.messageId || streamingIdRef.current;
         if (!cd.chunk) return;
         streamingIdRef.current = id;
-        // Batch appends to reduce re-renders during fast streams
+        // Accumulate tokens — the timer interval flushes them on its tick.
         pendingChunkRef.current += cd.chunk;
-        if (chunkFlushScheduled.current) return;
-        chunkFlushScheduled.current = true;
-        requestAnimationFrame(() => {
-          chunkFlushScheduled.current = false;
-          const chunk = pendingChunkRef.current;
-          pendingChunkRef.current = '';
-          if (!chunk) return;
-          setIsStreaming(true);
-          setIsWaiting(false);
-          const targetId = streamingIdRef.current;
-          setMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === targetId);
-            if (idx === -1) {
-              return [
-                ...prev,
-                {
-                  id: targetId!,
-                  role: 'assistant' as const,
-                  content: chunk,
-                  timestamp: new Date(),
-                  isStreaming: true,
-                },
-              ];
-            }
-            const next = [...prev];
-            next[idx] = {
-              ...next[idx],
-              content: (next[idx].content || '') + chunk,
-              isStreaming: true,
-            };
-            return next;
-          });
-        });
       }),
     );
 

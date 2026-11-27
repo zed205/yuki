@@ -44,7 +44,7 @@ function ToggleRow({
  * behavior toggles.
  */
 export function AgentSettings() {
-  const { models, activeModel, switchModel, thinkingEnabled, setThinkingEnabled } =
+  const { models, activeModel, switchModel, thinkingEnabled, setThinkingEnabled, config, setConfig } =
     useSession();
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
@@ -192,6 +192,35 @@ export function AgentSettings() {
             onChange={setEnableToolUse}
           />
         </div>
+      </div>
+
+      {/* Streaming Update Rate */}
+      <div className="space-y-3">
+        <Text weight="semibold" size="sm">
+          Streaming Update Rate
+        </Text>
+        <div className="rounded-lg border border-border bg-muted/50 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <Text size="sm">Token flush interval</Text>
+            <Text size="xs" className="text-muted-foreground font-mono">
+              {config.chunkUpdateIntervalMs}ms
+            </Text>
+          </div>
+          <Slider
+            value={[config.chunkUpdateIntervalMs]}
+            min={50}
+            max={2000}
+            step={50}
+            onValueChange={([v]) => setConfig({ chunkUpdateIntervalMs: v })}
+          />
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>50ms (smooth, ~20 fps)</span>
+            <span>2,000ms (laggy, minimal thrash)</span>
+          </div>
+        </div>
+        <Text size="xs" className="text-muted-foreground">
+          How often accumulated tokens are flushed to the UI during streaming. Higher values reduce render load on long conversations but add perceived latency.
+        </Text>
       </div>
     </div>
   );
